@@ -83,7 +83,7 @@ def send_employee_invite_email(company, employee, raw_password):
         "emails/employee_invite.html",
         {
             "employee_name": employee.user.first_name or employee.user.email,
-            "company_name": company.name,
+            "company_name": company.name, 
             "email": employee.user.email,
             "department": (
                 employee.department.name
