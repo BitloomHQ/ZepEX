@@ -16,6 +16,7 @@ const PUBLIC_API_PATHS = [
   '/auth/verify-reset-otp/',
   '/auth/reset-password/',
   '/platform/register-company/',
+  '/platform/company-requests/request-otp/',
 ]
 
 api.interceptors.request.use((config) => {
@@ -77,7 +78,10 @@ export function getApiErrorMessage(error: unknown): string {
       }
       return data
     }
-    if (data?.error) return String(data.error)
+    if (data?.error) {
+      const details = data.details ? ` ${String(data.details)}` : ''
+      return `${String(data.error)}${details}`.trim()
+    }
     if (data?.message) return String(data.message)
     if (data && typeof data === 'object') {
       const record = data as Record<string, unknown>

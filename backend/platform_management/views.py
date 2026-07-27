@@ -49,8 +49,29 @@ from platform_management.email_service import (
 )
 
 from platform_management.domain_validator import (
-    validate_company_email_domain,
+    validate_registration_admin_email,
 )
+
+
+def _registration_email_validation_response(admin_email, company_domain, *, verify_domain):
+    """Return a 400 Response when registration email/domain checks fail."""
+    ok, message, details, error_code = validate_registration_admin_email(
+        admin_email,
+        company_domain,
+        verify_domain=verify_domain,
+    )
+    if ok:
+        return None
+
+    payload = {
+        "success": False,
+        "error": message,
+        "error_code": error_code,
+    }
+    if details:
+        payload["details"] = details
+    return Response(payload, status=status.HTTP_400_BAD_REQUEST)
+
 
 @api_view(["POST"])
 @authentication_classes([])
@@ -73,34 +94,16 @@ def create_company_request(request):
             )
 
     admin_email = request.data.get("admin_email", "").lower().strip()
-    # =====================================================
-    # Validate company email domain
-    # =====================================================
+    company_domain = request.data.get("company_domain", "").strip().lower()
 
-    if settings.CHECK_COMPANY_DOMAIN_AUTHENTICITY:
+    validation_error = _registration_email_validation_response(
+        admin_email,
+        company_domain,
+        verify_domain=False,
+    )
+    if validation_error:
+        return validation_error
 
-        is_valid, error = (
-            validate_company_email_domain(
-                admin_email
-            )
-        )
-
-        if not is_valid:
-
-            return Response(
-                {
-                    "success": False,
-                    "error": (
-                        "The company email domain "
-                        "could not be verified."
-                    ),
-                    "details": error,
-                    "error_code": (
-                        "INVALID_COMPANY_EMAIL_DOMAIN"
-                    ),
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
     otp = request.data.get("otp", "").strip()
 
     try:
@@ -1014,9 +1017,6 @@ import random
 from datetime import timedelta
 
 from django.utils import timezone
-from django.core.validators import validate_email
-from django.core.exceptions import ValidationError
-
 from tenants.email_utils import send_company_registration_otp
 
 
@@ -1078,13 +1078,13 @@ def _request_company_registration_otp(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    try:
-        validate_email(admin_email)
-    except ValidationError:
-        return Response(
-            {"error": "Email does not exist."},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+    validation_error = _registration_email_validation_response(
+        admin_email,
+        company_domain,
+        verify_domain=getattr(settings, "VERIFY_COMPANY_EMAIL_DOMAIN", False),
+    )
+    if validation_error:
+        return validation_error
 
     if CompanyRegistrationRequest.objects.filter(
         company_domain__iexact=company_domain,

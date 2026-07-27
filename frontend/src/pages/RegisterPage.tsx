@@ -12,12 +12,22 @@ import { Label } from '@/components/ui/label'
 import logo from '@/assets/logo.png'
 import { toast } from '@/lib/toast'
 
+function normalizeDomain(domain: string): string {
+  return domain.trim().toLowerCase().replace(/^@+/, '')
+}
+
+function adminEmailMatchesCompanyDomain(adminEmail: string, companyDomain: string): boolean {
+  const email = adminEmail.trim().toLowerCase()
+  const at = email.lastIndexOf('@')
+  if (at < 0) return false
+  return email.slice(at + 1) === normalizeDomain(companyDomain)
+}
+
 type Step = 'details' | 'otp'
 
 export function RegisterPage() {
   const [step, setStep] = useState<Step>('details')
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
   const [otp, setOtp] = useState('')
   const [form, setForm] = useState({
@@ -42,23 +52,32 @@ export function RegisterPage() {
   const handleSendOtp = async (e: FormEvent) => {
     e.preventDefault()
     if (!form.admin_email.trim()) {
-      setError('Admin email is required to send an OTP.')
+      toast.error('Admin email is required to send an OTP.')
+      return
+    }
+    if (!form.company_domain.trim()) {
+      toast.error('Company domain is required.')
+      return
+    }
+    if (!adminEmailMatchesCompanyDomain(form.admin_email, form.company_domain)) {
+      toast.error(
+        `Admin email must use your company domain (@${normalizeDomain(form.company_domain)}).`,
+      )
       return
     }
     const expectedCount = Number(form.expected_employee_count)
     if (!Number.isFinite(expectedCount) || expectedCount < 1) {
-      setError('Expected employee count must be at least 1.')
+      toast.error('Expected employee count must be at least 1.')
       return
     }
     setLoading(true)
-    setError('')
     try {
       const { data } = await requestCompanyRegistrationOtp(buildOtpPayload())
       toast.success(data.message || 'OTP sent successfully.')
       setStep('otp')
       setOtp('')
     } catch (err) {
-      setError(getApiErrorMessage(err))
+      toast.error(getApiErrorMessage(err))
     } finally {
       setLoading(false)
     }
@@ -66,13 +85,12 @@ export function RegisterPage() {
 
   const handleResendOtp = async () => {
     setLoading(true)
-    setError('')
     try {
       const { data } = await requestCompanyRegistrationOtp(buildOtpPayload())
       toast.success(data.message || 'OTP sent successfully.')
       setOtp('')
     } catch (err) {
-      setError(getApiErrorMessage(err))
+      toast.error(getApiErrorMessage(err))
     } finally {
       setLoading(false)
     }
@@ -81,17 +99,22 @@ export function RegisterPage() {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     if (otp.trim().length !== 6) {
-      setError('Enter the 6-digit OTP from your email.')
+      toast.error('Enter the 6-digit OTP from your email.')
       return
     }
     const expectedCount = Number(form.expected_employee_count)
     if (!Number.isFinite(expectedCount) || expectedCount < 1) {
-      setError('Expected employee count must be at least 1.')
+      toast.error('Expected employee count must be at least 1.')
+      return
+    }
+    if (!adminEmailMatchesCompanyDomain(form.admin_email, form.company_domain)) {
+      toast.error(
+        `Admin email must use your company domain (@${normalizeDomain(form.company_domain)}).`,
+      )
       return
     }
 
     setLoading(true)
-    setError('')
     try {
       await registerCompany({
         company_name: form.company_name.trim(),
@@ -103,7 +126,7 @@ export function RegisterPage() {
       })
       setSuccess(true)
     } catch (err) {
-      setError(getApiErrorMessage(err))
+      toast.error(getApiErrorMessage(err))
     } finally {
       setLoading(false)
     }
@@ -168,8 +191,11 @@ export function RegisterPage() {
                     required
                     value={form.company_domain}
                     onChange={(e) => setForm({ ...form, company_domain: e.target.value })}
-                    placeholder="zepex.com"
+                    placeholder="bitloom.ai"
                   />
+                  <p className="text-xs text-muted-foreground">
+                    Admin email must be on this domain (e.g. you@{normalizeDomain(form.company_domain) || 'company.com'}).
+                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="admin_name">Admin name</Label>
@@ -205,9 +231,6 @@ export function RegisterPage() {
                   />
                 </div>
               </div>
-              {error && (
-                <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
-              )}
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? 'Sending OTP...' : 'Send verification OTP'}
               </Button>
@@ -237,9 +260,6 @@ export function RegisterPage() {
                   placeholder="6-digit code"
                 />
               </div>
-              {error && (
-                <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
-              )}
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? 'Submitting...' : 'Submit registration'}
               </Button>
@@ -247,10 +267,7 @@ export function RegisterPage() {
                 <button
                   type="button"
                   className="font-medium text-primary hover:underline"
-                  onClick={() => {
-                    setStep('details')
-                    setError('')
-                  }}
+                  onClick={() => setStep('details')}
                 >
                   Edit details
                 </button>
