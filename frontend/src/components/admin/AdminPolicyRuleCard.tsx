@@ -41,7 +41,9 @@ export function AdminPolicyRuleCard({
         </div>
       </div>
       <p className="text-lg font-bold text-gray-900 sm:text-right">
-        {formatCurrency(rule.max_amount, currency)}
+        {rule.is_unlimited
+          ? 'Unlimited'
+          : formatCurrency(rule.max_amount ?? 0, currency)}
       </p>
       <div className="flex items-center gap-1 sm:justify-end">
         <Button

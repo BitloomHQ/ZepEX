@@ -225,6 +225,7 @@ export const updatePolicyRule = (
     company_role?: number
     category_name?: string
     max_amount?: number | string
+    is_unlimited?: boolean
     category_description?: string
     is_active?: boolean
   },
@@ -242,6 +243,7 @@ export const createPolicyRule = (data: {
   company_role: number
   category_name: string
   max_amount: number | string
+  is_unlimited?: boolean
   category_description: string
   is_active?: boolean
 }) => api.post<PolicyRuleMutationResponse>('/tenants/policy/rules/create/', data)

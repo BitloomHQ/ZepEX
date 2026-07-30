@@ -1,9 +1,36 @@
-from .models import CompanyRole, PolicyCategoryRule
 from .models import (
     CompanyPolicy,
+    CompanyRole,
     PolicyCategoryRule,
     PolicyVersion,
 )
+
+
+def get_active_policy_version(policy):
+    if not policy:
+        return None
+    return PolicyVersion.objects.filter(
+        policy=policy,
+        status=PolicyVersion.STATUS_ACTIVE,
+        is_active=True,
+    ).first()
+
+
+def filter_admin_policy_rules(policy, queryset=None):
+    """
+    Admin list/create/import should target the active policy version.
+    If no active version exists yet, use legacy rules (policy_version=NULL).
+    """
+    qs = (
+        queryset
+        if queryset is not None
+        else PolicyCategoryRule.objects.filter(policy=policy)
+    )
+    active_version = get_active_policy_version(policy)
+    if active_version:
+        return qs.filter(policy_version=active_version), active_version
+    return qs.filter(policy_version__isnull=True), None
+
 
 def get_policy_rule_for_employee(
     employee,
@@ -20,21 +47,23 @@ def get_policy_rule_for_employee(
         category_name or ""
     ).strip().lower()
 
-    active_version = PolicyVersion.objects.filter(
-        policy=policy,
-        status=PolicyVersion.STATUS_ACTIVE,
-        is_active=True,
-    ).first()
+    active_version = get_active_policy_version(policy)
 
     if not active_version:
-        return None
-
-    base_filters = {
-        "policy": policy,
-        "policy_version": active_version,
-        "category_name__iexact": category_name,
-        "is_active": True,
-    }
+        # Fall back to legacy unversioned rules when no version is active yet.
+        base_filters = {
+            "policy": policy,
+            "policy_version__isnull": True,
+            "category_name__iexact": category_name,
+            "is_active": True,
+        }
+    else:
+        base_filters = {
+            "policy": policy,
+            "policy_version": active_version,
+            "category_name__iexact": category_name,
+            "is_active": True,
+        }
 
     # First priority: role-specific override.
     if employee.company_role_id:
@@ -74,32 +103,41 @@ def get_effective_policy_rules(company, company_role):
         is_active=True,
     ).first()
 
+    policy = CompanyPolicy.objects.filter(company=company).first()
+    active_version = get_active_policy_version(policy) if policy else None
+
+    def _rules_for_role(role):
+        qs = PolicyCategoryRule.objects.filter(
+            policy__company=company,
+            company_role=role,
+            is_active=True,
+        )
+        if active_version:
+            return qs.filter(policy_version=active_version)
+        return qs.filter(policy_version__isnull=True)
+
     employee_rules = {}
 
     if employee_role:
 
-        for rule in PolicyCategoryRule.objects.filter(
-            policy__company=company,
-            company_role=employee_role,
-            is_active=True,
-        ):
+        for rule in _rules_for_role(employee_role):
 
             employee_rules[
                 rule.category_name.lower()
             ] = {
                 "id": str(rule.id),
                 "category": rule.category_name,
-                "limit": str(rule.max_amount),
+                "limit": (
+                    "Unlimited"
+                    if rule.is_unlimited
+                    else str(rule.max_amount)
+                ),
                 "description": rule.category_description,
                 "source_role": employee_role.name,
                 "inherited": False,
             }
 
-    role_rules = PolicyCategoryRule.objects.filter(
-        policy__company=company,
-        company_role=company_role,
-        is_active=True,
-    )
+    role_rules = _rules_for_role(company_role)
 
     effective = employee_rules.copy()
 
@@ -110,7 +148,11 @@ def get_effective_policy_rules(company, company_role):
         ] = {
             "id": str(rule.id),
             "category": rule.category_name,
-            "limit": str(rule.max_amount),
+            "limit": (
+                "Unlimited"
+                if rule.is_unlimited
+                else str(rule.max_amount)
+            ),
             "description": rule.category_description,
             "source_role": company_role.name,
             "inherited": False,

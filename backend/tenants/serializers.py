@@ -507,6 +507,11 @@ class PolicyCategoryRuleSerializer(serializers.ModelSerializer):
             instance.max_amount if instance else None
         )
 
+        # Setting a concrete amount exits unlimited mode.
+        if "max_amount" in attrs and max_amount is not None:
+            attrs["is_unlimited"] = False
+            is_unlimited = False
+
         if not company_role:
             raise serializers.ValidationError({
                 "company_role": "Company role is required."
@@ -522,11 +527,22 @@ class PolicyCategoryRuleSerializer(serializers.ModelSerializer):
         if is_unlimited:
             attrs["max_amount"] = None
 
+        policy_version = attrs.get("policy_version")
+        if "policy_version" not in attrs:
+            if instance is not None:
+                policy_version = instance.policy_version
+            else:
+                policy_version = self.context.get("policy_version")
+
         duplicate = PolicyCategoryRule.objects.filter(
             policy=policy,
             company_role=company_role,
             category_name__iexact=category_name,
         )
+        if policy_version is not None:
+            duplicate = duplicate.filter(policy_version=policy_version)
+        else:
+            duplicate = duplicate.filter(policy_version__isnull=True)
 
         if instance:
             duplicate = duplicate.exclude(id=instance.id)

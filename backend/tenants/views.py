@@ -27,6 +27,7 @@ from .models import (
     CompanyPolicy,
     PolicyCategoryRule
 )
+from .policy_utils import filter_admin_policy_rules
 
 from .serializers import (
     DepartmentSerializer,
@@ -630,12 +631,15 @@ def create_policy_rule(request):
         company=company
     )
 
+    _version_rules, active_version = filter_admin_policy_rules(policy)
+
     serializer = PolicyCategoryRuleSerializer(
-    data=request.data,
-    context={
-        "policy": policy
-    }
-)
+        data=request.data,
+        context={
+            "policy": policy,
+            "policy_version": active_version,
+        },
+    )
 
     if not serializer.is_valid():
         return Response(
@@ -673,8 +677,9 @@ def create_policy_rule(request):
 
     category_name = serializer.validated_data["category_name"]
 
-    if PolicyCategoryRule.objects.filter(
-        policy=policy,
+    version_rules, active_version = filter_admin_policy_rules(policy)
+
+    if version_rules.filter(
         company_role=company_role,
         category_name__iexact=category_name,
     ).exists():
@@ -690,7 +695,8 @@ def create_policy_rule(request):
         )
 
     rule = serializer.save(
-        policy=policy
+        policy=policy,
+        policy_version=active_version,
     )
 
     create_audit_log(
@@ -741,6 +747,7 @@ def list_policy_rules(request):
     ).filter(
         policy=policy
     )
+    rules, _active_version = filter_admin_policy_rules(policy, rules)
 
     if company_role_id:
         rules = rules.filter(
@@ -2743,10 +2750,13 @@ def copy_role_policy(request):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    source_rules = PolicyCategoryRule.objects.filter(
-        policy=policy,
-        company_role=from_role,
-        is_active=True
+    source_rules, active_version = filter_admin_policy_rules(
+        policy,
+        PolicyCategoryRule.objects.filter(
+            policy=policy,
+            company_role=from_role,
+            is_active=True,
+        ),
     )
 
     if not source_rules.exists():
@@ -2763,17 +2773,23 @@ def copy_role_policy(request):
 
     for rule in source_rules:
 
-        existing = PolicyCategoryRule.objects.filter(
+        existing_qs = PolicyCategoryRule.objects.filter(
             policy=policy,
             company_role=to_role,
-            category_name__iexact=rule.category_name
-        ).first()
+            category_name__iexact=rule.category_name,
+        )
+        if active_version:
+            existing_qs = existing_qs.filter(policy_version=active_version)
+        else:
+            existing_qs = existing_qs.filter(policy_version__isnull=True)
+        existing = existing_qs.first()
 
         if existing:
 
             if overwrite_existing:
 
                 existing.max_amount = rule.max_amount
+                existing.is_unlimited = rule.is_unlimited
                 existing.category_description = rule.category_description
                 existing.is_active = rule.is_active
                 existing.save()
@@ -2788,9 +2804,11 @@ def copy_role_policy(request):
 
         PolicyCategoryRule.objects.create(
             policy=policy,
+            policy_version=active_version,
             company_role=to_role,
             category_name=rule.category_name,
             max_amount=rule.max_amount,
+            is_unlimited=rule.is_unlimited,
             category_description=rule.category_description,
             is_active=rule.is_active,
         )
@@ -2867,9 +2885,10 @@ def import_policy_rules(request):
                 ""
             ).strip()
 
-            category_name = row.get(
-                "category_name",
-                ""
+            category_name = (
+                row.get("category_name")
+                or row.get("category")
+                or ""
             ).strip()
 
             description = row.get(
@@ -2894,7 +2913,7 @@ def import_policy_rules(request):
             if not category_name:
                 errors.append({
                     "row": row_number,
-                    "message": "category_name is required."
+                    "message": "category_name (or category) is required."
                 })
                 continue
 
@@ -2925,22 +2944,32 @@ def import_policy_rules(request):
                 })
                 continue
 
-            rule, created = PolicyCategoryRule.objects.update_or_create(
-                policy=policy,
+            version_rules, active_version = filter_admin_policy_rules(policy)
+            existing = version_rules.filter(
                 company_role=company_role,
                 category_name__iexact=category_name,
-                defaults={
-                    "category_name": category_name,
-                    "category_description": description,
-                    "max_amount": max_amount,
-                    "is_active": is_active,
-                }
-            )
+            ).first()
 
-            if created:
-                created_count += 1
-            else:
+            if existing:
+                existing.category_name = category_name
+                existing.category_description = description
+                existing.max_amount = max_amount
+                existing.is_unlimited = False
+                existing.is_active = is_active
+                existing.save()
                 updated_count += 1
+            else:
+                PolicyCategoryRule.objects.create(
+                    policy=policy,
+                    policy_version=active_version,
+                    company_role=company_role,
+                    category_name=category_name,
+                    category_description=description,
+                    max_amount=max_amount,
+                    is_unlimited=False,
+                    is_active=is_active,
+                )
+                created_count += 1
 
         create_audit_log(
             company=company,
@@ -3057,10 +3086,16 @@ def download_policy_rules_template(request):
     response["Content-Disposition"] = 'attachment; filename="policy_rules_template.csv"'
 
     writer = csv.writer(response)
-    writer.writerow(["category", "max_amount"])
-    writer.writerow(["food", "1000"])
-    writer.writerow(["hotel", "5000"])
-    writer.writerow(["fuel", "3000"])
+    writer.writerow([
+        "company_role",
+        "category_name",
+        "max_amount",
+        "category_description",
+        "is_active",
+    ])
+    writer.writerow(["Employee", "food", "1000", "Meals", "true"])
+    writer.writerow(["Employee", "hotel", "5000", "Lodging", "true"])
+    writer.writerow(["Employee", "fuel", "3000", "Fuel", "true"])
 
     return response
 
@@ -3166,7 +3201,8 @@ def policy_rules_template_info(request):
         "template_name": "policy_rules_template.csv",
         "description": "Import reimbursement policy rules.",
         "required_columns": [
-            "category",
+            "company_role",
+            "category_name",
             "max_amount"
         ],
         "supported_categories": [
@@ -3188,9 +3224,9 @@ def policy_rules_template_info(request):
             "miscellaneous"
         ],
         "sample_data": [
-            {"category": "food", "max_amount": "1000"},
-            {"category": "hotel", "max_amount": "5000"},
-            {"category": "fuel", "max_amount": "3000"}
+            {"company_role": "Employee", "category_name": "food", "max_amount": "1000"},
+            {"company_role": "Employee", "category_name": "hotel", "max_amount": "5000"},
+            {"company_role": "Employee", "category_name": "fuel", "max_amount": "3000"}
         ]
     })
 
@@ -3287,7 +3323,7 @@ def download_policy_rules_template(request):
 
     writer.writerow([
         "company_role",
-        "category",
+        "category_name",
         "max_amount",
         "category_description",
         "is_active",

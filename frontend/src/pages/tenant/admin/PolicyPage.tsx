@@ -177,6 +177,7 @@ export function PolicyPage() {
         company_role: form.company_role_id,
         category_name: form.category_name,
         max_amount: form.max_amount,
+        is_unlimited: false,
         category_description: form.category_description,
         is_active: true,
       })
@@ -201,7 +202,7 @@ export function PolicyPage() {
     setEditForm({
       company_role_id: rule.company_role,
       category_name: rule.category_name,
-      max_amount: rule.max_amount,
+      max_amount: rule.max_amount ?? '',
       category_description: rule.category_description,
     })
     setError('')
@@ -218,6 +219,7 @@ export function PolicyPage() {
         company_role: editForm.company_role_id || undefined,
         category_name: editForm.category_name,
         max_amount: editForm.max_amount,
+        is_unlimited: false,
         category_description: editForm.category_description,
       })
       setEditOpen(false)

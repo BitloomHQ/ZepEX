@@ -160,7 +160,10 @@ export interface PolicyRule {
   company_role: number
   company_role_name: string
   category_name: string
-  max_amount: string
+  max_amount: string | null
+  currency?: string
+  is_unlimited?: boolean
+  effective_limit?: string
   category_description: string
   is_active: boolean
   updated_at?: string
