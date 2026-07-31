@@ -357,6 +357,10 @@ def email_ingest_receipt(request):
         status=status.HTTP_201_CREATED
     )
 
+from .services import (
+    sync_receipt_totals_for_report,
+    recalculate_report_total,
+)
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def submit_current_month_report(request):
@@ -372,7 +376,9 @@ def submit_current_month_report(request):
 
     if not profile.company_role.can_submit_expense:
         return Response(
-            {"error": "Your role is not allowed to submit expense reports."},
+            {
+                "error": "Your role is not allowed to submit expense reports."
+            },
             status=status.HTTP_403_FORBIDDEN
         )
 
@@ -390,15 +396,78 @@ def submit_current_month_report(request):
 
     except ExpenseReport.DoesNotExist:
         return Response(
-            {"error": "No draft report found for current month."},
+            {
+                "error": "No draft report found for current month."
+            },
             status=status.HTTP_404_NOT_FOUND
         )
 
+    # --------------------------------------------------
+    # Report should contain at least one receipt
+    # --------------------------------------------------
+
     if not report.receipts.exists():
         return Response(
-            {"error": "Cannot submit an empty report."},
+            {
+                "error": "Cannot submit an empty report."
+            },
             status=status.HTTP_400_BAD_REQUEST
         )
+
+    receipts = report.receipts.all()
+
+    # --------------------------------------------------
+    # AI must finish for every receipt
+    # --------------------------------------------------
+
+    processing_receipts = receipts.filter(
+        ai_status__in=[
+            ExpenseReceipt.AI_PENDING,
+            ExpenseReceipt.AI_PROCESSING,
+        ]
+    )
+
+    if processing_receipts.exists():
+        return Response(
+            {
+                "error": (
+                    "Some receipts are still being processed by AI. "
+                    "Please wait before submitting the report."
+                )
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    failed_receipts = receipts.filter(
+        ai_status__in=[
+            ExpenseReceipt.AI_FAILED,
+            ExpenseReceipt.AI_RETRY_REQUIRED,
+        ]
+    )
+
+    if failed_receipts.exists():
+        return Response(
+            {
+                "error": (
+                    "Some receipts failed AI extraction. "
+                    "Please retry them before submitting."
+                )
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # --------------------------------------------------
+    # Synchronize totals before submission
+    # --------------------------------------------------
+
+    sync_receipt_totals_for_report(report)
+    recalculate_report_total(report)
+
+    report.refresh_from_db()
+
+    # --------------------------------------------------
+    # Check policy violations
+    # --------------------------------------------------
 
     has_violation = report.receipts.filter(
         has_any_violation=True
@@ -406,8 +475,12 @@ def submit_current_month_report(request):
 
     submitted_at = timezone.now()
 
-    # CASE 1: No violation → Approved by System
+    # ==================================================
+    # CASE 1 : Auto Approve
+    # ==================================================
+
     if not has_violation:
+
         report.status = ExpenseReport.STATUS_APPROVED
         report.is_auto_approved = True
         report.auto_approved_at = submitted_at
@@ -427,7 +500,7 @@ def submit_current_month_report(request):
             "updated_at",
         ])
 
-        report.receipts.all().update(
+        report.receipts.update(
             status=ExpenseReceipt.STATUS_APPROVED
         )
 
@@ -436,8 +509,9 @@ def submit_current_month_report(request):
             action_by=profile,
             action=ApprovalHistory.ACTION_REPORT_SUBMITTED,
             comments=(
-                "Monthly expense report submitted and approved automatically by system "
-                "because all receipts satisfied company policy."
+                "Monthly expense report submitted and "
+                "approved automatically by system because "
+                "all receipts satisfied company policy."
             )
         )
 
@@ -469,7 +543,10 @@ def submit_current_month_report(request):
             status=status.HTTP_200_OK
         )
 
-    # CASE 2: Violation exists → Start Dynamic Workflow
+    # ==================================================
+    # CASE 2 : Approval Workflow
+    # ==================================================
+
     success, result = start_workflow(report)
 
     if not success:
@@ -551,7 +628,7 @@ def submit_current_month_report(request):
                 "name": approver.user.get_full_name(),
                 "email": approver.user.email,
             },
-            "report": serializer.data
+            "report": serializer.data,
         },
         status=status.HTTP_200_OK
     )

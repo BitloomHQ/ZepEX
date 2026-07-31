@@ -211,24 +211,7 @@ REST_FRAMEWORK = {
 # CELERY
 # --------------------------------------------------
 
-CELERY_BROKER_URL = os.getenv("REDIS_URL")
 
-CELERY_RESULT_BACKEND = os.getenv("REDIS_URL")
-
-CELERY_ACCEPT_CONTENT = ["json"]
-
-CELERY_TASK_SERIALIZER = "json"
-
-CELERY_RESULT_SERIALIZER = "json"
-
-CELERY_TIMEZONE = "UTC"
-
-# Run tasks inline during local dev (no Redis/Celery worker required)
-CELERY_TASK_ALWAYS_EAGER = os.getenv(
-    "CELERY_TASK_ALWAYS_EAGER",
-    "True" if DEBUG else "False",
-) == "True"
-CELERY_TASK_EAGER_PROPAGATES = True
 
 # --------------------------------------------------
 # CORS
@@ -392,3 +375,64 @@ VERIFY_COMPANY_EMAIL_DOMAIN = (
     ).lower()
     == "true"
 )
+
+import os
+
+IMAP_HOST = os.getenv("IMAP_HOST")
+IMAP_PORT = int(os.getenv("IMAP_PORT", 993))
+IMAP_EMAIL = os.getenv("IMAP_EMAIL")
+IMAP_PASSWORD = os.getenv("IMAP_PASSWORD")
+
+
+# --------------------------------------------------
+# CELERY
+# --------------------------------------------------
+
+from celery.schedules import crontab
+
+CELERY_BROKER_URL = os.getenv(
+    "CELERY_BROKER_URL",
+    os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+)
+
+CELERY_RESULT_BACKEND = os.getenv(
+    "CELERY_RESULT_BACKEND",
+    os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+)
+
+CELERY_ACCEPT_CONTENT = ["json"]
+
+CELERY_TASK_SERIALIZER = "json"
+
+CELERY_RESULT_SERIALIZER = "json"
+
+CELERY_TIMEZONE = "Asia/Kolkata"
+
+CELERY_ENABLE_UTC = True
+
+CELERY_TASK_ALWAYS_EAGER = (
+    os.getenv(
+        "CELERY_TASK_ALWAYS_EAGER",
+        "True" if DEBUG else "False",
+    )
+    == "True"
+)
+
+CELERY_TASK_EAGER_PROPAGATES = True
+
+CELERY_BEAT_SCHEDULER = (
+    "django_celery_beat.schedulers:DatabaseScheduler"
+)
+
+CELERY_BEAT_SCHEDULE = {
+    "fetch-reimbursement-emails": {
+        "task": "expenses.tasks.fetch_emails_task",
+        "schedule": 60.0,
+    },
+
+    "scheduled-external-database-sync-every-night": {
+        "task": "tenants.tasks.scheduled_external_database_sync",
+        "schedule": crontab(hour=2, minute=0),
+    },
+}
+

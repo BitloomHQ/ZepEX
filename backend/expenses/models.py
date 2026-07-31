@@ -718,4 +718,31 @@ class DuplicateReceiptLog(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.duplicate_type}: {self.original_receipt.id} -> {self.duplicate_receipt.id}"        
+        return f"{self.duplicate_type}: {self.original_receipt.id} -> {self.duplicate_receipt.id}"    
+
+
+
+class IncomingEmail(models.Model):
+    message_id = models.CharField(
+        max_length=500,
+        unique=True
+    )
+
+    sender_email = models.EmailField()
+
+    recipient_email = models.EmailField()
+
+    subject = models.CharField(
+        max_length=500
+    )
+
+    processed = models.BooleanField(
+        default=False
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True
+    )
+
+    def __str__(self):
+        return self.subject
