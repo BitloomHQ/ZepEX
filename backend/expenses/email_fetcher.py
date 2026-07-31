@@ -9,14 +9,19 @@ from .email_parser import parse_email
 logger = logging.getLogger(__name__)
 
 
+class ImapAuthError(RuntimeError):
+    """IMAP username/password rejected by the mail server."""
+
+
 class EmailFetcher:
     def __init__(self):
         self.connection = None
 
     def connect(self):
-        host = getattr(settings, "IMAP_HOST", None)
-        user = getattr(settings, "IMAP_EMAIL", None)
-        password = getattr(settings, "IMAP_PASSWORD", None)
+        host = (getattr(settings, "IMAP_HOST", None) or "").strip()
+        user = (getattr(settings, "IMAP_EMAIL", None) or "").strip()
+        # App passwords are often pasted with spaces.
+        password = (getattr(settings, "IMAP_PASSWORD", None) or "").replace(" ", "")
         port = int(getattr(settings, "IMAP_PORT", 993) or 993)
 
         if not host or not user or not password:
@@ -25,8 +30,19 @@ class EmailFetcher:
             )
 
         self.connection = imaplib.IMAP4_SSL(host, port)
-        self.connection.login(user, password)
-        logger.info("Connected to IMAP server %s", host)
+        try:
+            self.connection.login(user, password)
+        except imaplib.IMAP4.error as exc:
+            self.connection = None
+            raise ImapAuthError(
+                "IMAP login failed for "
+                f"{user}@{host}:{port}. "
+                "Check IMAP_EMAIL/IMAP_PASSWORD, enable IMAP in Zoho, "
+                "and use an application-specific password if 2FA is on. "
+                "For Zoho India accounts try IMAP_HOST=imap.zoho.in."
+            ) from exc
+
+        logger.info("Connected to IMAP server %s as %s", host, user)
 
     def disconnect(self):
         if self.connection:

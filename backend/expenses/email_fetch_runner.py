@@ -1,6 +1,6 @@
 import logging
 
-from .email_fetcher import EmailFetcher
+from .email_fetcher import EmailFetcher, ImapAuthError
 from .email_processor import process_parsed_email
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,13 @@ def run_email_fetch_once():
             "success": True,
             "count": len(emails),
             "results": results,
+        }
+    except ImapAuthError as exc:
+        logger.error("%s", exc)
+        return {
+            "success": False,
+            "error": str(exc),
+            "auth_failed": True,
         }
     except Exception:
         logger.exception("Email fetch failed.")

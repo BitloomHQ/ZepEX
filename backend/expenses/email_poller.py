@@ -42,11 +42,21 @@ def _poll_loop(interval_seconds: int):
     # Small delay so the web process finishes booting first.
     time.sleep(5)
 
+    auth_backoff_seconds = 15 * 60
+
     while True:
+        sleep_for = max(15, interval_seconds)
         try:
             result = run_email_fetch_once()
             if result.get("skipped"):
                 logger.debug("IMAP poll skipped: %s", result.get("reason"))
+            elif result.get("auth_failed"):
+                logger.error(
+                    "IMAP authentication failed. Pausing poller for %s seconds. "
+                    "Fix IMAP_EMAIL / IMAP_PASSWORD / IMAP_HOST on Render.",
+                    auth_backoff_seconds,
+                )
+                sleep_for = auth_backoff_seconds
             elif not result.get("success"):
                 logger.warning("IMAP poll failed: %s", result.get("error"))
             elif result.get("count"):
@@ -57,7 +67,7 @@ def _poll_loop(interval_seconds: int):
         except Exception:
             logger.exception("Unexpected IMAP poller error.")
 
-        time.sleep(max(15, interval_seconds))
+        time.sleep(sleep_for)
 
 
 def start_imap_poller_if_enabled():
