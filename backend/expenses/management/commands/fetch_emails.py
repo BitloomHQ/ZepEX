@@ -1,64 +1,31 @@
 from django.core.management.base import BaseCommand
 
-from expenses.email_fetcher import EmailFetcher
-from expenses.email_parser import parse_email
-from expenses.email_processor import process_parsed_email
+from expenses.email_fetch_runner import run_email_fetch_once
 
 
 class Command(BaseCommand):
-    help = "Fetch unread reimbursement emails and process receipts."
+    help = "Fetch unread reimbursement emails and process receipt attachments."
 
     def handle(self, *args, **options):
+        self.stdout.write("Fetching unread emails via IMAP...")
+        result = run_email_fetch_once()
 
-        fetcher = EmailFetcher()
-
-        try:
-            self.stdout.write("Connecting to IMAP...")
-
-            fetcher.connect()
-
-            emails = fetcher.fetch_unread_emails()
-
+        if result.get("skipped"):
             self.stdout.write(
-                f"Found {len(emails)} unread email(s)."
+                self.style.WARNING(result.get("reason") or "Skipped.")
             )
+            return
 
-            for index, message in enumerate(emails, start=1):
-
-                self.stdout.write(
-                    f"\nProcessing email {index}..."
-                )
-
-                parsed_email = parse_email(message)
-
-                self.stdout.write(
-                    f"Sender : {parsed_email['sender_email']}"
-                )
-
-                self.stdout.write(
-                    f"Subject : {parsed_email['subject']}"
-                )
-
-                self.stdout.write(
-                    f"Attachments : {len(parsed_email['attachments'])}"
-                )
-
-                result = process_parsed_email(parsed_email)
-
-                self.stdout.write(str(result))
-
+        if not result.get("success"):
             self.stdout.write(
-                self.style.SUCCESS(
-                    "\nAll unread emails processed successfully."
-                )
+                self.style.ERROR(result.get("error") or "Fetch failed.")
             )
+            return
 
-        except Exception as e:
-
-            self.stdout.write(
-                self.style.ERROR(str(e))
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Processed {result.get('count', 0)} unread email(s)."
             )
-
-        finally:
-
-            fetcher.disconnect()
+        )
+        for item in result.get("results") or []:
+            self.stdout.write(str(item))

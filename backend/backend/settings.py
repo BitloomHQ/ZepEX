@@ -65,7 +65,7 @@ INSTALLED_APPS = [
     # Project Apps
     'platform_management',
     'tenants',
-    'expenses',
+    'expenses.apps.ExpensesConfig',
     'authentication',
     'dashboards',
     'audit_logs',
@@ -382,6 +382,17 @@ IMAP_HOST = os.getenv("IMAP_HOST")
 IMAP_PORT = int(os.getenv("IMAP_PORT", 993))
 IMAP_EMAIL = os.getenv("IMAP_EMAIL")
 IMAP_PASSWORD = os.getenv("IMAP_PASSWORD")
+
+# Optional shared secret for POST /expenses/email-ingest/
+EMAIL_INGEST_SECRET = os.getenv("EMAIL_INGEST_SECRET", "")
+
+# Free-tier friendly: poll IMAP inside the web process (no Celery worker needed).
+EMAIL_IMAP_POLL_ENABLED = (
+    os.getenv("EMAIL_IMAP_POLL_ENABLED", "False").lower() == "true"
+)
+EMAIL_IMAP_POLL_INTERVAL_SECONDS = int(
+    os.getenv("EMAIL_IMAP_POLL_INTERVAL_SECONDS", "30")
+)
 
 
 # --------------------------------------------------
