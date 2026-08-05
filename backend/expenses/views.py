@@ -3,6 +3,7 @@ from datetime import date
 from rest_framework import status
 from rest_framework.decorators import (
     api_view,
+    authentication_classes,
     permission_classes,
     parser_classes
 )
@@ -31,6 +32,7 @@ from django.utils import timezone
 from .models import ApprovalHistory
 from .serializers import ExpenseReportSerializer
 from django.utils import timezone
+from django.conf import settings
 from .ai_queue import queue_receipt_ai_processing
 from .report_utils import (
     can_approve_report,
@@ -269,24 +271,45 @@ def retry_receipt_ai(request, receipt_id):
 from .email_service import ingest_forwarded_receipt_email
 
 @api_view(["POST"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 @parser_classes([MultiPartParser, FormParser])
 def email_ingest_receipt(request):
+    """
+    HTTP ingest for receipt attachments (e.g. inbound parse webhook).
 
-    sender_email = request.data.get(
-        "sender_email",
-        ""
+    Expected multipart fields:
+    - sender_email
+    - original_recipient (or recipient_email) — company reimbursement address when known
+    - subject (optional)
+    - receipt_file
+    - X-Email-Ingest-Secret header when EMAIL_INGEST_SECRET is set
+    """
+    ingest_secret = getattr(settings, "EMAIL_INGEST_SECRET", "") or ""
+    if ingest_secret:
+        provided = (
+            request.headers.get("X-Email-Ingest-Secret")
+            or request.data.get("ingest_secret")
+            or ""
+        )
+        if provided != ingest_secret:
+            return Response(
+                {"success": False, "error": "Unauthorized ingest request."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+    sender_email = str(request.data.get("sender_email", "")).lower().strip()
+    email_subject = str(request.data.get("subject", "")).strip()
+    original_recipient = str(
+        request.data.get("original_recipient")
+        or request.data.get("recipient_email")
+        or ""
     ).lower().strip()
-
-    email_subject = request.data.get(
-        "subject",
-        ""
-    )
-
     receipt_file = request.FILES.get("receipt_file")
 
     result = ingest_forwarded_receipt_email(
         sender_email=sender_email,
+        original_recipient=original_recipient,
         subject=email_subject,
         uploaded_file=receipt_file,
     )
@@ -295,16 +318,16 @@ def email_ingest_receipt(request):
         return Response(
             {
                 "success": False,
-                "error": result.get("error")
+                "error": result.get("error"),
             },
-            status=status.HTTP_400_BAD_REQUEST
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
     report = result["report"]
     submission = result["submission"]
     receipt = result["receipt"]
-    employee = receipt.employee
-    company = receipt.company
+    employee = result["employee"]
+    company = result["company"]
 
     queue_receipt_ai_processing(
         receipt_id=str(receipt.id),
@@ -325,13 +348,14 @@ def email_ingest_receipt(request):
             "email_subject": email_subject,
             "source": ExpenseSubmission.SOURCE_EMAIL,
             "sender_email": sender_email,
+            "original_recipient": original_recipient,
             "company": company.name,
             "company_role": (
                 employee.company_role.name
                 if employee.company_role else None
             ),
             "ai_status": receipt.ai_status,
-        }
+        },
     )
 
     create_audit_log(
@@ -343,7 +367,7 @@ def email_ingest_receipt(request):
             "receipt_id": str(receipt.id),
             "report_id": str(report.id),
             "ai_status": receipt.ai_status,
-        }
+        },
     )
 
     serializer = ExpenseReceiptSerializer(receipt)
@@ -358,10 +382,10 @@ def email_ingest_receipt(request):
             "receipt": serializer.data,
             "ai": {
                 "status": receipt.ai_status,
-                "message": "Receipt has been queued for AI processing."
-            }
+                "message": "Receipt has been queued for AI processing.",
+            },
         },
-        status=status.HTTP_201_CREATED
+        status=status.HTTP_201_CREATED,
     )
 
 from .services import (
