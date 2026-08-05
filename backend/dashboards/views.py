@@ -10,6 +10,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 
+from backend.platform_access.permissions import has_platform_permission
 from expenses.models import (
     ExpenseReport,
     ApprovalHistory,
@@ -31,6 +32,7 @@ from tenants.models import (
 from django.db.models import Sum
 from expenses.models import ExpenseLineItem
 from django.conf import settings
+from platform_access.decorators import platform_permission_required
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -966,13 +968,8 @@ def company_admin_dashboard(request):
     })
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
-def platform_owner_dashboard(request):
-
-    if not hasattr(request.user, "platform_owner"):
-        return Response(
-            {"error": "Only platform owner can access this dashboard."},
-            status=status.HTTP_403_FORBIDDEN
-        )
+@platform_permission_required("view_dashboard")
+def platform_dashboard(request):
 
     companies = Company.objects.all()
     reports = ExpenseReport.objects.all()
@@ -1040,12 +1037,16 @@ def platform_owner_dashboard(request):
 @permission_classes([IsAuthenticated])
 def dashboard_router(request):
 
-    # -----------------------------
-    # Platform Owner
-    # -----------------------------
-    if hasattr(request.user, "platform_owner"):
-        return platform_owner_dashboard(request)
+    profile = request.user.profile
 
+    if has_platform_permission(
+        profile=profile,
+        permission_code="view_dashboard",
+    ):
+        return platform_dashboard(request)
+
+    if profile.role == "COMPANY_ADMIN":
+        return company_admin_dashboard(request)
     profile = request.user.profile
 
     # -----------------------------
