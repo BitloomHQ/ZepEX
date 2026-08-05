@@ -1,6 +1,11 @@
 from tenants.models import CompanyPolicy
 from tenants.policy_utils import get_policy_rule_for_employee
-from .models import ExpenseReceipt
+
+from .models import ExpenseReceipt, ExpenseAuditTrail
+from .audit_services import create_audit_log
+from .gemini_policy_validator import (
+    validate_receipt_against_policy,
+)
 
 
 def validate_receipt_policy(receipt: ExpenseReceipt):
@@ -44,6 +49,9 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
 
     line_items_count = receipt.line_items.count()
 
+    # Cache Gemini response so each category is evaluated only once
+    ai_results = {}
+
     for item in receipt.line_items.all():
 
         item.is_violating = False
@@ -54,9 +62,9 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
             category_name=item.category,
         )
 
-        # -----------------------------------
+        # =====================================================
         # No Policy Found
-        # -----------------------------------
+        # =====================================================
 
         if not rule:
 
@@ -77,79 +85,139 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
             receipt.has_amount_violation = True
             violations.append(reason)
 
+            item.save(update_fields=[
+                "is_violating",
+                "violation_reason",
+            ])
+
+            continue
+
+        # =====================================================
+        # AI Policy Validation (ONE Gemini call per category)
+        # =====================================================
+
+        cache_key = rule.category.name
+
+        if cache_key not in ai_results:
+
+            ai_results[cache_key] = validate_receipt_against_policy(
+                receipt=receipt,
+                rule=rule,
+            )
+
+        item_result = ai_results[cache_key].get(
+            item.description,
+            {
+                "allowed": True,
+                "reason": "",
+            },
+        )
+
+        if not item_result.get("allowed", True):
+
+            reason = item_result.get(
+                "reason",
+                "This expense item is not allowed by company policy.",
+            )
+
+            item.is_violating = True
+            item.violation_reason = reason
+
+            receipt.has_amount_violation = True
+            violations.append(reason)
+
+            item.save(update_fields=[
+                "is_violating",
+                "violation_reason",
+            ])
+
+            continue
+
+        # =====================================================
+        # Currency Conversion
+        # =====================================================
+
+        if (
+            line_items_count > 1
+            and receipt.original_amount
+        ):
+
+            converted_item_amount = (
+                item.amount / receipt.original_amount
+            ) * receipt.company_amount
+
         else:
 
-            # -----------------------------------
-            # Company Currency Amount
-            # -----------------------------------
+            converted_item_amount = receipt.company_amount
 
-            if (
-                line_items_count > 1
-                and receipt.original_amount
-            ):
-                converted_item_amount = (
-                    item.amount / receipt.original_amount
-                ) * receipt.company_amount
+        # =====================================================
+        # Unlimited Policy
+        # =====================================================
 
-            else:
-                converted_item_amount = receipt.company_amount
+        if rule.is_unlimited:
 
-            # -----------------------------------
-            # Unlimited Policy
-            # -----------------------------------
+            item.save(update_fields=[
+                "is_violating",
+                "violation_reason",
+            ])
 
-            if rule.is_unlimited:
+            continue
 
-                pass
+        # =====================================================
+        # Invalid Policy
+        # =====================================================
 
-            # -----------------------------------
-            # Invalid Policy
-            # -----------------------------------
+        if rule.max_amount is None:
 
-            elif rule.max_amount is None:
+            reason = (
+                f"{item.category}: Policy is invalid because "
+                "no maximum amount is configured."
+            )
 
-                reason = (
-                    f"{item.category}: Policy is invalid because "
-                    "no maximum amount is configured."
-                )
+            item.is_violating = True
+            item.violation_reason = reason
 
-                item.is_violating = True
-                item.violation_reason = reason
+            receipt.has_amount_violation = True
+            violations.append(reason)
 
-                receipt.has_amount_violation = True
-                violations.append(reason)
+            item.save(update_fields=[
+                "is_violating",
+                "violation_reason",
+            ])
 
-            # -----------------------------------
-            # Amount Violation
-            # -----------------------------------
+            continue
 
-            elif converted_item_amount > rule.max_amount:
+        # =====================================================
+        # Amount Validation
+        # =====================================================
 
-                reason = (
-                    f"{item.category}: "
-                    f"{converted_item_amount:.2f} "
-                    f"{company_currency} exceeds the allowed limit of "
-                    f"{rule.max_amount} {rule.currency}. "
-                    f"Reason: "
-                    f"{rule.policy_reason or 'No policy reason provided.'} "
-                    f"Original Amount: "
-                    f"{item.amount} {receipt.original_currency}."
-                )
+        if converted_item_amount > rule.max_amount:
 
-                item.is_violating = True
-                item.violation_reason = reason
+            reason = (
+                f"{item.category}: "
+                f"{converted_item_amount:.2f} "
+                f"{company_currency} exceeds the allowed limit of "
+                f"{rule.max_amount} {rule.currency}. "
+                f"Reason: "
+                f"{rule.policy_reason or 'No policy reason provided.'} "
+                f"Original Amount: "
+                f"{item.amount} {receipt.original_currency}."
+            )
 
-                receipt.has_amount_violation = True
-                violations.append(reason)
+            item.is_violating = True
+            item.violation_reason = reason
+
+            receipt.has_amount_violation = True
+            violations.append(reason)
 
         item.save(update_fields=[
             "is_violating",
             "violation_reason",
         ])
 
-    # -----------------------------------
-    # Final Report Status
-    # -----------------------------------
+    # =====================================================
+    # Final Receipt Status
+    # =====================================================
 
     if violations:
 
@@ -169,6 +237,24 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
         "has_amount_violation",
         "has_any_violation",
     ])
+    create_audit_log(
+    receipt=receipt,
+    action=ExpenseAuditTrail.ACTION_POLICY_VALIDATED,
+    remarks=(
+        "Policy validation failed."
+        if violations
+        else "Policy validation passed."
+    ),
+    metadata={
+        "violations": violations,
+        "line_items_checked": receipt.line_items.count(),
+        "status": (
+            "FAILED"
+            if violations
+            else "PASSED"
+        ),
+    },
+)
 
     return {
         "success": True,

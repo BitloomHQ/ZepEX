@@ -70,6 +70,7 @@ INSTALLED_APPS = [
     'dashboards',
     'audit_logs',
     "drf_spectacular",
+    "platform_access",
 ]
 
 # --------------------------------------------------

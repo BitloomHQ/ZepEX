@@ -1,3 +1,5 @@
+import profile
+
 from django.shortcuts import render
 
 # Create your views here.
@@ -42,7 +44,7 @@ from expenses.serializers import ApprovalWorkflowSerializer
 from django.utils import timezone
 from tenants.email_utils import send_company_registration_otp
 from django.conf import settings
-
+from platform_access.models import PlatformAdmin
 from platform_management.email_service import (
     send_company_approved_email,
     send_company_rejected_email,
@@ -51,8 +53,7 @@ from platform_management.email_service import (
 from platform_management.domain_validator import (
     validate_registration_admin_email,
 )
-
-
+from platform_access.decorators import platform_permission_required
 def _registration_email_validation_response(admin_email, company_domain, *, verify_domain):
     """Return a 400 Response when registration email/domain checks fail."""
     ok, message, details, error_code = validate_registration_admin_email(
@@ -171,12 +172,9 @@ def create_company_request(request):
         serializer.errors,
         status=status.HTTP_400_BAD_REQUEST,
     )
-
 @api_view(["GET"])
-@permission_classes([
-    IsAuthenticated,
-    IsPlatformOwner
-])
+@permission_classes([IsAuthenticated])
+@platform_permission_required("view_companies")
 def list_company_requests(request):
 
     requests_data = CompanyRegistrationRequest.objects.exclude(
@@ -198,10 +196,8 @@ from tenants.views import generate_employee_password
 from django.db import IntegrityError, transaction
 from tenants.role_utils import ensure_default_company_roles
 @api_view(["POST"])
-@permission_classes([
-    IsAuthenticated,
-    IsPlatformOwner,
-])
+@permission_classes([IsAuthenticated])
+@platform_permission_required("approve_company")
 @transaction.atomic
 def approve_company_request(request, request_id):
 
@@ -432,7 +428,17 @@ def approve_company_request(request, request_id):
             invite_email_sent=False,
             invite_email_sent_at=None,
         )
+        # =====================================================
+        # Create Platform Owner
+        # =====================================================
 
+        PlatformAdmin.objects.create(
+            company=company,
+            user=profile,
+            is_owner=True,
+            is_active=True,
+            created_by=profile,
+        )
         # =====================================================
         # Mark registration request approved
         # =====================================================
@@ -592,10 +598,8 @@ def approve_company_request(request, request_id):
         status=status.HTTP_201_CREATED,
     )
 @api_view(["POST"])
-@permission_classes([
-    IsAuthenticated,
-    IsPlatformOwner
-])
+@permission_classes([IsAuthenticated])
+@platform_permission_required("reject_company")
 def reject_company_request(request, request_id):
 
     try:
@@ -670,10 +674,8 @@ def reject_company_request(request, request_id):
 
 from tenants.serializers import CompanySerializer
 @api_view(["GET"])
-@permission_classes([
-    IsAuthenticated,
-    IsPlatformOwner
-])
+@permission_classes([IsAuthenticated])
+@platform_permission_required("view_companies")
 def company_list(request):
 
     companies = Company.objects.filter(
@@ -692,10 +694,8 @@ def company_list(request):
 
 
 @api_view(["GET"])
-@permission_classes([
-    IsAuthenticated,
-    IsPlatformOwner
-])
+@permission_classes([IsAuthenticated])
+@platform_permission_required("view_companies")
 def pending_company_list(request):
 
     companies = Company.objects.filter(
@@ -713,10 +713,8 @@ def pending_company_list(request):
     })
 from audit_logs.utils import create_audit_log
 @api_view(["PATCH"])
-@permission_classes([
-    IsAuthenticated,
-    IsPlatformOwner
-])
+@permission_classes([IsAuthenticated])
+@platform_permission_required("manage_companies")
 def deactivate_company(request, company_id):
 
     try:
@@ -754,10 +752,8 @@ def deactivate_company(request, company_id):
     })
 
 @api_view(["PATCH"])
-@permission_classes([
-    IsAuthenticated,
-    IsPlatformOwner
-])
+@permission_classes([IsAuthenticated])
+@platform_permission_required("manage_companies")
 def activate_company(request, company_id):
 
     try:
@@ -796,17 +792,11 @@ def activate_company(request, company_id):
     })
 from tenants.models import Company
 @api_view(["DELETE"])
-@permission_classes([
-    IsAuthenticated,
-    IsPlatformOwner
-])
+@permission_classes([IsAuthenticated])
+@platform_permission_required("delete_company")
 def delete_company(request, company_id):
 
-    if not hasattr(request.user, "platform_owner"):
-        return Response(
-            {"error": "Only platform owner can delete companies."},
-            status=status.HTTP_403_FORBIDDEN
-        )
+    
 
     try:
         company = Company.objects.get(id=company_id)
@@ -831,7 +821,8 @@ def delete_company(request, company_id):
     })
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated, IsPlatformOwner])
+@permission_classes([IsAuthenticated])
+@platform_permission_required("view_company_details")
 def platform_company_details(request, company_id):
 
     try:
@@ -1209,10 +1200,8 @@ from .models import PlatformSettings
 
 
 @api_view(["GET"])
-@permission_classes([
-    IsAuthenticated,
-    IsPlatformOwner
-])
+@permission_classes([IsAuthenticated])
+@platform_permission_required("manage_platform_settings")
 def platform_settings(request):
 
     settings_obj, created = PlatformSettings.objects.get_or_create(
@@ -1224,10 +1213,8 @@ def platform_settings(request):
     return Response(serializer.data)
 
 @api_view(["PATCH"])
-@permission_classes([
-    IsAuthenticated,
-    IsPlatformOwner
-])
+@permission_classes([IsAuthenticated])
+@platform_permission_required("manage_platform_settings")
 def update_platform_settings(request):
 
     settings_obj, created = PlatformSettings.objects.get_or_create(

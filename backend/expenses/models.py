@@ -308,6 +308,11 @@ class ExpenseReceipt(models.Model):
     ai_retry_count = models.IntegerField(
         default=0
     )
+    ai_confidence = models.DecimalField(
+    max_digits=4,
+    decimal_places=2,
+    default=0,
+    )
 
     policy_violation_reason = models.TextField(
         blank=True,
@@ -353,6 +358,7 @@ class ExpenseReceipt(models.Model):
         default="INR"
     )
 
+
     # -----------------------------
     # Company Reimbursement Currency
     # -----------------------------
@@ -367,6 +373,17 @@ class ExpenseReceipt(models.Model):
         max_length=3,
         default="INR"
     )
+
+    receipt_fingerprint = models.JSONField(
+    default=dict,
+    blank=True,
+)
+
+    fingerprint_hash = models.CharField(
+    max_length=255,
+    blank=True,
+    db_index=True,
+)
 
     # -----------------------------
     # Exchange Information
@@ -417,14 +434,37 @@ class ExpenseReceipt(models.Model):
         blank=True,
         null=True
     )
+
+    linked_receipt = models.ForeignKey(
+    "self",
+    on_delete=models.SET_NULL,
+    null=True,
+    blank=True,
+    related_name="related_receipts",
+)
+
+reference_number = models.CharField(
+    max_length=150,
+    blank=True,
+)
+
+reference_type = models.CharField(
+    max_length=50,
+    blank=True,
+)
+
+linked_reference_number = models.CharField(
+    max_length=150,
+    blank=True,
+)
     
 
-    class Meta:
+class Meta:
         ordering = [
             "-created_at",
         ]
 
-    def __str__(self):
+def __str__(self):
         return (
             f"{self.employee.user.email} - "
             f"{self.vendor_name or 'Receipt'} - "
@@ -477,10 +517,15 @@ class ExpenseLineItem(models.Model):
         blank=True,
         null=True
     )
+    subcategory = models.CharField(
+    max_length=100,
+    blank=True,
+)
 
     created_at = models.DateTimeField(
         auto_now_add=True
     )
+    
 
     def __str__(self):
         return f"{self.category} - {self.amount}"
@@ -746,3 +791,120 @@ class IncomingEmail(models.Model):
 
     def __str__(self):
         return self.subject
+
+class ExpenseAttachment(models.Model):
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+
+    line_item = models.ForeignKey(
+        ExpenseLineItem,
+        on_delete=models.CASCADE,
+        related_name="attachments",
+    )
+
+    receipt = models.ForeignKey(
+        ExpenseReceipt,
+        on_delete=models.CASCADE,
+        related_name="attachments",
+    )
+
+    file = models.FileField(
+        upload_to="expense_attachments/%Y/%m/%d/",
+    )
+
+    attachment_type = models.CharField(
+        max_length=50,
+        default="receipt",
+    )
+
+    uploaded_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    class Meta:
+        ordering = [
+            "-uploaded_at",
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.attachment_type} - "
+            f"{self.line_item.description}"
+        )
+
+class ExpenseAuditTrail(models.Model):
+
+    ACTION_RECEIPT_UPLOADED = "RECEIPT_UPLOADED"
+    ACTION_AI_STARTED = "AI_STARTED"
+    ACTION_AI_COMPLETED = "AI_COMPLETED"
+    ACTION_LINE_ITEMS_CREATED = "LINE_ITEMS_CREATED"
+    ACTION_DUPLICATE_CHECK = "DUPLICATE_CHECK"
+    ACTION_RECEIPT_LINKED = "RECEIPT_LINKED"
+    ACTION_POLICY_VALIDATED = "POLICY_VALIDATED"
+    ACTION_APPROVAL_STARTED = "APPROVAL_STARTED"
+    ACTION_APPROVED = "APPROVED"
+    ACTION_REJECTED = "REJECTED"
+    ACTION_PAID = "PAID"
+
+    ACTION_CHOICES = (
+        (ACTION_RECEIPT_UPLOADED, "Receipt Uploaded"),
+        (ACTION_AI_STARTED, "AI Started"),
+        (ACTION_AI_COMPLETED, "AI Completed"),
+        (ACTION_LINE_ITEMS_CREATED, "Line Items Created"),
+        (ACTION_DUPLICATE_CHECK, "Duplicate Check"),
+        (ACTION_RECEIPT_LINKED, "Receipt Linked"),
+        (ACTION_POLICY_VALIDATED, "Policy Validated"),
+        (ACTION_APPROVAL_STARTED, "Approval Started"),
+        (ACTION_APPROVED, "Approved"),
+        (ACTION_REJECTED, "Rejected"),
+        (ACTION_PAID, "Paid"),
+    )
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+
+    receipt = models.ForeignKey(
+        ExpenseReceipt,
+        on_delete=models.CASCADE,
+        related_name="audit_logs",
+    )
+
+    action = models.CharField(
+        max_length=100,
+        choices=ACTION_CHOICES,
+    )
+
+    performed_by = models.ForeignKey(
+        UserProfile,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+
+    remarks = models.TextField(
+        blank=True,
+    )
+
+    metadata = models.JSONField(
+        default=dict,
+        blank=True,
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    class Meta:
+        ordering = [
+            "-created_at",
+        ]
+
+    def __str__(self):
+        return f"{self.receipt.id} - {self.action}"

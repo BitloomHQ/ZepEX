@@ -14,7 +14,18 @@ from tenants.role_utils import permissions_for_profile
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
 from django.core.mail import EmailMultiAlternatives
+from platform_access.models import PlatformAdmin
 
+from django.contrib.auth.tokens import default_token_generator
+from django.utils.http import (
+    urlsafe_base64_encode,
+    urlsafe_base64_decode,
+)
+from django.utils.encoding import force_bytes, force_str
+
+from django.core.mail import EmailMultiAlternatives
+from django.template.loader import render_to_string
+from django.utils.html import strip_tags
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
@@ -24,17 +35,39 @@ def login_api(request):
     if not serializer.is_valid():
         return Response(
             serializer.errors,
-            status=status.HTTP_400_BAD_REQUEST
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
     user = serializer.validated_data["user"]
 
-    token, created = Token.objects.get_or_create(
-        user=user
-    )
+    token, created = Token.objects.get_or_create(user=user)
 
-    if hasattr(user, "platform_owner"):
-        system_role = "PLATFORM_OWNER"
+    platform_admin = None
+
+    # -------------------------------------------------
+    # Check Platform Admin / Platform Owner
+    # -------------------------------------------------
+
+    try:
+        platform_admin = (
+            PlatformAdmin.objects
+            .prefetch_related("permissions__permission")
+            .get(
+                user=user.profile,
+                is_active=True,
+            )
+        )
+    except Exception:
+        platform_admin = None
+
+    if platform_admin:
+
+        system_role = (
+            "PLATFORM_OWNER"
+            if platform_admin.is_owner
+            else "PLATFORM_ADMIN"
+        )
+
         company_role = None
         company_role_id = None
         company = None
@@ -52,14 +85,57 @@ def login_api(request):
             "can_view_audit_logs": True,
         }
 
+        if platform_admin.is_owner:
+
+            platform_permissions = [
+                "view_dashboard",
+                "view_companies",
+                "approve_company",
+                "reject_company",
+                "edit_company",
+                "delete_company",
+                "view_platform_users",
+                "create_platform_user",
+                "edit_platform_user",
+                "delete_platform_user",
+                "view_company_users",
+                "create_company_user",
+                "edit_company_user",
+                "delete_company_user",
+                "manage_departments",
+                "manage_policies",
+                "manage_workflow",
+                "view_reports",
+                "export_reports",
+                "view_audit_logs",
+                "manage_billing",
+                "manage_settings",
+            ]
+
+        else:
+
+            platform_permissions = list(
+                platform_admin.permissions.values_list(
+                    "permission__code",
+                    flat=True,
+                )
+            )
+
     else:
+
+        # -------------------------------------------------
+        # Company User
+        # -------------------------------------------------
+
         try:
             profile = user.profile
 
         except Exception:
             return Response(
-                {"error": "User profile not found."},
-                status=status.HTTP_400_BAD_REQUEST
+                {
+                    "error": "User profile not found."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         system_role = profile.role
@@ -78,18 +154,22 @@ def login_api(request):
 
         company = {
             "id": str(profile.company.id),
-            "name": profile.company.name
+            "name": profile.company.name,
         }
 
         department = (
             {
                 "id": str(profile.department.id),
-                "name": profile.department.name
+                "name": profile.department.name,
             }
-            if profile.department else None
+            if profile.department
+            else None
         )
 
+        platform_permissions = []
+
         if profile.role == "COMPANY_ADMIN":
+
             permissions = {
                 "can_upload_receipt": True,
                 "can_submit_expense": True,
@@ -103,22 +183,27 @@ def login_api(request):
             }
 
         else:
+
             permissions = {
                 "can_upload_receipt": (
                     profile.company_role.can_upload_receipt
-                    if profile.company_role else False
+                    if profile.company_role
+                    else False
                 ),
                 "can_submit_expense": (
                     profile.company_role.can_submit_expense
-                    if profile.company_role else False
+                    if profile.company_role
+                    else False
                 ),
                 "can_approve_expense": (
                     profile.company_role.can_approve_expense
-                    if profile.company_role else False
+                    if profile.company_role
+                    else False
                 ),
                 "can_mark_paid": (
                     profile.company_role.can_mark_paid
-                    if profile.company_role else False
+                    if profile.company_role
+                    else False
                 ),
                 "can_manage_users": False,
                 "can_manage_policy": False,
@@ -129,33 +214,45 @@ def login_api(request):
 
     redirect_map = {
         "PLATFORM_OWNER": "/platform-dashboard",
+        "PLATFORM_ADMIN": "/platform-dashboard",
         "COMPANY_ADMIN": "/company-admin-dashboard",
         "EMPLOYEE": "/employee-dashboard",
         "MANAGER": "/approver-dashboard",
         "ACCOUNTS": "/payment-dashboard",
     }
 
-    return Response({
-        "message": "Login successful.",
-        "token": token.key,
-        "user": {
-            "id": user.id,
-            "email": user.email,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
+    return Response(
+        {
+            "message": "Login successful.",
+            "token": token.key,
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
 
-            "system_role": system_role,
+                "system_role": system_role,
 
-            "company_role": company_role,
-            "company_role_id": company_role_id,
+                "is_platform_admin": platform_admin is not None,
+                "is_platform_owner": (
+                    platform_admin.is_owner
+                    if platform_admin
+                    else False
+                ),
 
-            "company": company,
-            "department": department,
+                "platform_permissions": platform_permissions,
 
-            "permissions": permissions,
-        },
-        "redirect_to": redirect_map.get(system_role)
-    })
+                "company_role": company_role,
+                "company_role_id": company_role_id,
+
+                "company": company,
+                "department": department,
+
+                "permissions": permissions,
+            },
+            "redirect_to": redirect_map.get(system_role),
+        }
+    )
 from rest_framework.permissions import IsAuthenticated
 from .serializers import ChangePasswordSerializer
 
@@ -210,137 +307,114 @@ from .serializers import (
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def forgot_password_api(request):
+
     serializer = ForgotPasswordSerializer(data=request.data)
 
-    if not serializer.is_valid():
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    serializer.is_valid(raise_exception=True)
 
     email = serializer.validated_data["email"]
 
     try:
         user = User.objects.get(email=email)
-    except User.DoesNotExist:
-        return Response(
-            {"message": "If this email exists, an OTP has been sent."},
-            status=status.HTTP_200_OK
+
+        uid = urlsafe_base64_encode(
+            force_bytes(user.pk)
         )
 
-    PasswordResetOTP.objects.filter(
-        user=user,
-        is_used=False
-    ).update(is_used=True)
+        token = default_token_generator.make_token(user)
 
-    otp = str(random.randint(100000, 999999))
+        reset_link = (
+            f"{settings.FRONTEND_URL}"
+            f"/reset-password?uid={uid}&token={token}"
+        )
 
-    PasswordResetOTP.objects.create(
-        user=user,
-        otp=otp
-    )
+        html = render_to_string(
+            "emails/reset_password.html",
+            {
+                "user": user,
+                "reset_link": reset_link,
+            },
+        )
 
-    html_content = render_to_string(
-        "emails/password_reset_otp.html",
+        text = strip_tags(html)
+
+        email_message = EmailMultiAlternatives(
+            subject="Reset your ZepEx password",
+            body=text,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            to=[email],
+        )
+
+        email_message.attach_alternative(
+            html,
+            "text/html",
+        )
+
+        email_message.send()
+
+    except User.DoesNotExist:
+        pass
+
+    return Response(
         {
-            "otp": otp,
+            "message": "If the email exists, a password reset link has been sent."
         }
     )
 
-    text_content = strip_tags(html_content)
-
-    email_message = EmailMultiAlternatives(
-        subject="ZepEx Password Reset OTP",
-        body=text_content,
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        to=[email],
-    )
-
-    email_message.attach_alternative(
-        html_content,
-        "text/html"
-    )
-
-    email_message.send()
-
-    return Response({
-        "message": "Password reset OTP sent successfully."
-    })
-
-@api_view(["POST"])
-@permission_classes([AllowAny])
-def verify_reset_otp_api(request):
-    serializer = VerifyResetOTPSerializer(data=request.data)
-
-    if not serializer.is_valid():
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    email = serializer.validated_data["email"]
-    otp = serializer.validated_data["otp"]
-
-    try:
-        user = User.objects.get(email=email)
-        reset_otp = PasswordResetOTP.objects.filter(
-            user=user,
-            otp=otp,
-            is_used=False
-        ).latest("created_at")
-    except Exception:
-        return Response(
-            {"error": "Invalid OTP."},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-
-    if reset_otp.is_expired():
-        return Response(
-            {"error": "OTP expired."},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-
-    return Response({
-        "message": "OTP verified successfully."
-    })
 
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def reset_password_api(request):
-    serializer = ResetPasswordSerializer(data=request.data)
 
-    if not serializer.is_valid():
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    uid = request.data.get("uid")
+    token = request.data.get("token")
+    new_password = request.data.get("new_password")
 
-    email = serializer.validated_data["email"]
-    otp = serializer.validated_data["otp"]
-    new_password = serializer.validated_data["new_password"]
-
-    try:
-        user = User.objects.get(email=email)
-        reset_otp = PasswordResetOTP.objects.filter(
-            user=user,
-            otp=otp,
-            is_used=False
-        ).latest("created_at")
-    except Exception:
+    if not uid or not token or not new_password:
         return Response(
-            {"error": "Invalid OTP."},
-            status=status.HTTP_400_BAD_REQUEST
+            {
+                "error": "uid, token and new_password are required."
+            },
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
-    if reset_otp.is_expired():
+    try:
+        uid = force_str(
+            urlsafe_base64_decode(uid)
+        )
+
+        user = User.objects.get(pk=uid)
+
+    except Exception:
         return Response(
-            {"error": "OTP expired."},
-            status=status.HTTP_400_BAD_REQUEST
+            {
+                "error": "Invalid reset link."
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not default_token_generator.check_token(
+        user,
+        token,
+    ):
+        return Response(
+            {
+                "error": "Reset link is invalid or expired."
+            },
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
     user.set_password(new_password)
     user.save()
 
-    reset_otp.is_used = True
-    reset_otp.save(update_fields=["is_used"])
-
     Token.objects.filter(user=user).delete()
 
-    return Response({
-        "message": "Password reset successfully. Please login again."
-    })
+    return Response(
+        {
+            "message": "Password reset successfully. Please login again."
+        }
+    )
 
 
 from rest_framework.parsers import MultiPartParser, FormParser

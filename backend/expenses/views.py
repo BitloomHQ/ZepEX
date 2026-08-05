@@ -13,6 +13,7 @@ from rest_framework.response import Response
 from tenants.models import Company, UserProfile, CompanyRole, Department
 
 from .models import (
+    ExpenseAuditTrail,
     ExpenseReport,
     ExpenseSubmission,
     ExpenseReceipt,
@@ -109,6 +110,12 @@ def upload_receipt(request):
         receipt_file=receipt_file,
         status=ExpenseReceipt.STATUS_AI_PROCESSING
     )
+    create_audit_log(
+    receipt=receipt,
+    action=ExpenseAuditTrail.ACTION_RECEIPT_UPLOADED,
+    performed_by=profile,
+    remarks="Receipt uploaded manually.",
+)
 
     create_audit_log(
         company=profile.company,
@@ -1941,7 +1948,9 @@ def approve_report_step(request, report_id):
             ),
             "notes": notes,
             "steps_skipped": steps_skipped,
-        }
+            "workflow_completed": result.get("completed", False),
+            "report_status": report.status,
+        },
     )
 
     if result.get("completed"):
@@ -2102,24 +2111,26 @@ def reject_report_step(request, report_id):
         action_by=profile,
         message=f"{actor_role} rejected expense report {report.id}.",
         metadata={
-            "report_id": str(report.id),
-            "employee_email": report.employee.user.email,
-            "rejected_by": profile.user.email,
-            "actor_role": actor_role,
-            "step_order": current_step.step_order,
-            "approver_type": current_step.approver_type,
-            "approver_role": (
-                current_step.approver_role.name
-                if current_step.approver_role else None
-            ),
-            "specific_user": (
-                current_step.specific_user.user.email
-                if current_step.specific_user else None
-            ),
-            "reason": notes,
-        }
-    )
-
+    "report_id": str(report.id),
+    "employee_email": report.employee.user.email,
+    "rejected_by": profile.user.email,
+    "actor_role": actor_role,
+    "step_order": current_step.step_order,
+    "approver_type": current_step.approver_type,
+    "approver_role": (
+        current_step.approver_role.name
+        if current_step.approver_role
+        else None
+    ),
+    "specific_user": (
+        current_step.specific_user.user.email
+        if current_step.specific_user
+        else None
+    ),
+    "reason": notes,
+    "workflow_completed": True,
+    "report_status": report.status,
+})
     send_workflow_status_email(
         report=report,
         subject="Reimbursement Report Rejected",
