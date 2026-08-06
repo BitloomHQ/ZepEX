@@ -33,19 +33,28 @@ export function receiptDisplayCurrency(receipt: Receipt): string {
   return receipt.company_currency ?? receipt.original_currency ?? receipt.currency
 }
 
-/** Report totals are summed in each receipt's company (reimbursement) currency. */
+/** Report totals use the company finance base currency whenever available. */
 export function reportDisplayCurrency(report: ExpenseReport): string {
+  if (report.company_currency) {
+    return report.company_currency.toUpperCase()
+  }
+
+  // Prefer completed receipts that actually contribute amount.
   for (const receipt of report.receipts ?? []) {
-    if (receipt.company_currency) {
-      return receipt.company_currency
+    const amount = Number(receipt.company_amount ?? receipt.total_amount ?? 0)
+    if (receipt.company_currency && Number.isFinite(amount) && amount > 0) {
+      return receipt.company_currency.toUpperCase()
     }
   }
+
   for (const receipt of report.receipts ?? []) {
     const currency = receipt.original_currency ?? receipt.currency
-    if (currency) {
-      return currency
+    const amount = Number(receipt.original_amount ?? receipt.total_amount ?? 0)
+    if (currency && Number.isFinite(amount) && amount > 0) {
+      return currency.toUpperCase()
     }
   }
+
   return 'USD'
 }
 

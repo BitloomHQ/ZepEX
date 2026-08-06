@@ -33,6 +33,7 @@ from .views import (
 
 urlpatterns = [
     path("upload/", upload_receipt, name="upload-receipt"),
+    path("upload-receipt/", upload_receipt, name="upload-receipt-v2"),
     path(
         "receipts/<uuid:receipt_id>/retry-ai/",
         retry_receipt_ai,

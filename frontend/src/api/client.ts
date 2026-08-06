@@ -13,7 +13,6 @@ export const api = axios.create({
 const PUBLIC_API_PATHS = [
   '/auth/login/',
   '/auth/forgot-password/',
-  '/auth/verify-reset-otp/',
   '/auth/reset-password/',
   '/platform/register-company/',
   '/platform/company-requests/request-otp/',
@@ -44,7 +43,11 @@ api.interceptors.response.use(
       localStorage.removeItem('zepex_user')
       const path = window.location.pathname
       const isPublicPage =
-        path === '/login' || path === '/platform/login' || path === '/register'
+        path === '/login' ||
+        path === '/platform/login' ||
+        path === '/register' ||
+        path === '/forgot-password' ||
+        path === '/reset-password'
       if (!isPublicPage) {
         window.location.href = path.startsWith('/platform') ? '/platform/login' : '/login'
       }

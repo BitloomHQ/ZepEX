@@ -25,6 +25,7 @@ class AuditLog(models.Model):
     ("EMAIL_FETCH_TRIGGERED", "Email Fetch Triggered"),
 
     ("LINE_ITEM_DELETED", "Line Item Deleted"),
+    ("RECEIPT_DELETED", "Receipt Deleted"),
     ("POLICY_UPDATED", "Policy Updated"),
     ("USER_UPDATED", "User Updated"),
     ("USER_DEACTIVATED", "User Deactivated"),

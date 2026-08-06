@@ -37,12 +37,10 @@ import {
 } from '@/components/ui/dialog'
 import { TableShimmer } from '@/components/ui/shimmer'
 import type { ExpenseReport } from '@/types'
-import { formatCurrency } from '@/lib/utils'
 import { countPendingAiReceipts } from '@/lib/receiptAi'
 import { fireImportConfetti } from '@/lib/confetti'
 import {
   mergeServerReportIntoReports,
-  mergeUploadIntoReports,
   normalizeCurrentMonthReport,
 } from '@/lib/expenseReport'
 import {
@@ -89,8 +87,8 @@ function MyExpenseExpandedPanel({
         </p>
       ) : (
         <div className="space-y-3">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Extracted receipts
+          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500">
+            Receipts in this claim
           </p>
           {report.receipts.map((receipt) => (
             <ReceiptExpenseCard
@@ -207,76 +205,33 @@ export function ExpensesPage() {
   const runBackgroundUploads = async (files: File[]) => {
     setBackgroundUploads((count) => count + files.length)
 
-    const errors: string[] = []
-    const violationMessages: string[] = []
-    let uploadedCount = 0
-    const conversionMessages: string[] = []
-
     try {
-      for (const file of files) {
+      let reportId =
+        reports.find((report) => report.status === 'DRAFT')?.id || reports[0]?.id || ''
+
+      if (!reportId) {
         try {
-          const { data } = await uploadReceipt(file)
-          uploadedCount += 1
-
-          setReports((prev) => {
-            const next = mergeUploadIntoReports(prev, data, {
-              email: user?.email,
-              name: [user?.first_name, user?.last_name].filter(Boolean).join(' ') || undefined,
-              department: user?.department?.name,
-            })
-            return next
-          })
-
-          const aiFailed = data.ai_result?.success === false && !data.ai_result?.pending
-          if (aiFailed) {
-            errors.push(data.ai_result?.error || data.message)
+          const { data: current } = await getCurrentMonthReport()
+          const normalized = normalizeCurrentMonthReport(current)
+          reportId = normalized.id
+          if (reportId) {
+            setReports((prev) => mergeServerReportIntoReports(prev, current, user?.email))
           }
-
-          const conversion = data.ai_result?.currency_conversion
-          const original = data.receipt.original_amount ?? data.receipt.total_amount
-          const originalCurrency = data.receipt.original_currency ?? data.receipt.currency
-          const companyAmount = data.receipt.company_amount ?? conversion?.company_amount
-          const companyCurrency = data.receipt.company_currency ?? conversion?.company_currency
-          if (companyAmount != null && companyCurrency && companyCurrency !== originalCurrency) {
-            conversionMessages.push(
-              `${formatCurrency(original, originalCurrency)} → ${formatCurrency(String(companyAmount), companyCurrency)}`,
-            )
-          } else if (conversion?.success && conversion.company_amount != null && conversion.company_currency) {
-            conversionMessages.push(
-              `${formatCurrency(original, originalCurrency)} → ${formatCurrency(String(conversion.company_amount), conversion.company_currency)}`,
-            )
-          }
-
-          const violationReason =
-            data.ai_result?.violation_reason ||
-            data.receipt?.policy_violation_reason ||
-            data.ai_result?.policy?.violations?.join('; ')
-          if (data.receipt?.has_any_violation || data.ai_result?.has_any_violation) {
-            violationMessages.push(violationReason || 'Policy violation detected on uploaded receipt.')
-          }
-        } catch (err) {
-          errors.push(formatUploadError(getApiErrorMessage(err)))
+        } catch {
+          // First upload of the month — backend creates the draft report.
         }
       }
 
-      if (errors.length) {
-        toast.error(errors[0])
-      }
-      if (violationMessages.length) {
-        toast(violationMessages[0])
-      }
-      if (conversionMessages.length) {
-        toast(`Converted: ${conversionMessages[0]}`)
-      }
-      if (uploadedCount > 0) {
-        toast.success(
-          uploadedCount === 1
+      const { data } = await uploadReceipt(files, reportId || undefined)
+      toast.success(
+        data.message ||
+          (files.length === 1
             ? 'Receipt uploaded. AI is extracting details in the background.'
-            : `${uploadedCount} receipts uploaded. AI is extracting details in the background.`,
-        )
-      }
-
+            : `${files.length} receipts uploaded. AI is extracting details in the background.`),
+      )
       void load({ silent: true })
+    } catch (err) {
+      toast.error(formatUploadError(getApiErrorMessage(err)))
     } finally {
       setBackgroundUploads((count) => Math.max(0, count - files.length))
     }

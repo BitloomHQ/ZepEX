@@ -383,6 +383,7 @@ export interface LineItem {
   id: string
   description: string
   category: string
+  subcategory?: string
   vendor: string
   amount: string
   bill_date: string
@@ -463,6 +464,8 @@ export interface ExpenseReport {
   month: string
   status: string
   total_amount: string
+  /** Company reimbursement currency from finance settings. */
+  company_currency?: string
   is_auto_approved?: boolean
   auto_approved_at?: string | null
   approval_type?: string | null
@@ -733,9 +736,9 @@ export interface RetryAiResponse {
 
 export interface UploadReceiptResponse {
   message: string
-  report_id: string
-  receipt: Receipt
-  ai_result?: UploadAiResult
+  receipt_ids: string[]
+  /** Present on current backend for draft refresh; optional per API docs. */
+  report_id?: string
 }
 
 export interface SubmitApprovalStep {

@@ -3593,11 +3593,27 @@ def company_finance_settings(request):
     )
 
     serializer.is_valid(raise_exception=True)
+
+    previous_currency_id = finance_settings.base_currency_id
+    previous_auto_conversion = finance_settings.auto_currency_conversion
+
     serializer.save()
+    finance_settings.refresh_from_db()
+
+    currency_related_changed = (
+        finance_settings.base_currency_id != previous_currency_id
+        or finance_settings.auto_currency_conversion != previous_auto_conversion
+    )
+
+    resynced_receipts = 0
+    if currency_related_changed:
+        from expenses.services import resync_draft_receipts_to_company_currency
+
+        resynced_receipts = resync_draft_receipts_to_company_currency(company)
 
     create_audit_log(
         company=company,
-        action="COMPANY_FINANCE_SETTINGS_UPDATED",
+        action="POLICY_UPDATED",
         action_by=profile,
         message="Company finance settings updated.",
         metadata={
@@ -3610,13 +3626,22 @@ def company_finance_settings(request):
             ),
             "timezone": serializer.data.get("timezone"),
             "date_format": serializer.data.get("date_format"),
+            "draft_receipts_resynced": resynced_receipts,
         }
     )
 
+    message = "Company finance settings updated successfully."
+    if resynced_receipts:
+        message = (
+            f"Company finance settings updated successfully. "
+            f"Updated currency conversion on {resynced_receipts} draft receipt(s)."
+        )
+
     return Response({
         "success": True,
-        "message": "Company finance settings updated successfully.",
-        "settings": serializer.data
+        "message": message,
+        "settings": serializer.data,
+        "draft_receipts_resynced": resynced_receipts,
     })
 
 

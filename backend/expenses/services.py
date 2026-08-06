@@ -34,6 +34,170 @@ from .models import ExpenseAuditTrail
 OLD_BILL_LIMIT_DAYS = 90
 AI_CONFIDENCE_THRESHOLD = Decimal("0.75")
 
+_TAX_NAME_MARKERS = (
+    "tax",
+    "gst",
+    "cgst",
+    "sgst",
+    "igst",
+    "vat",
+    "hst",
+    "pst",
+    "sales t",
+)
+
+_TOTAL_NAME_MARKERS = (
+    "grand total",
+    "amount due",
+    "balance due",
+    "amount payable",
+    "total due",
+    "total amount",
+    "net payable",
+)
+
+
+def _line_item_amount(item) -> Decimal:
+    try:
+        return Decimal(str(item.get("total_price") or 0)).quantize(Decimal("0.01"))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal("0.00")
+
+
+def _line_item_label(item) -> str:
+    return f"{item.get('name') or ''} {item.get('subcategory') or ''}".strip().lower()
+
+
+def _is_tax_line_item(item) -> bool:
+    label = _line_item_label(item)
+    return any(marker in label for marker in _TAX_NAME_MARKERS)
+
+
+def _is_total_line_item(item) -> bool:
+    label = _line_item_label(item)
+    if "subtotal" in label:
+        return False
+    if label in {"total", "totals"}:
+        return True
+    if any(marker in label for marker in _TOTAL_NAME_MARKERS):
+        return True
+    # AI sometimes dumps the whole receipt summary into one "total" row.
+    text = f"{item.get('name') or ''}\n{item.get('subcategory') or ''}".lower()
+    return ("total —" in text or "total -" in text) and (
+        "parking fee" in text or "sales tax" in text or "gst" in text
+    )
+
+
+def normalize_bill_line_items(bill: dict) -> list[dict]:
+    """
+    Keep receipt line items in receipt sequence:
+    1) charges / products
+    2) taxes / fees of tax type
+    Never persist grand-total rows or zero-amount placeholders.
+    """
+    if not isinstance(bill, dict):
+        return []
+
+    raw_items = []
+    for item in bill.get("line_items") or []:
+        if isinstance(item, dict):
+            raw_items.append(dict(item))
+
+    for tax in bill.get("taxes") or []:
+        if not isinstance(tax, dict):
+            continue
+        tax_amount = tax.get("amount", tax.get("total_price"))
+        raw_items.append(
+            {
+                "name": tax.get("name") or "Tax",
+                "category": bill.get("type") or "miscellaneous",
+                "subcategory": tax.get("name") or "Tax",
+                "quantity": 1,
+                "unit_price": tax_amount,
+                "total_price": tax_amount,
+                "is_reimbursable": True,
+                "reason": "",
+            }
+        )
+
+    charges: list[dict] = []
+    taxes: list[dict] = []
+
+    for item in raw_items:
+        amount = _line_item_amount(item)
+        if amount == Decimal("0.00"):
+            continue
+        if _is_total_line_item(item):
+            continue
+        item["total_price"] = float(amount)
+        if _is_tax_line_item(item):
+            taxes.append(item)
+        else:
+            charges.append(item)
+
+    ordered = charges + taxes
+    bill["line_items"] = ordered
+    return ordered
+
+
+def _line_item_text_label(description=None, subcategory=None) -> str:
+    return f"{description or ''} {subcategory or ''}".strip().lower()
+
+
+def _text_is_tax_line(label: str) -> bool:
+    return any(marker in label for marker in _TAX_NAME_MARKERS)
+
+
+def _text_is_total_line(label: str) -> bool:
+    if "subtotal" in label:
+        return False
+    if label in {"total", "totals"}:
+        return True
+    if any(marker in label for marker in _TOTAL_NAME_MARKERS):
+        return True
+    return ("total —" in label or "total -" in label) and (
+        "parking fee" in label or "sales tax" in label or "gst" in label
+    )
+
+
+def sanitize_receipt_line_items(receipt) -> int:
+    """
+    Remove zero-amount and duplicate grand-total rows from older extraction bugs.
+
+    Those junk rows inflate original/company amounts and report totals while the UI
+    hides them, which makes claim totals look wrong (e.g. $89.46 vs $44.73).
+    """
+    items = list(receipt.line_items.all())
+    if not items:
+        return 0
+
+    deleted = 0
+    keep = []
+
+    for item in items:
+        amount = item.amount or Decimal("0.00")
+        label = _line_item_text_label(item.description, item.subcategory)
+        if amount <= Decimal("0.00") or _text_is_total_line(label):
+            item.delete()
+            deleted += 1
+            continue
+        keep.append(item)
+
+    if len(keep) >= 2:
+        for item in list(keep):
+            others = sum(
+                (candidate.amount or Decimal("0.00"))
+                for candidate in keep
+                if candidate.id != item.id
+            )
+            amount = item.amount or Decimal("0.00")
+            if others > Decimal("0.00") and abs(amount - others) < Decimal("0.01"):
+                item.delete()
+                deleted += 1
+                keep = [candidate for candidate in keep if candidate.id != item.id]
+
+    return deleted
+
 
 def check_policy_violations(receipt):
 
@@ -259,10 +423,109 @@ def recalculate_report_total(report):
     report.save(update_fields=["total_amount", "updated_at"])
 
 
+def resync_draft_receipts_to_company_currency(company):
+    """
+    Re-apply the company's current base currency to draft-report receipts.
+
+    Draft expenses keep the currency used at extraction time unless we refresh
+    them after finance settings change (e.g. ALL -> ARS).
+    """
+    from .currency_services import convert_currency
+
+    try:
+        finance_settings = company.finance_settings
+    except Exception:
+        return 0
+
+    if not finance_settings or not finance_settings.base_currency_id:
+        return 0
+
+    target_currency = finance_settings.base_currency.code.upper()
+    updated = 0
+
+    draft_reports = ExpenseReport.objects.filter(
+        company=company,
+        status=ExpenseReport.STATUS_DRAFT,
+    ).prefetch_related("receipts", "receipts__line_items")
+
+    for report in draft_reports:
+        report_changed = False
+
+        for receipt in report.receipts.all():
+            if receipt.ai_status not in (
+                ExpenseReceipt.AI_COMPLETED,
+                ExpenseReceipt.AI_RETRY_REQUIRED,
+            ):
+                continue
+
+            if receipt.line_items.exists():
+                recalculate_receipt_from_line_items(receipt)
+            else:
+                original_amount = (
+                    receipt.original_amount or receipt.total_amount or Decimal("0.00")
+                )
+                original_currency = (
+                    receipt.original_currency or receipt.currency or target_currency
+                ).upper()
+
+                if finance_settings.auto_currency_conversion:
+                    conversion_result = convert_currency(
+                        amount=original_amount,
+                        from_currency=original_currency,
+                        to_currency=target_currency,
+                    )
+                    if conversion_result.get("success"):
+                        receipt.company_amount = conversion_result["company_amount"]
+                        receipt.company_currency = conversion_result["company_currency"]
+                        receipt.exchange_rate = conversion_result["exchange_rate"]
+                        receipt.exchange_rate_date = conversion_result[
+                            "exchange_rate_date"
+                        ]
+                        receipt.exchange_rate_provider = conversion_result[
+                            "exchange_rate_provider"
+                        ]
+                    else:
+                        receipt.company_amount = original_amount
+                        receipt.company_currency = original_currency
+                        receipt.exchange_rate = None
+                        receipt.exchange_rate_date = None
+                        receipt.exchange_rate_provider = None
+                else:
+                    receipt.company_amount = original_amount
+                    receipt.company_currency = original_currency
+                    receipt.exchange_rate = Decimal("1")
+                    receipt.exchange_rate_date = timezone.now()
+                    receipt.exchange_rate_provider = "Conversion Disabled"
+
+                receipt.total_amount = receipt.company_amount
+                receipt.save(
+                    update_fields=[
+                        "company_amount",
+                        "company_currency",
+                        "total_amount",
+                        "exchange_rate",
+                        "exchange_rate_date",
+                        "exchange_rate_provider",
+                        "updated_at",
+                    ]
+                )
+                check_policy_violations(receipt)
+
+            report_changed = True
+            updated += 1
+
+        if report_changed:
+            recalculate_report_total(report)
+
+    return updated
+
+
 def recalculate_receipt_from_line_items(receipt):
     from django.db.models import Sum
 
     from .currency_services import convert_currency
+
+    sanitize_receipt_line_items(receipt)
 
     line_total = receipt.line_items.aggregate(total=Sum("amount"))["total"] or Decimal(
         "0.00"
@@ -358,23 +621,38 @@ def sync_receipt_totals_for_report(report):
     changed = False
 
     for receipt in report.receipts.all():
+        removed = sanitize_receipt_line_items(receipt)
+
         line_total = receipt.line_items.aggregate(total=Sum("amount"))["total"] or Decimal(
             "0.00"
         )
         stored_total = receipt.original_amount or Decimal("0.00")
+        stored_company = receipt.company_amount or Decimal("0.00")
 
-        needs_sync = line_total != stored_total or (
-            line_total <= Decimal("0.00")
-            and (
-                receipt.has_any_violation
-                or stored_total > Decimal("0.00")
-                or (receipt.company_amount or Decimal("0.00")) > Decimal("0.00")
+        needs_sync = (
+            removed > 0
+            or line_total != stored_total
+            or (line_total > 0 and stored_company != line_total and (
+                not receipt.company_currency
+                or (receipt.original_currency or "").upper()
+                == (receipt.company_currency or "").upper()
+            ))
+            or (
+                line_total <= Decimal("0.00")
+                and (
+                    receipt.has_any_violation
+                    or stored_total > Decimal("0.00")
+                    or stored_company > Decimal("0.00")
+                )
             )
         )
 
         if needs_sync:
             recalculate_receipt_from_line_items(receipt)
             changed = True
+
+    if changed:
+        recalculate_report_total(report)
 
     return changed
 
@@ -1531,6 +1809,15 @@ Return each as a separate line item.
 
 The sum of all line_items.total_price should approximately equal the bill grand total whenever possible.
 
+CRITICAL ORDERING RULES
+- Keep line_items in the same top-to-bottom order as the printed receipt.
+- Charges/products/fees first, then taxes.
+- Never include Grand Total / Amount Due / Total as a line_item.
+- Put the payable total only in bill.amount and bill.grand_total.
+- Do not create extra bills for metadata such as entry time or payment method.
+- Put that metadata only in additional_info.
+- Prefer one bill object per physical receipt.
+
 ============================================================
 AI RECOMMENDATION
 ============================================================
@@ -1758,6 +2045,15 @@ Never merge tax into another item.
 Never omit taxes or fees if they are individually printed.
 
 The sum of all line_items.total_price should approximately equal the bill grand total.
+
+CRITICAL ORDERING RULES
+- Keep line_items in the same top-to-bottom order as the printed receipt.
+- Charges/products/fees first, then taxes.
+- Never include Grand Total / Amount Due / Total as a line_item.
+- Put the payable total only in bill.amount and bill.grand_total.
+- Do not create extra bills for metadata such as entry time or payment method.
+- Put that metadata only in additional_info.
+- Prefer one bill object per physical receipt.
 ============================================================
 OUTPUT JSON
 ============================================================
@@ -2149,7 +2445,8 @@ Do not return any explanation outside the JSON.
                 print(f"Gemini extracted {len(line_items)} line item(s):")
                 print(json.dumps(line_items, indent=4))
 
-            print("Final line_items:")
+            normalize_bill_line_items(bill)
+            print("Normalized line_items:")
             print(json.dumps(bill["line_items"], indent=4))
         # ====================================================
         # Validate and save extracted data
@@ -2593,12 +2890,10 @@ Do not return any explanation outside the JSON.
                     else None
                 )
 
-                line_items = bill.get("line_items", [])
+                line_items = normalize_bill_line_items(bill)
 
                 if line_items:
-
                     for item in line_items:
-
                         item_name = item.get(
                             "name",
                             "",
@@ -2615,6 +2910,9 @@ Do not return any explanation outside the JSON.
                             )
                         except Exception:
                             item_amount = Decimal("0.00")
+
+                        if item_amount <= Decimal("0.00"):
+                            continue
 
                         # Skip items that AI marked as non-reimbursable
                         if not item.get("is_reimbursable", True):
@@ -2654,36 +2952,37 @@ Do not return any explanation outside the JSON.
                             file=receipt.receipt_file,
                             attachment_type="receipt",
                         )
-                    else:
-                        expense_item = ExpenseLineItem.objects.create(
-                            receipt=receipt,
-                            description=bill.get(
-                                "additional_info",
-                                "",
-                            ),
-                            category=bill.get(
-                                "type",
-                                "miscellaneous",
-                            ),
-                            subcategory="",
-                            vendor=bill.get(
-                                "vendor",
-                                "",
-                            )[:255],
-                            amount=amount,
-                            bill_date=bill_date,
-                        )
+                elif amount > Decimal("0.00"):
+                    expense_item = ExpenseLineItem.objects.create(
+                        receipt=receipt,
+                        description=(
+                            bill.get("vendor")
+                            or bill.get("type")
+                            or "Receipt total"
+                        ),
+                        category=bill.get(
+                            "type",
+                            "miscellaneous",
+                        ),
+                        subcategory="",
+                        vendor=bill.get(
+                            "vendor",
+                            "",
+                        )[:255],
+                        amount=amount,
+                        bill_date=bill_date,
+                    )
 
-                        created_items.append(
-                            expense_item.id
-                        )
-                        approved_bill_total = amount
-                        ExpenseAttachment.objects.create(
-                            line_item=expense_item,
-                            receipt=receipt,
-                            file=receipt.receipt_file,
-                            attachment_type="receipt",
-                        )
+                    created_items.append(
+                        expense_item.id
+                    )
+                    approved_bill_total = amount
+                    ExpenseAttachment.objects.create(
+                        line_item=expense_item,
+                        receipt=receipt,
+                        file=receipt.receipt_file,
+                        attachment_type="receipt",
+                    )
             bill["approved_amount"] = str(approved_bill_total)
 
             if receipt.report:

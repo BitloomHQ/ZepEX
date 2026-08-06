@@ -48,16 +48,17 @@ export const login = (email: string, password: string) =>
   api.post<LoginResponse>('/auth/login/', { email, password })
 
 export const changePassword = (old_password: string, new_password: string) =>
-  api.post('/auth/change-password/', { old_password, new_password })
+  api.post<{ message: string }>('/auth/change-password/', { old_password, new_password })
 
 export const forgotPassword = (email: string) =>
   api.post<{ message: string }>('/auth/forgot-password/', { email })
 
-export const verifyResetOtp = (email: string, otp: string) =>
-  api.post<{ message: string }>('/auth/verify-reset-otp/', { email, otp })
-
-export const resetPassword = (email: string, otp: string, new_password: string) =>
-  api.post<{ message: string }>('/auth/reset-password/', { email, otp, new_password })
+export const resetPassword = (payload: {
+  uid: string
+  token: string
+  new_password: string
+  confirm_password: string
+}) => api.post<{ message: string }>('/auth/reset-password/', payload)
 
 export const getProfile = () => api.get<UserProfile>('/auth/profile/')
 
@@ -539,10 +540,15 @@ export const updateFinanceSettings = (data: {
 export const getAuditLogDashboard = () => api.get('/audit-logs/dashboard/')
 
 // Expenses
-export const uploadReceipt = (file: File) => {
+export const uploadReceipt = (files: File[], reportId?: string) => {
   const formData = new FormData()
-  formData.append('receipt_file', file)
-  return api.post<UploadReceiptResponse>('/expenses/upload/', formData, {
+  if (reportId) {
+    formData.append('report_id', reportId)
+  }
+  for (const file of files) {
+    formData.append('files', file)
+  }
+  return api.post<UploadReceiptResponse>('/expenses/upload-receipt/', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
 }

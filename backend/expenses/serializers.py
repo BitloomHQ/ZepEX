@@ -21,6 +21,7 @@ class ExpenseLineItemSerializer(serializers.ModelSerializer):
             "id",
             "description",
             "category",
+            "subcategory",
             "vendor",
             "amount",
             "bill_date",
@@ -273,6 +274,8 @@ class ExpenseReportSerializer(serializers.ModelSerializer):
 
     view_only_for_workflow = serializers.SerializerMethodField()
 
+    company_currency = serializers.SerializerMethodField()
+
     class Meta:
         model = ExpenseReport
 
@@ -293,6 +296,7 @@ class ExpenseReportSerializer(serializers.ModelSerializer):
             "approval_required",
             "view_only_for_workflow",
             "total_amount",
+            "company_currency",
             "submitted_at",
             "paid_at",
             "paid_notes",
@@ -319,6 +323,7 @@ class ExpenseReportSerializer(serializers.ModelSerializer):
             "approval_required",
             "view_only_for_workflow",
             "total_amount",
+            "company_currency",
             "submitted_at",
             "paid_at",
             "paid_notes",
@@ -327,6 +332,26 @@ class ExpenseReportSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def get_company_currency(self, obj):
+        try:
+            finance_settings = obj.company.finance_settings
+        except Exception:
+            finance_settings = None
+
+        if finance_settings and finance_settings.base_currency_id:
+            return finance_settings.base_currency.code.upper()
+
+        for receipt in obj.receipts.all():
+            amount = receipt.company_amount or receipt.total_amount
+            if (
+                receipt.company_currency
+                and amount is not None
+                and amount > 0
+            ):
+                return receipt.company_currency.upper()
+
+        return "USD"
 
     def get_employee_name(self, obj):
         full_name = (
