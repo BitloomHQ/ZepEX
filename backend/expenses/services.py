@@ -140,6 +140,65 @@ def normalize_bill_line_items(bill: dict) -> list[dict]:
     return ordered
 
 
+def _line_item_text_label(description=None, subcategory=None) -> str:
+    return f"{description or ''} {subcategory or ''}".strip().lower()
+
+
+def _text_is_tax_line(label: str) -> bool:
+    return any(marker in label for marker in _TAX_NAME_MARKERS)
+
+
+def _text_is_total_line(label: str) -> bool:
+    if "subtotal" in label:
+        return False
+    if label in {"total", "totals"}:
+        return True
+    if any(marker in label for marker in _TOTAL_NAME_MARKERS):
+        return True
+    return ("total —" in label or "total -" in label) and (
+        "parking fee" in label or "sales tax" in label or "gst" in label
+    )
+
+
+def sanitize_receipt_line_items(receipt) -> int:
+    """
+    Remove zero-amount and duplicate grand-total rows from older extraction bugs.
+
+    Those junk rows inflate original/company amounts and report totals while the UI
+    hides them, which makes claim totals look wrong (e.g. $89.46 vs $44.73).
+    """
+    items = list(receipt.line_items.all())
+    if not items:
+        return 0
+
+    deleted = 0
+    keep = []
+
+    for item in items:
+        amount = item.amount or Decimal("0.00")
+        label = _line_item_text_label(item.description, item.subcategory)
+        if amount <= Decimal("0.00") or _text_is_total_line(label):
+            item.delete()
+            deleted += 1
+            continue
+        keep.append(item)
+
+    if len(keep) >= 2:
+        for item in list(keep):
+            others = sum(
+                (candidate.amount or Decimal("0.00"))
+                for candidate in keep
+                if candidate.id != item.id
+            )
+            amount = item.amount or Decimal("0.00")
+            if others > Decimal("0.00") and abs(amount - others) < Decimal("0.01"):
+                item.delete()
+                deleted += 1
+                keep = [candidate for candidate in keep if candidate.id != item.id]
+
+    return deleted
+
+
 def check_policy_violations(receipt):
 
     violation_reasons = []
@@ -466,6 +525,8 @@ def recalculate_receipt_from_line_items(receipt):
 
     from .currency_services import convert_currency
 
+    sanitize_receipt_line_items(receipt)
+
     line_total = receipt.line_items.aggregate(total=Sum("amount"))["total"] or Decimal(
         "0.00"
     )
@@ -560,23 +621,38 @@ def sync_receipt_totals_for_report(report):
     changed = False
 
     for receipt in report.receipts.all():
+        removed = sanitize_receipt_line_items(receipt)
+
         line_total = receipt.line_items.aggregate(total=Sum("amount"))["total"] or Decimal(
             "0.00"
         )
         stored_total = receipt.original_amount or Decimal("0.00")
+        stored_company = receipt.company_amount or Decimal("0.00")
 
-        needs_sync = line_total != stored_total or (
-            line_total <= Decimal("0.00")
-            and (
-                receipt.has_any_violation
-                or stored_total > Decimal("0.00")
-                or (receipt.company_amount or Decimal("0.00")) > Decimal("0.00")
+        needs_sync = (
+            removed > 0
+            or line_total != stored_total
+            or (line_total > 0 and stored_company != line_total and (
+                not receipt.company_currency
+                or (receipt.original_currency or "").upper()
+                == (receipt.company_currency or "").upper()
+            ))
+            or (
+                line_total <= Decimal("0.00")
+                and (
+                    receipt.has_any_violation
+                    or stored_total > Decimal("0.00")
+                    or stored_company > Decimal("0.00")
+                )
             )
         )
 
         if needs_sync:
             recalculate_receipt_from_line_items(receipt)
             changed = True
+
+    if changed:
+        recalculate_report_total(report)
 
     return changed
 

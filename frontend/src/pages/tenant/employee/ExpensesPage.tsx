@@ -87,8 +87,8 @@ function MyExpenseExpandedPanel({
         </p>
       ) : (
         <div className="space-y-3">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Extracted receipts
+          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500">
+            Receipts in this claim
           </p>
           {report.receipts.map((receipt) => (
             <ReceiptExpenseCard
