@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
 import {
   deleteLineItem,
+  deleteReceipt,
   getCurrentMonthReport,
   getMyUploadedExpenses,
   retryReceiptAi,
@@ -68,14 +69,18 @@ function MyExpenseExpandedPanel({
   report,
   canEditReceipts,
   onDeleteLineItem,
+  onDeleteReceipt,
   onRetryReceipt,
   retryingReceiptId,
+  deletingReceiptId,
 }: {
   report: ExpenseReport
   canEditReceipts: boolean
   onDeleteLineItem: (lineItemId: string) => void
+  onDeleteReceipt: (receiptId: string) => void
   onRetryReceipt: (receiptId: string) => void
   retryingReceiptId: string | null
+  deletingReceiptId: string | null
 }) {
   return (
     <div className="space-y-4">
@@ -96,8 +101,10 @@ function MyExpenseExpandedPanel({
               receipt={receipt}
               canEdit={canEditReceipts}
               onDeleteLineItem={onDeleteLineItem}
+              onDeleteReceipt={onDeleteReceipt}
               onRetryReceipt={onRetryReceipt}
               retrying={retryingReceiptId === receipt.id}
+              deleting={deletingReceiptId === receipt.id}
             />
           ))}
         </div>
@@ -119,6 +126,7 @@ export function ExpensesPage() {
   const [backgroundUploads, setBackgroundUploads] = useState(0)
   const [submitting, setSubmitting] = useState(false)
   const [retryingReceiptId, setRetryingReceiptId] = useState<string | null>(null)
+  const [deletingReceiptId, setDeletingReceiptId] = useState<string | null>(null)
   const [uploadOpen, setUploadOpen] = useState(false)
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [dragOver, setDragOver] = useState(false)
@@ -316,6 +324,24 @@ export function ExpensesPage() {
     }
   }
 
+  const handleDeleteReceipt = async (receiptId: string) => {
+    const confirmed = window.confirm(
+      'Delete this receipt from your draft claim? This cannot be undone.',
+    )
+    if (!confirmed) return
+
+    setDeletingReceiptId(receiptId)
+    try {
+      const { data } = await deleteReceipt(receiptId)
+      toast.success(data.message || 'Receipt deleted successfully.')
+      await load()
+    } catch (err) {
+      toast.error(getApiErrorMessage(err))
+    } finally {
+      setDeletingReceiptId(null)
+    }
+  }
+
   if (!canManageOwnExpenses(user)) {
     return <Navigate to={defaultHomeForUser(user!)} replace />
   }
@@ -431,8 +457,10 @@ export function ExpensesPage() {
                 report={expandedReport}
                 canEditReceipts={canEditReceipts}
                 onDeleteLineItem={handleDeleteLineItem}
+                onDeleteReceipt={handleDeleteReceipt}
                 onRetryReceipt={handleRetryReceipt}
                 retryingReceiptId={retryingReceiptId}
+                deletingReceiptId={deletingReceiptId}
               />
             )
           }}
