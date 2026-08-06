@@ -464,6 +464,8 @@ export interface ExpenseReport {
   month: string
   status: string
   total_amount: string
+  /** Company reimbursement currency from finance settings. */
+  company_currency?: string
   is_auto_approved?: boolean
   auto_approved_at?: string | null
   approval_type?: string | null

@@ -25,7 +25,12 @@ from expenses.workflow_engine import reorder_workflow_steps
 from .workflow_engine import resolve_step_approver
 from expenses.workflow_engine import start_workflow
 from .serializers import ExpenseReceiptSerializer,ExpenseReportSerializer, ApprovalHistorySerializer
-from .services import extract_receipt_with_gemini, recalculate_receipt_from_line_items, sync_receipt_totals_for_report
+from .services import (
+    extract_receipt_with_gemini,
+    recalculate_receipt_from_line_items,
+    sync_receipt_totals_for_report,
+    resync_draft_receipts_to_company_currency,
+)
 from .models import ApprovalWorkflow, ApprovalWorkflowStep
 from .serializers import ApprovalWorkflowSerializer, ApprovalWorkflowStepSerializer
 from django.utils import timezone
@@ -899,6 +904,27 @@ def current_month_report(request):
 
     if sync_receipt_totals_for_report(report):
         report.refresh_from_db()
+
+    # Keep draft totals in the company's configured reimbursement currency.
+    if report.status == ExpenseReport.STATUS_DRAFT:
+        try:
+            finance_settings = profile.company.finance_settings
+            target = (
+                finance_settings.base_currency.code.upper()
+                if finance_settings and finance_settings.base_currency_id
+                else None
+            )
+        except Exception:
+            target = None
+
+        if target and report.receipts.filter(
+            ai_status__in=[
+                ExpenseReceipt.AI_COMPLETED,
+                ExpenseReceipt.AI_RETRY_REQUIRED,
+            ],
+        ).exclude(company_currency__iexact=target).exists():
+            resync_draft_receipts_to_company_currency(profile.company)
+            report.refresh_from_db()
 
     serializer = ExpenseReportSerializer(report)
     payload = serializer.data
