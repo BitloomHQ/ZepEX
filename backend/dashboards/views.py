@@ -10,7 +10,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 
-from backend.platform_access.permissions import has_platform_permission
+from platform_access.permissions import has_platform_permission
 from expenses.models import (
     ExpenseReport,
     ApprovalHistory,

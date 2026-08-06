@@ -5,7 +5,7 @@ from .views import (
     approver_dashboard,
     payment_dashboard,
     company_admin_dashboard,
-    platform_owner_dashboard,
+    platform_dashboard,
     dashboard_router,
 )
 
@@ -37,7 +37,7 @@ urlpatterns = [
 
     path(
     "platform-owner/",
-    platform_owner_dashboard,
+    platform_dashboard,
     name="platform-owner-dashboard"
 ),
 
