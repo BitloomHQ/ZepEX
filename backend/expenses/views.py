@@ -50,6 +50,11 @@ from .email_notifications import send_workflow_status_email
 from .workflow_engine import can_user_approve_step,approve_current_step,reject_current_step
 from django.db import transaction
 from expenses.workflow_validator import validate_workflow
+from django.shortcuts import get_object_or_404
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework import status
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -2514,3 +2519,62 @@ def simulate_workflow_api(request):
     })
 
 from expenses.workflow_validator import validate_workflow
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def delete_receipt(request, receipt_id):
+    receipt = get_object_or_404(
+        ExpenseReceipt,
+        id=receipt_id,
+        employee=request.user.employee,
+    )
+
+    # Allow deletion only for receipts that are still being processed
+    allowed_ai_statuses = {
+        ExpenseReceipt.AI_PROCESSING,
+        ExpenseReceipt.AI_RETRY_REQUIRED,
+        ExpenseReceipt.AI_FAILED,
+    }
+
+    allowed_statuses = {
+        ExpenseReceipt.STATUS_DRAFT,
+        ExpenseReceipt.STATUS_AI_PROCESSING,
+    }
+
+    if (
+        receipt.ai_status not in allowed_ai_statuses
+        or receipt.status not in allowed_statuses
+    ):
+        return Response(
+            {
+                "success": False,
+                "message": (
+                    "Only receipts that are in AI Processing or Retry "
+                    "can be deleted."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Delete attachment files from storage
+    for attachment in receipt.attachments.all():
+        if attachment.file:
+            attachment.file.delete(save=False)
+
+    # Delete uploaded receipt file
+    if receipt.receipt_file:
+        receipt.receipt_file.delete(save=False)
+
+    # Delete the receipt
+    # Related ExpenseAttachment and ExpenseLineItem records
+    # will be deleted automatically because of CASCADE.
+    receipt.delete()
+
+    return Response(
+        {
+            "success": True,
+            "message": "Receipt deleted successfully.",
+        },
+        status=status.HTTP_200_OK,
+    )
