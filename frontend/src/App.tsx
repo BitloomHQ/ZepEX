@@ -5,6 +5,7 @@ import { GuestOnlyRoute } from '@/routes/GuestOnlyRoute'
 import { LandingPage } from '@/pages/LandingPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
+import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
 import { PlatformLoginPage } from '@/pages/platform/PlatformLoginPage'
 import { RegisterPage } from '@/pages/RegisterPage'
 import { PlatformDashboard } from '@/pages/platform/PlatformDashboard'
@@ -47,6 +48,7 @@ export default function App() {
             }
           />
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
           <Route
             path="/platform/login"
             element={

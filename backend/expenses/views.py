@@ -72,21 +72,33 @@ def upload_receipt(request):
             status=status.HTTP_403_FORBIDDEN
         )
 
-    receipt_file = request.FILES.get("receipt_file")
-
-    if not receipt_file:
-        return Response(
-            {"error": "receipt_file is required."},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-
     if not profile.department:
         return Response(
             {"error": "User is not assigned to any department."},
             status=status.HTTP_400_BAD_REQUEST
         )
 
+    files = request.FILES.getlist("files") or request.FILES.getlist("files[]")
+    legacy_file = request.FILES.get("receipt_file")
+    if legacy_file and not files:
+        files = [legacy_file]
+
+    if not files:
+        return Response(
+            {"error": "files is required."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
     report = get_or_create_current_month_report(profile)
+
+    requested_report_id = request.data.get("report_id")
+    if requested_report_id and str(requested_report_id) != str(report.id):
+        return Response(
+            {
+                "error": "report_id does not match the current draft monthly report."
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     if report.status != ExpenseReport.STATUS_DRAFT:
         return Response(
@@ -96,68 +108,68 @@ def upload_receipt(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    submission = ExpenseSubmission.objects.create(
-        report=report,
-        company=profile.company,
-        employee=profile,
-        source=ExpenseSubmission.SOURCE_WEB
-    )
+    receipt_ids = []
 
-    receipt = ExpenseReceipt.objects.create(
-        report=report,
-        submission=submission,
-        company=profile.company,
-        employee=profile,
-        department=profile.department,
-        receipt_file=receipt_file,
-        status=ExpenseReceipt.STATUS_AI_PROCESSING
-    )
-   
+    for receipt_file in files:
+        submission = ExpenseSubmission.objects.create(
+            report=report,
+            company=profile.company,
+            employee=profile,
+            source=ExpenseSubmission.SOURCE_WEB
+        )
 
-    create_audit_log(
-        company=profile.company,
-        action="RECEIPT_UPLOADED",
-        action_by=profile,
-        message=f"Receipt uploaded by {request.user.email}",
-        metadata={
-            "receipt_id": str(receipt.id),
-            "report_id": str(report.id),
-            "submission_id": str(submission.id),
-            "filename": receipt.receipt_file.name,
-            "source": ExpenseSubmission.SOURCE_WEB,
-            "company_role": profile.company_role.name,
-            "department": profile.department.name,
-        }
-    )
+        receipt = ExpenseReceipt.objects.create(
+            report=report,
+            submission=submission,
+            company=profile.company,
+            employee=profile,
+            department=profile.department,
+            receipt_file=receipt_file,
+            status=ExpenseReceipt.STATUS_AI_PROCESSING,
+            ai_status=ExpenseReceipt.AI_PENDING,
+        )
 
-    create_audit_log(
-        company=profile.company,
-        action="AI_PROCESSING_STARTED",
-        action_by=profile,
-        message="AI extraction started for uploaded receipt.",
-        metadata={
-            "receipt_id": str(receipt.id),
-            "report_id": str(report.id),
-        }
-    )
+        receipt_ids.append(str(receipt.id))
 
-    queue_receipt_ai_processing(
-        receipt_id=str(receipt.id),
-        company=profile.company,
-        action_by=profile,
-        report_id=str(report.id),
-    )
-    ai_result = {"success": None, "pending": True}
+        create_audit_log(
+            company=profile.company,
+            action="RECEIPT_UPLOADED",
+            action_by=profile,
+            message=f"Receipt uploaded by {request.user.email}",
+            metadata={
+                "receipt_id": str(receipt.id),
+                "report_id": str(report.id),
+                "submission_id": str(submission.id),
+                "filename": receipt.receipt_file.name,
+                "source": ExpenseSubmission.SOURCE_WEB,
+                "company_role": profile.company_role.name,
+                "department": profile.department.name,
+            }
+        )
 
-    serializer = ExpenseReceiptSerializer(receipt)
-    message = "Receipt uploaded. AI processing started in the background."
+        create_audit_log(
+            company=profile.company,
+            action="AI_PROCESSING_STARTED",
+            action_by=profile,
+            message="AI extraction started for uploaded receipt.",
+            metadata={
+                "receipt_id": str(receipt.id),
+                "report_id": str(report.id),
+            }
+        )
+
+        queue_receipt_ai_processing(
+            receipt_id=str(receipt.id),
+            company=profile.company,
+            action_by=profile,
+            report_id=str(report.id),
+        )
 
     return Response(
         {
-            "message": message,
+            "message": "Receipt uploaded successfully.",
             "report_id": str(report.id),
-            "receipt": serializer.data,
-            "ai_result": ai_result,
+            "receipt_ids": receipt_ids,
         },
         status=status.HTTP_201_CREATED
     )
@@ -1086,6 +1098,61 @@ def delete_expense_line_item(request, line_item_id):
     )
 
 
+@api_view(["DELETE", "POST"])
+@permission_classes([IsAuthenticated])
+def delete_receipt(request, receipt_id):
+    profile = request.user.profile
+
+    try:
+        receipt = ExpenseReceipt.objects.select_related("report", "submission").get(
+            id=receipt_id,
+            company=profile.company,
+            employee=profile,
+        )
+    except ExpenseReceipt.DoesNotExist:
+        return Response(
+            {"error": "Receipt not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    report = receipt.report
+    if report is None or report.status != ExpenseReport.STATUS_DRAFT:
+        return Response(
+            {"error": "You can delete receipts only before submitting the monthly report."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    deleted_metadata = {
+        "receipt_id": str(receipt.id),
+        "report_id": str(report.id),
+        "vendor_name": receipt.vendor_name,
+        "total_amount": str(receipt.total_amount) if receipt.total_amount is not None else None,
+        "filename": receipt.receipt_file.name if receipt.receipt_file else None,
+    }
+    submission = receipt.submission
+
+    if receipt.receipt_file:
+        receipt.receipt_file.delete(save=False)
+
+    receipt.delete()
+
+    if submission is not None and not submission.receipts.exists():
+        submission.delete()
+
+    sync_receipt_totals_for_report(report)
+
+    create_audit_log(
+        company=profile.company,
+        action="RECEIPT_DELETED",
+        action_by=profile,
+        message=f"Receipt deleted by {profile.user.email}",
+        metadata=deleted_metadata,
+    )
+
+    return Response(
+        {"message": "Receipt deleted successfully."},
+        status=status.HTTP_200_OK,
+    )
 
 
 from tenants.permissions import IsCompanyAdmin

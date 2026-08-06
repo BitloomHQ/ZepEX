@@ -383,6 +383,7 @@ export interface LineItem {
   id: string
   description: string
   category: string
+  subcategory?: string
   vendor: string
   amount: string
   bill_date: string
@@ -733,9 +734,9 @@ export interface RetryAiResponse {
 
 export interface UploadReceiptResponse {
   message: string
-  report_id: string
-  receipt: Receipt
-  ai_result?: UploadAiResult
+  receipt_ids: string[]
+  /** Present on current backend for draft refresh; optional per API docs. */
+  report_id?: string
 }
 
 export interface SubmitApprovalStep {

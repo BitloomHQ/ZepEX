@@ -294,15 +294,10 @@ from rest_framework.authtoken.models import Token
 from .models import PasswordResetOTP
 from .serializers import (
     ForgotPasswordSerializer,
-    VerifyResetOTPSerializer,
     ResetPasswordSerializer,
 )
-from .models import PasswordResetOTP
-from .serializers import (
-    ForgotPasswordSerializer,
-    VerifyResetOTPSerializer,
-    ResetPasswordSerializer,
-)
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
@@ -323,8 +318,15 @@ def forgot_password_api(request):
 
         token = default_token_generator.make_token(user)
 
+        frontend_base = (
+            getattr(settings, "FRONTEND_URL", None)
+            or getattr(settings, "FRONTEND_LOGIN_URL", "http://localhost:5173/login")
+        ).rstrip("/")
+        if frontend_base.endswith("/login"):
+            frontend_base = frontend_base[: -len("/login")]
+
         reset_link = (
-            f"{settings.FRONTEND_URL}"
+            f"{frontend_base}"
             f"/reset-password?uid={uid}&token={token}"
         )
 
@@ -339,7 +341,7 @@ def forgot_password_api(request):
         text = strip_tags(html)
 
         email_message = EmailMultiAlternatives(
-            subject="Reset your ZepEx password",
+            subject="ZepEx Password Reset",
             body=text,
             from_email=settings.DEFAULT_FROM_EMAIL,
             to=[email],
@@ -357,7 +359,7 @@ def forgot_password_api(request):
 
     return Response(
         {
-            "message": "If the email exists, a password reset link has been sent."
+            "message": "If this email exists, a password reset link has been sent."
         }
     )
 
@@ -367,41 +369,43 @@ def forgot_password_api(request):
 @permission_classes([AllowAny])
 def reset_password_api(request):
 
-    uid = request.data.get("uid")
-    token = request.data.get("token")
-    new_password = request.data.get("new_password")
+    serializer = ResetPasswordSerializer(data=request.data)
+    if not serializer.is_valid():
+        # Normalize password mismatch shape from docs
+        errors = serializer.errors
+        if "error" in errors:
+            detail = errors["error"]
+            message = detail[0] if isinstance(detail, list) else detail
+            return Response(
+                {"error": message},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(errors, status=status.HTTP_400_BAD_REQUEST)
 
-    if not uid or not token or not new_password:
+    uid = serializer.validated_data["uid"]
+    token = serializer.validated_data["token"]
+    new_password = serializer.validated_data["new_password"]
+
+    try:
+        user_id = force_str(urlsafe_base64_decode(uid))
+        user = User.objects.get(pk=user_id)
+    except Exception:
         return Response(
-            {
-                "error": "uid, token and new_password are required."
-            },
+            {"error": "Invalid or expired reset link."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not default_token_generator.check_token(user, token):
+        return Response(
+            {"error": "Reset link has expired."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     try:
-        uid = force_str(
-            urlsafe_base64_decode(uid)
-        )
-
-        user = User.objects.get(pk=uid)
-
-    except Exception:
+        validate_password(new_password, user=user)
+    except DjangoValidationError as exc:
         return Response(
-            {
-                "error": "Invalid reset link."
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    if not default_token_generator.check_token(
-        user,
-        token,
-    ):
-        return Response(
-            {
-                "error": "Reset link is invalid or expired."
-            },
+            {"new_password": list(exc.messages)},
             status=status.HTTP_400_BAD_REQUEST,
         )
 

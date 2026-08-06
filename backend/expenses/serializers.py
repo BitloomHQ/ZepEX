@@ -21,6 +21,7 @@ class ExpenseLineItemSerializer(serializers.ModelSerializer):
             "id",
             "description",
             "category",
+            "subcategory",
             "vendor",
             "amount",
             "bill_date",

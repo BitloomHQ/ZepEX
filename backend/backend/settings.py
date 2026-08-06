@@ -328,6 +328,11 @@ FRONTEND_LOGIN_URL = os.getenv(
     "http://localhost:5173/login"
 )
 
+FRONTEND_URL = os.getenv(
+    "FRONTEND_URL",
+    "http://localhost:5173",
+)
+
 
 # --------------------------------------------------
 # CURRENCY EXCHANGE

@@ -151,11 +151,18 @@ export function ProfilePage() {
     setSaving(true)
     setError('')
     try {
-      await changePassword(passwordForm.old_password, passwordForm.new_password)
+      const { data } = await changePassword(
+        passwordForm.old_password,
+        passwordForm.new_password,
+      )
       setPasswordForm({ old_password: '', new_password: '' })
       setPasswordOpen(false)
       logout()
-      navigate('/login', { state: { message: 'Password changed. Please sign in again.' } })
+      navigate('/login', {
+        state: {
+          message: data.message || 'Password changed successfully. Please login again.',
+        },
+      })
     } catch (err) {
       setError(getApiErrorMessage(err))
     } finally {
