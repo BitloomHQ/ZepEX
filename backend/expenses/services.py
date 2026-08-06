@@ -198,19 +198,31 @@ def _classify_ai_error(error: str):
 def _apply_ai_failure(receipt: ExpenseReceipt, error: str):
     ai_status, user_message, retry_allowed = _classify_ai_error(error)
 
+    # AI failure state
     receipt.ai_status = ai_status
+
+    # Keep the receipt status in AI Processing stage.
+    # The AI status indicates whether it failed or needs a retry.
+    receipt.status = ExpenseReceipt.STATUS_AI_PROCESSING
+
     receipt.ai_error_message = user_message
-    receipt.status = ExpenseReceipt.STATUS_AI_FAILED
+
+    # Increment retry count
+    receipt.ai_retry_count += 1
+
+    # Clear policy flags because AI extraction did not complete.
     receipt.policy_violation_reason = ""
     receipt.has_duplicate_violation = False
     receipt.has_old_bill_violation = False
     receipt.has_amount_violation = False
     receipt.has_any_violation = False
+
     receipt.save(
         update_fields=[
             "ai_status",
-            "ai_error_message",
             "status",
+            "ai_error_message",
+            "ai_retry_count",
             "policy_violation_reason",
             "has_duplicate_violation",
             "has_old_bill_violation",
@@ -1238,11 +1250,11 @@ Reference = Invoice Number
 
 Return:
 
-"document_reference": {
+"document_reference": {{
     "reference_type": "",
     "reference_number": "",
     "linked_reference_number": ""
-}
+}}
 
 Never invent values.
 
@@ -1372,6 +1384,152 @@ Rules
 - Categories should describe the reimbursement policy category.
 - Do not inherit the bill category.
 - Do not leave category empty.
+
+
+============================================================
+LINE ITEM EXTRACTION AND NORMALIZATION
+============================================================
+
+Every visible monetary component printed on the receipt must be returned
+as an individual line item.
+
+Do NOT merge taxes, service charges, fees or discounts into another item.
+
+Always extract separately whenever visible:
+
+- Product
+- Food Item
+- Drink
+- Parking Fee
+- Toll
+- Fuel
+- Room Charge
+- Laundry
+- Mini Bar
+- Internet
+- Taxi Fare
+- Service Charge
+- Delivery Fee
+- Convenience Fee
+- GST
+- CGST
+- SGST
+- IGST
+- VAT
+- Sales Tax
+- Tip
+- Discount
+
+Each line item must contain:
+
+- name
+- category
+- subcategory
+- quantity
+- unit_price
+- total_price
+- is_reimbursable
+- reason
+
+Subcategory should use the exact visible charge whenever possible.
+
+Examples
+
+Parking Fee
+→ subcategory = Parking Fee
+
+Sales Tax
+→ subcategory = Sales Tax
+
+GST
+→ subcategory = GST
+
+CGST
+→ subcategory = CGST
+
+SGST
+→ subcategory = SGST
+
+IGST
+→ subcategory = IGST
+
+VAT
+→ subcategory = VAT
+
+Service Charge
+→ subcategory = Service Charge
+
+Room Charge
+→ subcategory = Room Charge
+
+Laundry
+→ subcategory = Laundry
+
+Mini Bar
+→ subcategory = Mini Bar
+
+Beer
+→ subcategory = Beer
+
+Wine
+→ subcategory = Wine
+
+Coffee
+→ subcategory = Coffee
+
+Tea
+→ subcategory = Tea
+
+Burger
+→ subcategory = Burger
+
+Pizza
+→ subcategory = Pizza
+
+French Fries
+→ subcategory = Snacks
+
+Never use generic names like:
+
+- Tax
+- Fee
+- Other
+- Item
+- Miscellaneous
+
+when a more specific name is visible on the receipt.
+
+Examples
+
+Parking Receipt
+
+Parking Fee ............ 42.00
+Sales Tax ............... 2.73
+
+Return
+
+Parking Fee
+Sales Tax
+
+Restaurant Receipt
+
+Burger
+French Fries
+Service Charge
+GST
+
+Return four separate line items.
+
+Hotel Receipt
+
+Room Charge
+Laundry
+Mini Bar
+VAT
+
+Return each as a separate line item.
+
+The sum of all line_items.total_price should approximately equal the bill grand total whenever possible.
 
 ============================================================
 AI RECOMMENDATION
@@ -1509,6 +1667,97 @@ Rules:
 Never invent values.
 
 This fingerprint will be used for duplicate detection.
+
+============================================================
+LINE ITEM EXTRACTION RULES
+============================================================
+
+Every monetary component printed on the receipt must become one line item.
+
+Extract:
+
+- Purchased products
+- Food items
+- Drinks
+- Parking fee
+- Fuel
+- Room charge
+- Service charge
+- Delivery fee
+- Convenience fee
+- Sales tax
+- GST
+- VAT
+- CGST
+- SGST
+- IGST
+- Tips (if printed)
+- Discounts (negative amount)
+
+Do NOT merge these together.
+
+Each must have:
+
+name
+category
+subcategory
+quantity
+unit_price
+total_price
+is_reimbursable
+reason
+
+Examples
+
+Parking receipt
+
+Parking Fee ............ 42.00
+Sales Tax .............. 2.73
+
+Return
+
+[
+{{
+"name":"Parking Fee",
+"category":"parking",
+"subcategory":"Parking Fee",
+"total_price":42.00
+}},
+{{
+"name":"Sales Tax",
+"category":"parking",
+"subcategory":"Sales Tax",
+"total_price":2.73
+}}
+]
+
+Restaurant
+
+Burger........120
+Fries.........90
+GST...........19.5
+
+Return
+
+Burger
+Fries
+GST
+
+Hotel
+
+Room Charge
+Mini Bar
+Laundry
+Service Charge
+VAT
+
+Return every charge separately.
+
+Never merge tax into another item.
+
+Never omit taxes or fees if they are individually printed.
+
+The sum of all line_items.total_price should approximately equal the bill grand total.
 ============================================================
 OUTPUT JSON
 ============================================================
@@ -1529,30 +1778,30 @@ Return exactly this JSON structure:
       "merchant_type":"",
       "merchant_country":"",
       "merchant_city":"",
-      "document_reference": {
+      "document_reference": {{
     "reference_type": "",
     "reference_number": "",
     "linked_reference_number": ""
-},
+}},
 
-"receipt_fingerprint": {
+"receipt_fingerprint": {{
     "merchant": "",
     "document_number": "",
     "bill_date": "",
     "amount": "",
     "currency": ""
-},
+}},
       "additional_info": "",
 
       "line_items":[
-{
+{{
     "name":"",
     "category":"",
     "subcategory":"",
     "quantity":null,
     "unit_price":null,
     "total_price":null
-}
+}}
 ]
 
       "taxes":[
@@ -1604,17 +1853,17 @@ Return exactly this JSON structure:
     "reasons": []
   }},
 
-  "ai_recommendation": {
+  "ai_recommendation": {{
     "decision": "",
     "confidence": 0.0,
     "reason": ""
-},
-"document_validation": {
+}},
+"document_validation": {{
     "is_complete": true,
     "required_documents": [],
     "uploaded_documents": [],
     "missing_documents": []
-},
+}},
   "document_metadata": {{
     "receipt_type": "",
     "page_count": 1,
@@ -1807,14 +2056,17 @@ Do not return any explanation outside the JSON.
             parsed_data = json.loads(
                 cleaned_text
             )
+            print("\n================ GEMINI JSON ================\n")
+            print(json.dumps(parsed_data, indent=4))
+            print("\n=============================================\n")
             overall_confidence = Decimal(
-    str(
-        parsed_data.get(
-            "ocr_confidence",
-            0,
-        )
-    )
-)
+                str(
+                    parsed_data.get(
+                        "ocr_confidence",
+                        0,
+                    )
+                )
+            )
         except json.JSONDecodeError:
             match = re.search(
                 r"\{.*\}",
@@ -1830,6 +2082,9 @@ Do not return any explanation outside the JSON.
             parsed_data = json.loads(
                 match.group(0)
             )
+            print("\n================ GEMINI JSON ================\n")
+            print(json.dumps(parsed_data, indent=4))
+            print("\n=============================================\n")
 
         bills = parsed_data.get(
             "bills",
@@ -1842,6 +2097,60 @@ Do not return any explanation outside the JSON.
                 "Please upload a clearer receipt."
             )
 
+        # -------------------------------------------------------
+        # Ensure every bill has at least one line item
+        # -------------------------------------------------------
+
+        for bill in bills:
+            if not isinstance(bill, dict):
+                continue
+
+            print("\n================ BILL FROM GEMINI ================")
+            print(json.dumps(bill, indent=4))
+            print("==================================================")
+
+            line_items = bill.get("line_items")
+
+            print("Original line_items:", line_items)
+
+            if not line_items:
+                print("No line items found. Creating fallback line item...")
+
+                amount = bill.get("grand_total")
+
+                if amount is None:
+                    amount = bill.get("amount")
+
+                category = bill.get("type", "miscellaneous")
+                vendor = bill.get("vendor", "")
+
+                line_name = str(category).replace("_", " ").title()
+
+                if vendor:
+                    line_name = f"{vendor} - {line_name}"
+
+                bill["line_items"] = [
+                    {
+                        "name": line_name,
+                        "category": category,
+                        "subcategory": str(category).replace("_", " ").title(),
+                        "quantity": 1,
+                        "unit_price": amount,
+                        "total_price": amount,
+                        "is_reimbursable": True,
+                        "reason": ""
+                    }
+                ]
+
+                print("Fallback created:")
+                print(json.dumps(bill["line_items"], indent=4))
+
+            else:
+                print(f"Gemini extracted {len(line_items)} line item(s):")
+                print(json.dumps(line_items, indent=4))
+
+            print("Final line_items:")
+            print(json.dumps(bill["line_items"], indent=4))
         # ====================================================
         # Validate and save extracted data
         # ====================================================
@@ -1976,11 +2285,10 @@ Do not return any explanation outside the JSON.
                 "additional_info": additional_info,
             }
 
-            normalized_bills.append(
-                normalized_bill
-            )
+            normalized_bills.append(normalized_bill)
 
-            total_amount += approved_bill_total
+# Add the extracted bill amount
+            total_amount += amount
 
         if not normalized_bills:
             raise Exception(
@@ -2311,78 +2619,78 @@ Do not return any explanation outside the JSON.
                         # Skip items that AI marked as non-reimbursable
                         if not item.get("is_reimbursable", True):
                             continue
-
+                        print("Creating ExpenseLineItem:", item_name, item_amount)
                         expense_item = ExpenseLineItem.objects.create(
-    receipt=receipt,
-    description=item_name,
-    category=item.get(
-        "category",
-        bill.get("type", "miscellaneous"),
-    ),
-    subcategory=item_subcategory,
-    vendor=bill.get(
-        "vendor",
-        "",
-    )[:255],
-    amount=item_amount,
-    bill_date=bill_date,
-    is_violating=not item.get(
-        "is_reimbursable",
-        True,
-    ),
-    violation_reason=item.get(
-        "reason",
-        "",
-    ),
-)
+                            receipt=receipt,
+                            description=item_name,
+                            category=item.get(
+                                "category",
+                                bill.get("type", "miscellaneous"),
+                            ),
+                            subcategory=item_subcategory,
+                            vendor=bill.get(
+                                "vendor",
+                                "",
+                            )[:255],
+                            amount=item_amount,
+                            bill_date=bill_date,
+                            is_violating=not item.get(
+                                "is_reimbursable",
+                                True,
+                            ),
+                            violation_reason=item.get(
+                                "reason",
+                                "",
+                            ),
+                        )
 
                         created_items.append(
                             expense_item.id
                         )
+                        approved_bill_total += item_amount
                         ExpenseAttachment.objects.create(
-    line_item=expense_item,
-    receipt=receipt,
-    file=receipt.receipt_file,
-    attachment_type="receipt",
-)
-                        approved_bill_total = Decimal("0.00")
+                            line_item=expense_item,
+                            receipt=receipt,
+                            file=receipt.receipt_file,
+                            attachment_type="receipt",
+                        )
+                    else:
+                        expense_item = ExpenseLineItem.objects.create(
+                            receipt=receipt,
+                            description=bill.get(
+                                "additional_info",
+                                "",
+                            ),
+                            category=bill.get(
+                                "type",
+                                "miscellaneous",
+                            ),
+                            subcategory="",
+                            vendor=bill.get(
+                                "vendor",
+                                "",
+                            )[:255],
+                            amount=amount,
+                            bill_date=bill_date,
+                        )
 
-                else:
-
-                    expense_item = ExpenseLineItem.objects.create(
-                        receipt=receipt,
-                        description=bill.get(
-                            "additional_info",
-                            "",
-                        ),
-                        category=bill.get(
-                            "type",
-                            "miscellaneous",
-                        ),
-                        subcategory="",
-                        vendor=bill.get(
-                            "vendor",
-                            "",
-                        )[:255],
-                        amount=amount,
-                        bill_date=bill_date,
-                    )
-
-                    created_items.append(
-                        expense_item.id
-                    )
-                    ExpenseAttachment.objects.create(
-    line_item=expense_item,
-    receipt=receipt,
-    file=receipt.receipt_file,
-    attachment_type="receipt",
-)
+                        created_items.append(
+                            expense_item.id
+                        )
+                        approved_bill_total = amount
+                        ExpenseAttachment.objects.create(
+                            line_item=expense_item,
+                            receipt=receipt,
+                            file=receipt.receipt_file,
+                            attachment_type="receipt",
+                        )
+            bill["approved_amount"] = str(approved_bill_total)
 
             if receipt.report:
                 recalculate_report_total(
                     receipt.report
                 )
-                bill["approved_amount"] = str(approved_bill_total)
+                
 
         # ====================================================
         # Success response

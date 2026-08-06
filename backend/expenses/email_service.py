@@ -160,24 +160,43 @@ def ingest_forwarded_receipt_email(
     # ---------------------------------------------------------
 
     receipt = ExpenseReceipt.objects.create(
-        report=report,
-        submission=submission,
-        company=company,
-        employee=employee,
-        department=employee.department,
-        receipt_file=uploaded_file,
-        status=ExpenseReceipt.STATUS_AI_PROCESSING,
-        ai_status=ExpenseReceipt.AI_PROCESSING,
-        ai_error_message=None,
-        ai_retry_count=0,
-    )
-    create_audit_log(
-    receipt=receipt,
-    action=ExpenseAuditTrail.ACTION_RECEIPT_UPLOADED,
-    performed_by=receipt.employee,
-    remarks="Receipt received via email.",
+    report=report,
+    submission=submission,
+    company=company,
+    employee=employee,
+    department=employee.department,
+    receipt_file=uploaded_file,
+    status=ExpenseReceipt.STATUS_AI_PROCESSING,
+    ai_status=ExpenseReceipt.AI_PROCESSING,
+    ai_error_message=None,
+    ai_retry_count=0,
 )
 
+    create_audit_log(
+    company=company,
+    action="RECEIPT_UPLOADED",
+    action_by=employee,
+    message="Receipt received via email.",
+    metadata={
+        "receipt_id": str(receipt.id),
+        "report_id": str(report.id),
+        "submission_id": str(submission.id),
+        "filename": receipt.receipt_file.name,
+        "source": ExpenseSubmission.SOURCE_EMAIL,
+        "department": employee.department.name if employee.department else None,
+    },
+)
+    create_audit_log(
+    company=company,
+    action="AI_PROCESSING_STARTED",
+    action_by=employee,
+    message="AI extraction started for emailed receipt.",
+    metadata={
+        "receipt_id": str(receipt.id),
+        "report_id": str(report.id),
+        "submission_id": str(submission.id),
+    },
+)
     # ---------------------------------------------------------
     # Start AI Processing
     # ---------------------------------------------------------

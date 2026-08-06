@@ -27,6 +27,7 @@ from .views import (
     update_workflow_step,
     delete_workflow,
     simulate_workflow_api,
+    delete_receipt,
 
 )
 
@@ -87,6 +88,11 @@ path(
     "workflow/simulate/",
     simulate_workflow_api,
     name="simulate-workflow",
+),
+path(
+    "receipt/<uuid:receipt_id>/delete/",
+    delete_receipt,
+    name="delete-receipt",
 ),
 
 ]

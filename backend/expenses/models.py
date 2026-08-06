@@ -436,35 +436,39 @@ class ExpenseReceipt(models.Model):
     )
 
     linked_receipt = models.ForeignKey(
-    "self",
-    on_delete=models.SET_NULL,
-    null=True,
-    blank=True,
-    related_name="related_receipts",
-)
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="related_receipts",
+    )
 
-reference_number = models.CharField(
-    max_length=150,
-    blank=True,
-)
+    reference_number = models.CharField(
+        max_length=150,
+        blank=True,
+        default="",
+        db_index=True,
+    )
 
-reference_type = models.CharField(
-    max_length=50,
-    blank=True,
-)
+    reference_type = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+    )
 
-linked_reference_number = models.CharField(
-    max_length=150,
-    blank=True,
-)
-    
+    linked_reference_number = models.CharField(
+        max_length=150,
+        blank=True,
+        default="",
+        db_index=True,
+    )
 
-class Meta:
+    class Meta:
         ordering = [
             "-created_at",
         ]
 
-def __str__(self):
+    def __str__(self):
         return (
             f"{self.employee.user.email} - "
             f"{self.vendor_name or 'Receipt'} - "

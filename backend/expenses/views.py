@@ -112,12 +112,7 @@ def upload_receipt(request):
         receipt_file=receipt_file,
         status=ExpenseReceipt.STATUS_AI_PROCESSING
     )
-    create_audit_log(
-    receipt=receipt,
-    action=ExpenseAuditTrail.ACTION_RECEIPT_UPLOADED,
-    performed_by=profile,
-    remarks="Receipt uploaded manually.",
-)
+   
 
     create_audit_log(
         company=profile.company,
