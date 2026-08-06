@@ -55,11 +55,6 @@ from .email_notifications import send_workflow_status_email
 from .workflow_engine import can_user_approve_step,approve_current_step,reject_current_step
 from django.db import transaction
 from expenses.workflow_validator import validate_workflow
-from django.shortcuts import get_object_or_404
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-from rest_framework import status
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -1132,6 +1127,12 @@ def delete_expense_line_item(request, line_item_id):
 @api_view(["DELETE", "POST"])
 @permission_classes([IsAuthenticated])
 def delete_receipt(request, receipt_id):
+    """
+    Delete a receipt from a draft monthly report.
+
+    Covers stuck AI processing / retry / failed receipts (from the new API)
+    and any other draft receipt before submit.
+    """
     profile = request.user.profile
 
     try:
@@ -1142,14 +1143,17 @@ def delete_receipt(request, receipt_id):
         )
     except ExpenseReceipt.DoesNotExist:
         return Response(
-            {"error": "Receipt not found."},
+            {"success": False, "error": "Receipt not found."},
             status=status.HTTP_404_NOT_FOUND,
         )
 
     report = receipt.report
     if report is None or report.status != ExpenseReport.STATUS_DRAFT:
         return Response(
-            {"error": "You can delete receipts only before submitting the monthly report."},
+            {
+                "success": False,
+                "message": "You can delete receipts only before submitting the monthly report.",
+            },
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -1157,10 +1161,16 @@ def delete_receipt(request, receipt_id):
         "receipt_id": str(receipt.id),
         "report_id": str(report.id),
         "vendor_name": receipt.vendor_name,
+        "ai_status": receipt.ai_status,
+        "status": receipt.status,
         "total_amount": str(receipt.total_amount) if receipt.total_amount is not None else None,
         "filename": receipt.receipt_file.name if receipt.receipt_file else None,
     }
     submission = receipt.submission
+
+    for attachment in receipt.attachments.all():
+        if attachment.file:
+            attachment.file.delete(save=False)
 
     if receipt.receipt_file:
         receipt.receipt_file.delete(save=False)
@@ -1181,7 +1191,10 @@ def delete_receipt(request, receipt_id):
     )
 
     return Response(
-        {"message": "Receipt deleted successfully."},
+        {
+            "success": True,
+            "message": "Receipt deleted successfully.",
+        },
         status=status.HTTP_200_OK,
     )
 
@@ -2612,62 +2625,3 @@ def simulate_workflow_api(request):
     })
 
 from expenses.workflow_validator import validate_workflow
-
-
-@api_view(["DELETE"])
-@permission_classes([IsAuthenticated])
-def delete_receipt(request, receipt_id):
-    receipt = get_object_or_404(
-        ExpenseReceipt,
-        id=receipt_id,
-        employee=request.user.employee,
-    )
-
-    # Allow deletion only for receipts that are still being processed
-    allowed_ai_statuses = {
-        ExpenseReceipt.AI_PROCESSING,
-        ExpenseReceipt.AI_RETRY_REQUIRED,
-        ExpenseReceipt.AI_FAILED,
-    }
-
-    allowed_statuses = {
-        ExpenseReceipt.STATUS_DRAFT,
-        ExpenseReceipt.STATUS_AI_PROCESSING,
-    }
-
-    if (
-        receipt.ai_status not in allowed_ai_statuses
-        or receipt.status not in allowed_statuses
-    ):
-        return Response(
-            {
-                "success": False,
-                "message": (
-                    "Only receipts that are in AI Processing or Retry "
-                    "can be deleted."
-                ),
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    # Delete attachment files from storage
-    for attachment in receipt.attachments.all():
-        if attachment.file:
-            attachment.file.delete(save=False)
-
-    # Delete uploaded receipt file
-    if receipt.receipt_file:
-        receipt.receipt_file.delete(save=False)
-
-    # Delete the receipt
-    # Related ExpenseAttachment and ExpenseLineItem records
-    # will be deleted automatically because of CASCADE.
-    receipt.delete()
-
-    return Response(
-        {
-            "success": True,
-            "message": "Receipt deleted successfully.",
-        },
-        status=status.HTTP_200_OK,
-    )

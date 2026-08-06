@@ -573,6 +573,11 @@ export const getDuplicateReceipts = (params?: { type?: string }) =>
 export const deleteLineItem = (lineItemId: string) =>
   api.delete(`/expenses/line-items/${lineItemId}/delete/`)
 
+export const deleteReceipt = (receiptId: string) =>
+  api.delete<{ success?: boolean; message: string }>(
+    `/expenses/receipt/${receiptId}/delete/`,
+  )
+
 export const retryReceiptAi = (receiptId: string) =>
   api.post<import('@/types').RetryAiResponse>(
     `/expenses/receipts/${receiptId}/retry-ai/`,

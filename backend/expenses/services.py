@@ -94,6 +94,7 @@ def normalize_bill_line_items(bill: dict) -> list[dict]:
     1) charges / products
     2) taxes / fees of tax type
     Never persist grand-total rows or zero-amount placeholders.
+    Also promote bill.tip into a Tip line item when present.
     """
     if not isinstance(bill, dict):
         return []
@@ -119,6 +120,27 @@ def normalize_bill_line_items(bill: dict) -> list[dict]:
                 "reason": "",
             }
         )
+
+    # Tip often lives on bill.tip (handwritten gratuity) instead of line_items.
+    tip_amount = _line_item_amount({"total_price": bill.get("tip")})
+    if tip_amount > Decimal("0.00"):
+        already_has_tip = any(
+            "tip" in _line_item_label(item) or "gratuity" in _line_item_label(item)
+            for item in raw_items
+        )
+        if not already_has_tip:
+            raw_items.append(
+                {
+                    "name": "Tip / Gratuity",
+                    "category": bill.get("type") or "miscellaneous",
+                    "subcategory": "Tip",
+                    "quantity": 1,
+                    "unit_price": float(tip_amount),
+                    "total_price": float(tip_amount),
+                    "is_reimbursable": True,
+                    "reason": "",
+                }
+            )
 
     charges: list[dict] = []
     taxes: list[dict] = []
@@ -1462,6 +1484,11 @@ Printer Paper → Stationery
 
 Determine whether the individual item is reimbursable.
 
+IMPORTANT:
+- ALWAYS include the item in line_items even if it may not be reimbursable.
+- Never omit food, drinks, alcohol, tips, service charges, or taxes from line_items.
+- Company policy validation decides final reimbursement — extraction must mirror the receipt.
+
 Return:
 
 "is_reimbursable": true
@@ -1470,25 +1497,31 @@ or
 
 "is_reimbursable": false
 
-Examples:
+Default to true for restaurant / hotel / travel purchases, including alcohol,
+unless the receipt clearly marks the item as personal.
 
-Alcohol → false
+Examples of false (soft hint only — still include the line item):
+
 Cigarettes → false
 Personal shopping → false
 Gift item → false
 
+Examples of true:
+
 Business meal → true
+Alcohol on a restaurant bill → true
 Taxi → true
 Flight → true
 Hotel → true
 Fuel → true
-Medicine → true
+Service charge → true
+Tax → true
+Tip / gratuity → true
 
 If the item is not reimbursable, populate "reason".
 
 Examples:
 
-"Alcohol purchase"
 "Personal expense"
 "Gift item"
 
@@ -1813,12 +1846,16 @@ The sum of all line_items.total_price should approximately equal the bill grand 
 
 CRITICAL ORDERING RULES
 - Keep line_items in the same top-to-bottom order as the printed receipt.
-- Charges/products/fees first, then taxes.
+- Extract every purchased product/drink first, then fees/service charges, then taxes, then tip if printed.
+- Never omit menu items, drinks, or alcohol just because they might be non-reimbursable.
 - Never include Grand Total / Amount Due / Total as a line_item.
 - Put the payable total only in bill.amount and bill.grand_total.
+- Prefer bill.amount / bill.grand_total that includes tip when a tip is present.
+- Always put tip/gratuity in line_items (and also bill.tip) when handwritten or printed.
+- Extract handwritten tip/gratuity as its own line item when present.
 - Do not create extra bills for metadata such as entry time or payment method.
 - Put that metadata only in additional_info.
-- Prefer one bill object per physical receipt.
+- If the image contains multiple separate checks/receipts, return one bill object per check.
 
 ============================================================
 AI RECOMMENDATION
@@ -2050,12 +2087,16 @@ The sum of all line_items.total_price should approximately equal the bill grand 
 
 CRITICAL ORDERING RULES
 - Keep line_items in the same top-to-bottom order as the printed receipt.
-- Charges/products/fees first, then taxes.
+- Extract every purchased product/drink first, then fees/service charges, then taxes, then tip if printed.
+- Never omit menu items, drinks, or alcohol just because they might be non-reimbursable.
 - Never include Grand Total / Amount Due / Total as a line_item.
 - Put the payable total only in bill.amount and bill.grand_total.
+- Prefer bill.amount / bill.grand_total that includes tip when a tip is present.
+- Always put tip/gratuity in line_items (and also bill.tip) when handwritten or printed.
+- Extract handwritten tip/gratuity as its own line item when present.
 - Do not create extra bills for metadata such as entry time or payment method.
 - Put that metadata only in additional_info.
-- Prefer one bill object per physical receipt.
+- If the image contains multiple separate checks/receipts, return one bill object per check.
 ============================================================
 OUTPUT JSON
 ============================================================
@@ -2917,10 +2958,16 @@ Do not return any explanation outside the JSON.
                         if item_amount <= Decimal("0.00"):
                             continue
 
-                        # Skip items that AI marked as non-reimbursable
-                        if not item.get("is_reimbursable", True):
-                            continue
-                        print("Creating ExpenseLineItem:", item_name, item_amount)
+                        # Keep every printed line item. Non-reimbursable is a soft
+                        # flag for policy review — never drop extracted products.
+                        is_reimbursable = bool(item.get("is_reimbursable", True))
+                        print(
+                            "Creating ExpenseLineItem:",
+                            item_name,
+                            item_amount,
+                            "reimbursable=",
+                            is_reimbursable,
+                        )
                         expense_item = ExpenseLineItem.objects.create(
                             receipt=receipt,
                             description=item_name,
@@ -2935,13 +2982,11 @@ Do not return any explanation outside the JSON.
                             )[:255],
                             amount=item_amount,
                             bill_date=bill_date,
-                            is_violating=not item.get(
-                                "is_reimbursable",
-                                True,
-                            ),
-                            violation_reason=item.get(
-                                "reason",
-                                "",
+                            is_violating=not is_reimbursable,
+                            violation_reason=(
+                                item.get("reason", "")
+                                if not is_reimbursable
+                                else ""
                             ),
                         )
 

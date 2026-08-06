@@ -29,6 +29,7 @@ import {
 } from '@/lib/receiptDisplay'
 import {
   canRetryReceiptAi,
+  canDeleteReceipt,
   isAiExtractionFailed,
   isAiExtractionPending,
   receiptDisplayTitle,
@@ -143,8 +144,10 @@ interface ReceiptExpenseCardProps {
   receipt: Receipt
   canEdit?: boolean
   onDeleteLineItem?: (lineItemId: string) => void
+  onDeleteReceipt?: (receiptId: string) => void
   onRetryReceipt?: (receiptId: string) => void
   retrying?: boolean
+  deleting?: boolean
   defaultOpen?: boolean
 }
 
@@ -152,8 +155,10 @@ export function ReceiptExpenseCard({
   receipt,
   canEdit = false,
   onDeleteLineItem,
+  onDeleteReceipt,
   onRetryReceipt,
   retrying = false,
+  deleting = false,
   defaultOpen = true,
 }: ReceiptExpenseCardProps) {
   const [viewerOpen, setViewerOpen] = useState(false)
@@ -296,7 +301,7 @@ export function ReceiptExpenseCard({
               size="sm"
               variant="outline"
               className="border-slate-200"
-              disabled={retrying}
+              disabled={retrying || deleting}
               onClick={(event) => {
                 event.stopPropagation()
                 onRetryReceipt(receipt.id)
@@ -304,6 +309,21 @@ export function ReceiptExpenseCard({
             >
               <RefreshCw className={`h-3.5 w-3.5 ${retrying ? 'animate-spin' : ''}`} />
               Retry
+            </Button>
+          )}
+          {canEdit && canDeleteReceipt(receipt) && onDeleteReceipt && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
+              disabled={deleting || retrying}
+              onClick={(event) => {
+                event.stopPropagation()
+                onDeleteReceipt(receipt.id)
+              }}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              {deleting ? 'Deleting…' : 'Delete'}
             </Button>
           )}
         </div>
@@ -423,6 +443,11 @@ export function ReceiptExpenseCard({
                                       {descriptionPreview(item.description)}
                                     </p>
                                   )}
+                                {item.is_violating && (
+                                  <p className="mt-1 text-xs font-medium text-amber-700">
+                                    {item.violation_reason || 'Flagged for policy review'}
+                                  </p>
+                                )}
                               </div>
                             </div>
                           </td>
@@ -430,16 +455,23 @@ export function ReceiptExpenseCard({
                             {item.category.replace(/_/g, ' ')}
                           </td>
                           <td className="px-3 py-3 align-top">
-                            <span
-                              className={cn(
-                                'inline-flex rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide',
-                                kind === 'tax'
-                                  ? 'bg-violet-50 text-violet-700'
-                                  : 'bg-emerald-50 text-emerald-700',
+                            <div className="flex flex-col items-start gap-1">
+                              <span
+                                className={cn(
+                                  'inline-flex rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide',
+                                  kind === 'tax'
+                                    ? 'bg-violet-50 text-violet-700'
+                                    : 'bg-emerald-50 text-emerald-700',
+                                )}
+                              >
+                                {kind === 'tax' ? 'Tax' : 'Charge'}
+                              </span>
+                              {item.is_violating && (
+                                <span className="inline-flex rounded-md bg-amber-50 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber-800">
+                                  Review
+                                </span>
                               )}
-                            >
-                              {kind === 'tax' ? 'Tax' : 'Charge'}
-                            </span>
+                            </div>
                           </td>
                           <td className="whitespace-nowrap px-3 py-3 align-top text-slate-500">
                             {item.bill_date ? formatDate(item.bill_date) : '—'}

@@ -41,6 +41,11 @@ export function canRetryReceiptAi(receipt: Receipt): boolean {
   return false
 }
 
+/** Draft-claim receipts can be removed (especially stuck AI processing / retry / failed). */
+export function canDeleteReceipt(_receipt: Receipt): boolean {
+  return true
+}
+
 export function receiptDisplayTitle(receipt: Receipt): string {
   if (isAiExtractionFailed(receipt)) return 'Extraction failed'
   if (isAiExtractionPending(receipt)) return 'Processing receipt…'
