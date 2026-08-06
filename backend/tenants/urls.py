@@ -70,6 +70,10 @@ from .views import (
     delete_draft_policy_version_api,
     compare_policy_versions_api,
     company_language_preferences,
+    company_exchange_rates,
+    update_company_exchange_rate,
+    delete_company_exchange_rate,
+    
     
 
 
@@ -285,5 +289,22 @@ path(
     "company/language-preferences/",
     company_language_preferences,
     name="company-language-preferences",
+),
+path(
+    "company/exchange-rates/",
+    company_exchange_rates,
+    name="company-exchange-rates",
+),
+
+path(
+    "company/exchange-rates/<int:rate_id>/",
+    update_company_exchange_rate,
+    name="update-company-exchange-rate",
+),
+
+path(
+    "company/exchange-rates/<int:rate_id>/delete/",
+    delete_company_exchange_rate,
+    name="delete-company-exchange-rate",
 ),
 ]

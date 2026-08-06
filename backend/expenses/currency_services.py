@@ -3,12 +3,13 @@ from decimal import Decimal
 import requests
 from django.conf import settings
 from django.utils import timezone
-
+from tenants.models import CompanyFinanceSettings, CompanyExchangeRate
 
 def convert_currency(
     amount,
     from_currency,
     to_currency,
+    company=None,
 ):
     amount = Decimal(str(amount or 0))
     from_currency = str(from_currency or "INR").upper()
@@ -23,6 +24,48 @@ def convert_currency(
             "exchange_rate_date": timezone.now(),
             "exchange_rate_provider": settings.EXCHANGE_RATE_PROVIDER,
         }
+    # ----------------------------------------
+    # Company Custom Exchange Rate
+    # ----------------------------------------
+
+    if company:
+        try:
+            finance_settings = company.finance_settings
+
+            if finance_settings.exchange_rate_source == "CUSTOM":
+                custom_rate = CompanyExchangeRate.objects.get(
+                    company=company,
+                    from_currency__code=from_currency,
+                    to_currency__code=to_currency,
+                    is_active=True,
+                )
+
+                rate = custom_rate.exchange_rate
+
+                converted_amount = amount * rate
+
+                return {
+                    "success": True,
+                    "company_amount": converted_amount.quantize(
+                        Decimal("0.01")
+                    ),
+                    "company_currency": to_currency,
+                    "exchange_rate": rate,
+                    "exchange_rate_date": timezone.now(),
+                    "exchange_rate_provider": "Company Custom Rate",
+                }
+
+        except CompanyExchangeRate.DoesNotExist:
+            return {
+                "success": False,
+                "error": (
+                    f"No custom exchange rate found "
+                    f"for {from_currency} → {to_currency}"
+                ),
+            }
+
+        except CompanyFinanceSettings.DoesNotExist:
+            pass
 
     if not settings.EXCHANGE_RATE_API_KEY:
         return {

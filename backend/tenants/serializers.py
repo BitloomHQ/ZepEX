@@ -5,6 +5,7 @@ import uuid
 from .media_utils import profile_picture_url
 from .models import (
     Company,
+    CompanyExchangeRate,
     Department,
     UserProfile,
     CompanyRole,
@@ -676,22 +677,34 @@ class CompanyFinanceSettingsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = CompanyFinanceSettings
+
         fields = [
             "id",
             "company",
+
             "base_currency",
             "base_currency_code",
             "base_currency_name",
             "base_currency_symbol",
             "base_currency_flag",
+
             "auto_currency_conversion",
+
+            # NEW FIELD
+            "exchange_rate_source",
+
             "exchange_rate_provider",
+
             "allow_manual_exchange_rate",
+
             "decimal_places",
             "rounding_enabled",
+
             "timezone",
             "date_format",
+
             "last_exchange_sync",
+
             "created_at",
             "updated_at",
         ]
@@ -699,15 +712,17 @@ class CompanyFinanceSettingsSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id",
             "company",
+
             "base_currency_code",
             "base_currency_name",
             "base_currency_symbol",
             "base_currency_flag",
+
             "last_exchange_sync",
+
             "created_at",
             "updated_at",
         ]
-
 
 class CurrencySerializer(serializers.ModelSerializer):
 
@@ -815,3 +830,28 @@ class CompanyPreferencesSerializer(serializers.ModelSerializer):
             )
 
         return value
+
+
+class CompanyExchangeRateSerializer(serializers.ModelSerializer):
+
+    from_currency = serializers.SlugRelatedField(
+        slug_field="code",
+        queryset=Currency.objects.all(),
+    )
+
+    to_currency = serializers.SlugRelatedField(
+        slug_field="code",
+        queryset=Currency.objects.all(),
+    )
+
+    class Meta:
+        model = CompanyExchangeRate
+
+        fields = (
+            "id",
+            "from_currency",
+            "to_currency",
+            "exchange_rate",
+            "is_active",
+            "updated_at",
+        )

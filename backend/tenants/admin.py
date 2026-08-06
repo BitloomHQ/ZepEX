@@ -9,7 +9,8 @@ from .models import (
     UserProfile,
     ExternalDatabaseConfig,
     CompanyPolicy,
-    PolicyCategoryRule
+    PolicyCategoryRule,
+    CompanyFinanceSettings,
 )
 
 
@@ -123,4 +124,26 @@ class CurrencyAdmin(admin.ModelAdmin):
 
     ordering = (
         "code",
+    )
+
+@admin.register(CompanyFinanceSettings)
+class CompanyFinanceSettingsAdmin(admin.ModelAdmin):
+
+    list_display = (
+        "company",
+        "base_currency",
+        "exchange_rate_source",
+        "exchange_rate_provider",
+        "auto_currency_conversion",
+        "allow_manual_exchange_rate",
+    )
+
+    list_filter = (
+        "exchange_rate_source",
+        "auto_currency_conversion",
+        "allow_manual_exchange_rate",
+    )
+
+    search_fields = (
+        "company__name",
     )

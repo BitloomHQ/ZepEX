@@ -470,10 +470,11 @@ def resync_draft_receipts_to_company_currency(company):
 
                 if finance_settings.auto_currency_conversion:
                     conversion_result = convert_currency(
-                        amount=original_amount,
-                        from_currency=original_currency,
-                        to_currency=target_currency,
-                    )
+    amount=receipt.original_amount,
+    from_currency=receipt.original_currency,
+    to_currency=target_currency,
+    company=receipt.company,
+)
                     if conversion_result.get("success"):
                         receipt.company_amount = conversion_result["company_amount"]
                         receipt.company_currency = conversion_result["company_currency"]
@@ -570,6 +571,7 @@ def recalculate_receipt_from_line_items(receipt):
                 amount=receipt.original_amount,
                 from_currency=receipt.original_currency,
                 to_currency=company_currency,
+                company=receipt.company,
             )
 
             if conversion_result.get("success"):
@@ -2712,10 +2714,11 @@ Do not return any explanation outside the JSON.
             if auto_conversion_enabled:
 
                 conversion_result = convert_currency(
-                    amount=receipt.original_amount,
-                    from_currency=receipt.original_currency,
-                    to_currency=company_currency,
-                )
+    amount=receipt.original_amount,
+    from_currency=receipt.original_currency,
+    to_currency=company_currency,
+    company=receipt.company,
+)
 
                 if conversion_result.get("success"):
 

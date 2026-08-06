@@ -3559,7 +3559,7 @@ from .serializers import CompanyFinanceSettingsSerializer
 @api_view(["GET", "PUT"])
 @permission_classes([
     IsAuthenticated,
-    IsCompanyAdmin
+    IsCompanyAdmin,
 ])
 def company_finance_settings(request):
 
@@ -3568,48 +3568,71 @@ def company_finance_settings(request):
 
     default_currency = Currency.objects.filter(
         code="INR",
-        is_active=True
+        is_active=True,
     ).first()
 
     finance_settings, created = CompanyFinanceSettings.objects.get_or_create(
         company=company,
         defaults={
-            "base_currency": default_currency
-        }
+            "base_currency": default_currency,
+        },
     )
 
     if request.method == "GET":
-        serializer = CompanyFinanceSettingsSerializer(finance_settings)
 
-        return Response({
-            "success": True,
-            "settings": serializer.data
-        })
+        serializer = CompanyFinanceSettingsSerializer(
+            finance_settings
+        )
+
+        return Response(
+            {
+                "success": True,
+                "settings": serializer.data,
+            }
+        )
 
     serializer = CompanyFinanceSettingsSerializer(
         finance_settings,
         data=request.data,
-        partial=True
+        partial=True,
     )
 
-    serializer.is_valid(raise_exception=True)
+    serializer.is_valid(
+        raise_exception=True
+    )
 
+    # Store previous values
     previous_currency_id = finance_settings.base_currency_id
     previous_auto_conversion = finance_settings.auto_currency_conversion
+    previous_exchange_rate_source = (
+        finance_settings.exchange_rate_source
+    )
 
     serializer.save()
+
     finance_settings.refresh_from_db()
 
+    # Check whether receipts need to be recalculated
     currency_related_changed = (
         finance_settings.base_currency_id != previous_currency_id
-        or finance_settings.auto_currency_conversion != previous_auto_conversion
+        or finance_settings.auto_currency_conversion
+        != previous_auto_conversion
+        or finance_settings.exchange_rate_source
+        != previous_exchange_rate_source
     )
 
     resynced_receipts = 0
-    if currency_related_changed:
-        from expenses.services import resync_draft_receipts_to_company_currency
 
-        resynced_receipts = resync_draft_receipts_to_company_currency(company)
+    if currency_related_changed:
+        from expenses.services import (
+            resync_draft_receipts_to_company_currency,
+        )
+
+        resynced_receipts = (
+            resync_draft_receipts_to_company_currency(
+                company
+            )
+        )
 
     create_audit_log(
         company=company,
@@ -3617,33 +3640,45 @@ def company_finance_settings(request):
         action_by=profile,
         message="Company finance settings updated.",
         metadata={
-            "base_currency": serializer.data.get("base_currency_code"),
+            "base_currency": serializer.data.get(
+                "base_currency_code"
+            ),
             "auto_currency_conversion": serializer.data.get(
                 "auto_currency_conversion"
+            ),
+            "exchange_rate_source": serializer.data.get(
+                "exchange_rate_source"
             ),
             "exchange_rate_provider": serializer.data.get(
                 "exchange_rate_provider"
             ),
-            "timezone": serializer.data.get("timezone"),
-            "date_format": serializer.data.get("date_format"),
+            "timezone": serializer.data.get(
+                "timezone"
+            ),
+            "date_format": serializer.data.get(
+                "date_format"
+            ),
             "draft_receipts_resynced": resynced_receipts,
-        }
+        },
     )
 
     message = "Company finance settings updated successfully."
+
     if resynced_receipts:
         message = (
             f"Company finance settings updated successfully. "
-            f"Updated currency conversion on {resynced_receipts} draft receipt(s)."
+            f"Updated currency conversion on "
+            f"{resynced_receipts} draft receipt(s)."
         )
 
-    return Response({
-        "success": True,
-        "message": message,
-        "settings": serializer.data,
-        "draft_receipts_resynced": resynced_receipts,
-    })
-
+    return Response(
+        {
+            "success": True,
+            "message": message,
+            "settings": serializer.data,
+            "draft_receipts_resynced": resynced_receipts,
+        }
+    )
 
 from .models import Currency
 from .serializers import CurrencySerializer
@@ -6107,6 +6142,155 @@ def company_language_preferences(request):
             "preferences": CompanyPreferencesSerializer(
                 preferences
             ).data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework import status
+
+from .models import CompanyExchangeRate
+from .serializers import CompanyExchangeRateSerializer
+
+from django.shortcuts import get_object_or_404
+
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+
+from .models import CompanyExchangeRate
+from .serializers import CompanyExchangeRateSerializer
+from .permissions import IsCompanyAdmin
+
+
+@api_view(["GET", "POST"])
+@permission_classes([
+    IsAuthenticated,
+    IsCompanyAdmin,
+])
+def company_exchange_rates(request):
+
+    company = request.user.profile.company
+
+    finance_settings = getattr(company, "finance_settings", None)
+
+    if finance_settings is None:
+        return Response(
+            {
+                "success": False,
+                "message": "Company finance settings not found.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if request.method == "GET":
+
+        rates = (
+            CompanyExchangeRate.objects.filter(
+                finance_settings=finance_settings
+            )
+            .select_related(
+                "from_currency",
+                "to_currency",
+            )
+            .order_by(
+                "from_currency__code",
+                "to_currency__code",
+            )
+        )
+
+        serializer = CompanyExchangeRateSerializer(
+            rates,
+            many=True,
+        )
+
+        return Response(
+            {
+                "success": True,
+                "exchange_rates": serializer.data,
+            }
+        )
+
+    serializer = CompanyExchangeRateSerializer(
+        data=request.data,
+        context={"request": request},
+    )
+
+    serializer.is_valid(raise_exception=True)
+
+    serializer.save(
+        finance_settings=finance_settings
+    )
+
+    return Response(
+        {
+            "success": True,
+            "message": "Exchange rate created successfully.",
+            "exchange_rate": serializer.data,
+        },
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@api_view(["PUT"])
+@permission_classes([
+    IsAuthenticated,
+    IsCompanyAdmin,
+])
+def update_company_exchange_rate(request, rate_id):
+
+    company = request.user.profile.company
+
+    rate = get_object_or_404(
+        CompanyExchangeRate,
+        id=rate_id,
+        finance_settings__company=company,
+    )
+
+    serializer = CompanyExchangeRateSerializer(
+        rate,
+        data=request.data,
+        partial=True,
+        context={"request": request},
+    )
+
+    serializer.is_valid(raise_exception=True)
+
+    serializer.save()
+
+    return Response(
+        {
+            "success": True,
+            "message": "Exchange rate updated successfully.",
+            "exchange_rate": serializer.data,
+        }
+    )
+
+
+@api_view(["DELETE"])
+@permission_classes([
+    IsAuthenticated,
+    IsCompanyAdmin,
+])
+def delete_company_exchange_rate(request, rate_id):
+
+    company = request.user.profile.company
+
+    rate = get_object_or_404(
+        CompanyExchangeRate,
+        id=rate_id,
+        finance_settings__company=company,
+    )
+
+    rate.delete()
+
+    return Response(
+        {
+            "success": True,
+            "message": "Exchange rate deleted successfully.",
         },
         status=status.HTTP_200_OK,
     )

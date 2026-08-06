@@ -897,6 +897,11 @@ class CompanyFinanceSettings(models.Model):
         ("YYYY-MM-DD", "YYYY-MM-DD"),
     ]
 
+    EXCHANGE_RATE_SOURCE = [
+        ("GLOBAL", "Global Exchange Rate"),
+        ("CUSTOM", "Company Custom Rate"),
+    ]
+
     company = models.OneToOneField(
         Company,
         on_delete=models.CASCADE,
@@ -911,6 +916,12 @@ class CompanyFinanceSettings(models.Model):
 
     auto_currency_conversion = models.BooleanField(
         default=True
+    )
+
+    exchange_rate_source = models.CharField(
+        max_length=20,
+        choices=EXCHANGE_RATE_SOURCE,
+        default="GLOBAL"
     )
 
     exchange_rate_provider = models.CharField(
@@ -957,6 +968,54 @@ class CompanyFinanceSettings(models.Model):
 
     def __str__(self):
         return f"{self.company.name} Finance Settings"
+
+
+class CompanyExchangeRate(models.Model):
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="custom_exchange_rates",
+    )
+
+    from_currency = models.ForeignKey(
+        Currency,
+        on_delete=models.CASCADE,
+        related_name="company_from_rates",
+    )
+
+    to_currency = models.ForeignKey(
+        Currency,
+        on_delete=models.CASCADE,
+        related_name="company_to_rates",
+    )
+
+    exchange_rate = models.DecimalField(
+        max_digits=18,
+        decimal_places=8,
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+    )
+
+    class Meta:
+        unique_together = (
+            "company",
+            "from_currency",
+            "to_currency",
+        )
+
+    def __str__(self):
+        return (
+            f"{self.company.name}: "
+            f"1 {self.from_currency.code} = "
+            f"{self.exchange_rate} {self.to_currency.code}"
+        )
     
 
 class PolicyDocumentImport(models.Model):
