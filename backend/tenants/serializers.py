@@ -852,6 +852,35 @@ class CompanyExchangeRateSerializer(serializers.ModelSerializer):
             "from_currency",
             "to_currency",
             "exchange_rate",
-            "is_active",
             "updated_at",
         )
+        read_only_fields = (
+            "id",
+            "updated_at",
+        )
+
+    def validate(self, attrs):
+        from_currency = attrs.get(
+            "from_currency",
+            getattr(self.instance, "from_currency", None),
+        )
+        to_currency = attrs.get(
+            "to_currency",
+            getattr(self.instance, "to_currency", None),
+        )
+        exchange_rate = attrs.get(
+            "exchange_rate",
+            getattr(self.instance, "exchange_rate", None),
+        )
+
+        if from_currency and to_currency and from_currency == to_currency:
+            raise serializers.ValidationError(
+                "From and to currency must be different."
+            )
+
+        if exchange_rate is not None and exchange_rate <= 0:
+            raise serializers.ValidationError(
+                {"exchange_rate": "Exchange rate must be greater than zero."}
+            )
+
+        return attrs

@@ -33,8 +33,10 @@ import type {
   ReimbursementEmailConfigResponse,
   RejectReportResponse,
   UpdateWorkflowStepResponse,
+  CompanyExchangeRate,
   Currency,
   CurrencyListResponse,
+  ExchangeRateSource,
   FinanceSettings,
   UploadReceiptResponse,
   SubmitMonthlyReportResponse,
@@ -524,6 +526,7 @@ export const getFinanceSettings = () =>
 export const updateFinanceSettings = (data: {
   base_currency: number
   auto_currency_conversion: boolean
+  exchange_rate_source: ExchangeRateSource
   exchange_rate_provider: string
   allow_manual_exchange_rate: boolean
   decimal_places: number
@@ -535,7 +538,47 @@ export const updateFinanceSettings = (data: {
     success: boolean
     message: string
     settings: FinanceSettings
+    draft_receipts_resynced?: number
   }>('/tenants/company/finance-settings/', data)
+
+export const getCompanyExchangeRates = () =>
+  api.get<{ success: boolean; exchange_rates: CompanyExchangeRate[] }>(
+    '/tenants/company/exchange-rates/',
+  )
+
+export const createCompanyExchangeRate = (data: {
+  from_currency: string
+  to_currency: string
+  exchange_rate: number | string
+}) =>
+  api.post<{
+    success: boolean
+    message: string
+    exchange_rate: CompanyExchangeRate
+    draft_receipts_resynced?: number
+  }>('/tenants/company/exchange-rates/', data)
+
+export const updateCompanyExchangeRate = (
+  rateId: number,
+  data: {
+    from_currency?: string
+    to_currency?: string
+    exchange_rate?: number | string
+  },
+) =>
+  api.put<{
+    success: boolean
+    message: string
+    exchange_rate: CompanyExchangeRate
+    draft_receipts_resynced?: number
+  }>(`/tenants/company/exchange-rates/${rateId}/`, data)
+
+export const deleteCompanyExchangeRate = (rateId: number) =>
+  api.delete<{
+    success: boolean
+    message: string
+    draft_receipts_resynced?: number
+  }>(`/tenants/company/exchange-rates/${rateId}/delete/`)
 
 export const getAuditLogDashboard = () => api.get('/audit-logs/dashboard/')
 

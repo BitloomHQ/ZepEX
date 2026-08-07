@@ -37,7 +37,6 @@ def convert_currency(
                     company=company,
                     from_currency__code=from_currency,
                     to_currency__code=to_currency,
-                    is_active=True,
                 )
 
                 rate = custom_rate.exchange_rate

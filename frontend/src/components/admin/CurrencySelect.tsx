@@ -12,6 +12,9 @@ interface CurrencySelectProps {
   onChange: (currencyId: number, currency?: CurrencyOption) => void
   disabled?: boolean
   selectedOption?: CurrencyOption | null
+  label?: string
+  description?: string
+  placeholder?: string
 }
 
 function formatCurrencyLabel(currency: CurrencyOption) {
@@ -23,6 +26,9 @@ export function CurrencySelect({
   onChange,
   disabled,
   selectedOption,
+  label = 'Base currency',
+  description = "Your company's reimbursement currency. Receipts in other currencies are converted to this for policy checks and payouts.",
+  placeholder = 'Choose base currency…',
 }: CurrencySelectProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
@@ -100,11 +106,8 @@ export function CurrencySelect({
   return (
     <div className="space-y-2">
       <div>
-        <Label>Base currency</Label>
-        <p className="mt-1 text-xs text-gray-500">
-          Your company&apos;s reimbursement currency. Receipts in other currencies are
-          converted to this for policy checks and payouts.
-        </p>
+        <Label>{label}</Label>
+        {description ? <p className="mt-1 text-xs text-gray-500">{description}</p> : null}
       </div>
 
       <div ref={containerRef} className="relative">
@@ -120,7 +123,7 @@ export function CurrencySelect({
           )}
         >
           <span className={cn('truncate', !displayValue && 'text-gray-500')}>
-            {displayValue || 'Choose base currency…'}
+            {displayValue || placeholder}
           </span>
           <ChevronDown
             className={cn('h-4 w-4 shrink-0 text-gray-500 transition-transform', open && 'rotate-180')}

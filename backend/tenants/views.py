@@ -6146,24 +6146,20 @@ def company_language_preferences(request):
         status=status.HTTP_200_OK,
     )
 
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-from rest_framework import status
-
-from .models import CompanyExchangeRate
-from .serializers import CompanyExchangeRateSerializer
-
 from django.shortcuts import get_object_or_404
 
-from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-
 from .models import CompanyExchangeRate
 from .serializers import CompanyExchangeRateSerializer
-from .permissions import IsCompanyAdmin
+
+
+def _resync_drafts_if_custom_rates(company):
+    finance_settings = getattr(company, "finance_settings", None)
+    if not finance_settings or finance_settings.exchange_rate_source != "CUSTOM":
+        return 0
+
+    from expenses.services import resync_draft_receipts_to_company_currency
+
+    return resync_draft_receipts_to_company_currency(company)
 
 
 @api_view(["GET", "POST"])
@@ -6175,22 +6171,11 @@ def company_exchange_rates(request):
 
     company = request.user.profile.company
 
-    finance_settings = getattr(company, "finance_settings", None)
-
-    if finance_settings is None:
-        return Response(
-            {
-                "success": False,
-                "message": "Company finance settings not found.",
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
     if request.method == "GET":
 
         rates = (
             CompanyExchangeRate.objects.filter(
-                finance_settings=finance_settings
+                company=company,
             )
             .select_related(
                 "from_currency",
@@ -6220,16 +6205,16 @@ def company_exchange_rates(request):
     )
 
     serializer.is_valid(raise_exception=True)
+    serializer.save(company=company)
 
-    serializer.save(
-        finance_settings=finance_settings
-    )
+    resynced_receipts = _resync_drafts_if_custom_rates(company)
 
     return Response(
         {
             "success": True,
             "message": "Exchange rate created successfully.",
             "exchange_rate": serializer.data,
+            "draft_receipts_resynced": resynced_receipts,
         },
         status=status.HTTP_201_CREATED,
     )
@@ -6247,7 +6232,7 @@ def update_company_exchange_rate(request, rate_id):
     rate = get_object_or_404(
         CompanyExchangeRate,
         id=rate_id,
-        finance_settings__company=company,
+        company=company,
     )
 
     serializer = CompanyExchangeRateSerializer(
@@ -6258,14 +6243,16 @@ def update_company_exchange_rate(request, rate_id):
     )
 
     serializer.is_valid(raise_exception=True)
-
     serializer.save()
+
+    resynced_receipts = _resync_drafts_if_custom_rates(company)
 
     return Response(
         {
             "success": True,
             "message": "Exchange rate updated successfully.",
             "exchange_rate": serializer.data,
+            "draft_receipts_resynced": resynced_receipts,
         }
     )
 
@@ -6282,15 +6269,18 @@ def delete_company_exchange_rate(request, rate_id):
     rate = get_object_or_404(
         CompanyExchangeRate,
         id=rate_id,
-        finance_settings__company=company,
+        company=company,
     )
 
     rate.delete()
+
+    resynced_receipts = _resync_drafts_if_custom_rates(company)
 
     return Response(
         {
             "success": True,
             "message": "Exchange rate deleted successfully.",
+            "draft_receipts_resynced": resynced_receipts,
         },
         status=status.HTTP_200_OK,
     )

@@ -1,10 +1,14 @@
-import { ChevronRight, Mail, Settings, Wallet } from 'lucide-react'
+import { ChevronRight, Mail, Settings, Trash2, Wallet } from 'lucide-react'
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
+  createCompanyExchangeRate,
+  deleteCompanyExchangeRate,
+  getCompanyExchangeRates,
   getEmailServiceStatus,
   getFinanceSettings,
   getReimbursementEmailConfig,
   saveReimbursementEmailConfig,
+  updateCompanyExchangeRate,
   updateFinanceSettings,
 } from '@/api'
 import { getApiErrorMessage } from '@/api/client'
@@ -28,12 +32,24 @@ import { formatDateTime } from '@/lib/utils'
 import { toast } from '@/lib/toast'
 import { financeCurrencyLabel as formatFinanceCurrencyLabel } from '@/lib/financeSettings'
 import { unwrapEmailServiceStatus, unwrapReimbursementEmailConfig } from '@/lib/emailSettings'
-import type { FinanceSettings, PlatformEmailServiceStatus } from '@/types'
+import type {
+  CompanyExchangeRate,
+  ExchangeRateSource,
+  FinanceSettings,
+  PlatformEmailServiceStatus,
+} from '@/types'
 
 const DATE_FORMAT_OPTIONS = ['DD/MM/YYYY', 'MM/DD/YYYY', 'YYYY-MM-DD'] as const
 
 const selectClassName =
   'flex h-10 w-full rounded-md border border-gray-300 bg-white px-3 text-sm'
+
+type CurrencyOption = {
+  id: number
+  code: string
+  name: string
+  flag: string
+}
 
 export function SettingsPage() {
   const { navItems } = useAdminNav()
@@ -53,6 +69,7 @@ export function SettingsPage() {
   const [financeForm, setFinanceForm] = useState({
     base_currency: '' as number | '',
     auto_currency_conversion: true,
+    exchange_rate_source: 'GLOBAL' as ExchangeRateSource,
     exchange_rate_provider: 'ExchangeRate API',
     allow_manual_exchange_rate: false,
     decimal_places: '2',
@@ -63,17 +80,27 @@ export function SettingsPage() {
   const [financeLoaded, setFinanceLoaded] = useState(false)
   const [financeCurrencyLabel, setFinanceCurrencyLabel] = useState('')
   const [lastExchangeSync, setLastExchangeSync] = useState<string | null>(null)
-  const [financeSelectedCurrency, setFinanceSelectedCurrency] = useState<{
-    id: number
-    code: string
-    name: string
-    flag: string
-  } | null>(null)
+  const [financeSelectedCurrency, setFinanceSelectedCurrency] = useState<CurrencyOption | null>(
+    null,
+  )
+  const [exchangeRates, setExchangeRates] = useState<CompanyExchangeRate[]>([])
+  const [ratesLoading, setRatesLoading] = useState(false)
+  const [rateSaving, setRateSaving] = useState(false)
+  const [editingRateId, setEditingRateId] = useState<number | null>(null)
+  const [editingRateValue, setEditingRateValue] = useState('')
+  const [newRateForm, setNewRateForm] = useState({
+    from_currency_id: '' as number | '',
+    to_currency_id: '' as number | '',
+    from_currency: null as CurrencyOption | null,
+    to_currency: null as CurrencyOption | null,
+    exchange_rate: '',
+  })
 
   const applyFinanceSettings = (settings: FinanceSettings) => {
     setFinanceForm({
       base_currency: settings.base_currency,
       auto_currency_conversion: settings.auto_currency_conversion,
+      exchange_rate_source: settings.exchange_rate_source || 'GLOBAL',
       exchange_rate_provider: settings.exchange_rate_provider,
       allow_manual_exchange_rate: settings.allow_manual_exchange_rate,
       decimal_places: String(settings.decimal_places),
@@ -115,6 +142,18 @@ export function SettingsPage() {
     setEmailLoaded(Boolean(data.reimbursement_email))
   }
 
+  const loadExchangeRates = async () => {
+    setRatesLoading(true)
+    try {
+      const { data } = await getCompanyExchangeRates()
+      setExchangeRates(data.exchange_rates || [])
+    } catch {
+      setExchangeRates([])
+    } finally {
+      setRatesLoading(false)
+    }
+  }
+
   useEffect(() => {
     async function loadSettings() {
       setLoading(true)
@@ -127,6 +166,9 @@ export function SettingsPage() {
 
         if (financeRes.data.settings) {
           applyFinanceSettings(financeRes.data.settings)
+          if (financeRes.data.settings.exchange_rate_source === 'CUSTOM') {
+            await loadExchangeRates()
+          }
         }
 
         if (emailRes?.data) {
@@ -144,13 +186,23 @@ export function SettingsPage() {
     loadSettings()
   }, [])
 
+  useEffect(() => {
+    if (!financeOpen) return
+    if (financeForm.exchange_rate_source !== 'CUSTOM') return
+    void loadExchangeRates()
+  }, [financeOpen, financeForm.exchange_rate_source])
+
   const settingsRows = useMemo(
     () => [
       {
         id: 'finance' as const,
         title: 'Finance settings',
         description: 'Base currency, conversion, and display preferences.',
-        summary: financeCurrencyLabel || 'Not configured',
+        summary: financeCurrencyLabel
+          ? `${financeCurrencyLabel} · ${
+              financeForm.exchange_rate_source === 'CUSTOM' ? 'Custom rates' : 'Global rates'
+            }`
+          : 'Not configured',
         configured: financeLoaded,
         icon: Wallet,
       },
@@ -163,17 +215,35 @@ export function SettingsPage() {
         icon: Mail,
       },
     ],
-    [financeCurrencyLabel, financeLoaded, emailSummary, emailLoaded],
+    [
+      financeCurrencyLabel,
+      financeLoaded,
+      financeForm.exchange_rate_source,
+      emailSummary,
+      emailLoaded,
+    ],
   )
 
   const closeFinanceModal = () => {
     setFinanceOpen(false)
     setError('')
+    setEditingRateId(null)
+    setEditingRateValue('')
   }
 
   const closeEmailModal = () => {
     setEmailOpen(false)
     setError('')
+  }
+
+  const resetNewRateForm = () => {
+    setNewRateForm({
+      from_currency_id: '',
+      to_currency_id: '',
+      from_currency: null,
+      to_currency: null,
+      exchange_rate: '',
+    })
   }
 
   const saveFinance = async (e: FormEvent) => {
@@ -188,6 +258,7 @@ export function SettingsPage() {
       const { data } = await updateFinanceSettings({
         base_currency: financeForm.base_currency,
         auto_currency_conversion: financeForm.auto_currency_conversion,
+        exchange_rate_source: financeForm.exchange_rate_source,
         exchange_rate_provider: financeForm.exchange_rate_provider,
         allow_manual_exchange_rate: financeForm.allow_manual_exchange_rate,
         decimal_places: parseInt(financeForm.decimal_places, 10),
@@ -207,6 +278,84 @@ export function SettingsPage() {
       setError(getApiErrorMessage(err))
     } finally {
       setSaving(false)
+    }
+  }
+
+  const saveNewExchangeRate = async () => {
+    if (!newRateForm.from_currency?.code || !newRateForm.to_currency?.code) {
+      setError('Select both currencies for the custom rate.')
+      return
+    }
+    if (!newRateForm.exchange_rate.trim()) {
+      setError('Enter an exchange rate.')
+      return
+    }
+
+    setRateSaving(true)
+    setError('')
+    try {
+      const { data } = await createCompanyExchangeRate({
+        from_currency: newRateForm.from_currency.code,
+        to_currency: newRateForm.to_currency.code,
+        exchange_rate: newRateForm.exchange_rate.trim(),
+      })
+      setExchangeRates((current) => {
+        const next = current.filter((rate) => rate.id !== data.exchange_rate.id)
+        return [...next, data.exchange_rate].sort((a, b) =>
+          `${a.from_currency}${a.to_currency}`.localeCompare(
+            `${b.from_currency}${b.to_currency}`,
+          ),
+        )
+      })
+      resetNewRateForm()
+      toast.success(data.message || 'Exchange rate created.')
+    } catch (err) {
+      setError(getApiErrorMessage(err))
+    } finally {
+      setRateSaving(false)
+    }
+  }
+
+  const saveEditedExchangeRate = async (rateId: number) => {
+    if (!editingRateValue.trim()) {
+      setError('Enter an exchange rate.')
+      return
+    }
+
+    setRateSaving(true)
+    setError('')
+    try {
+      const { data } = await updateCompanyExchangeRate(rateId, {
+        exchange_rate: editingRateValue.trim(),
+      })
+      setExchangeRates((current) =>
+        current.map((rate) => (rate.id === rateId ? data.exchange_rate : rate)),
+      )
+      setEditingRateId(null)
+      setEditingRateValue('')
+      toast.success(data.message || 'Exchange rate updated.')
+    } catch (err) {
+      setError(getApiErrorMessage(err))
+    } finally {
+      setRateSaving(false)
+    }
+  }
+
+  const removeExchangeRate = async (rateId: number) => {
+    setRateSaving(true)
+    setError('')
+    try {
+      const { data } = await deleteCompanyExchangeRate(rateId)
+      setExchangeRates((current) => current.filter((rate) => rate.id !== rateId))
+      if (editingRateId === rateId) {
+        setEditingRateId(null)
+        setEditingRateValue('')
+      }
+      toast.success(data.message || 'Exchange rate deleted.')
+    } catch (err) {
+      setError(getApiErrorMessage(err))
+    } finally {
+      setRateSaving(false)
     }
   }
 
@@ -301,7 +450,7 @@ export function SettingsPage() {
       </AdminListPanel>
 
       <Dialog open={financeOpen} onOpenChange={(open) => !open && closeFinanceModal()}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>Finance settings</DialogTitle>
             <DialogDescription>Base currency, conversion, and display preferences.</DialogDescription>
@@ -352,6 +501,28 @@ export function SettingsPage() {
                 }
               />
             </div>
+            <div className="space-y-2">
+              <Label htmlFor="exchange-rate-source">Exchange rate source</Label>
+              <select
+                id="exchange-rate-source"
+                className={selectClassName}
+                value={financeForm.exchange_rate_source}
+                onChange={(e) =>
+                  setFinanceForm({
+                    ...financeForm,
+                    exchange_rate_source: e.target.value as ExchangeRateSource,
+                  })
+                }
+              >
+                <option value="GLOBAL">Global exchange rate (API)</option>
+                <option value="CUSTOM">Company custom rates</option>
+              </select>
+              <p className="text-xs text-gray-500">
+                {financeForm.exchange_rate_source === 'CUSTOM'
+                  ? 'Conversions use rates you define below. Missing pairs will fail conversion.'
+                  : 'Conversions use the live provider rate.'}
+              </p>
+            </div>
             <div className="flex flex-col gap-3">
               <label className="flex items-center gap-2 text-sm text-gray-700">
                 <input
@@ -390,6 +561,183 @@ export function SettingsPage() {
                 Enable rounding
               </label>
             </div>
+
+            {financeForm.exchange_rate_source === 'CUSTOM' && (
+              <div className="space-y-3 rounded-lg border border-[#e2e8f0] bg-gray-50 p-4">
+                <div>
+                  <p className="text-sm font-medium text-gray-900">Custom exchange rates</p>
+                  <p className="mt-0.5 text-xs text-gray-500">
+                    Define 1 from-currency = rate × to-currency. Changes apply to draft receipts
+                    immediately when custom mode is active.
+                  </p>
+                </div>
+
+                {ratesLoading ? (
+                  <p className="text-sm text-gray-500">Loading rates…</p>
+                ) : exchangeRates.length === 0 ? (
+                  <p className="text-sm text-gray-500">No custom rates yet.</p>
+                ) : (
+                  <div className="overflow-hidden rounded-md border border-[#e2e8f0] bg-white">
+                    <table className="w-full text-left text-sm">
+                      <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500">
+                        <tr>
+                          <th className="px-3 py-2 font-medium">Pair</th>
+                          <th className="px-3 py-2 font-medium">Rate</th>
+                          <th className="px-3 py-2 font-medium" />
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#e2e8f0]">
+                        {exchangeRates.map((rate) => (
+                          <tr key={rate.id}>
+                            <td className="px-3 py-2 text-gray-900">
+                              {rate.from_currency} → {rate.to_currency}
+                            </td>
+                            <td className="px-3 py-2">
+                              {editingRateId === rate.id ? (
+                                <Input
+                                  value={editingRateValue}
+                                  onChange={(e) => setEditingRateValue(e.target.value)}
+                                  className="h-8"
+                                  disabled={rateSaving}
+                                />
+                              ) : (
+                                <span className="tabular-nums text-gray-800">
+                                  {rate.exchange_rate}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2">
+                              <div className="flex justify-end gap-2">
+                                {editingRateId === rate.id ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className="text-xs font-medium text-primary"
+                                      disabled={rateSaving}
+                                      onClick={() => void saveEditedExchangeRate(rate.id)}
+                                    >
+                                      Save
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="text-xs text-gray-500"
+                                      disabled={rateSaving}
+                                      onClick={() => {
+                                        setEditingRateId(null)
+                                        setEditingRateValue('')
+                                      }}
+                                    >
+                                      Cancel
+                                    </button>
+                                  </>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="text-xs font-medium text-gray-700"
+                                    disabled={rateSaving}
+                                    onClick={() => {
+                                      setEditingRateId(rate.id)
+                                      setEditingRateValue(String(rate.exchange_rate))
+                                    }}
+                                  >
+                                    Edit
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  className="text-gray-400 hover:text-red-600"
+                                  disabled={rateSaving}
+                                  aria-label={`Delete ${rate.from_currency} to ${rate.to_currency}`}
+                                  onClick={() => void removeExchangeRate(rate.id)}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <CurrencySelect
+                    label="From currency"
+                    description=""
+                    placeholder="Choose currency…"
+                    value={newRateForm.from_currency_id}
+                    selectedOption={newRateForm.from_currency}
+                    disabled={rateSaving}
+                    onChange={(currencyId, currency) =>
+                      setNewRateForm((current) => ({
+                        ...current,
+                        from_currency_id: currencyId,
+                        from_currency: currency
+                          ? {
+                              id: currency.id,
+                              code: currency.code,
+                              name: currency.name,
+                              flag: currency.flag || '',
+                            }
+                          : null,
+                      }))
+                    }
+                  />
+                  <CurrencySelect
+                    label="To currency"
+                    description=""
+                    placeholder="Choose currency…"
+                    value={newRateForm.to_currency_id}
+                    selectedOption={newRateForm.to_currency}
+                    disabled={rateSaving}
+                    onChange={(currencyId, currency) =>
+                      setNewRateForm((current) => ({
+                        ...current,
+                        to_currency_id: currencyId,
+                        to_currency: currency
+                          ? {
+                              id: currency.id,
+                              code: currency.code,
+                              name: currency.name,
+                              flag: currency.flag || '',
+                            }
+                          : null,
+                      }))
+                    }
+                  />
+                </div>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <Label htmlFor="new-exchange-rate">Rate</Label>
+                    <Input
+                      id="new-exchange-rate"
+                      type="number"
+                      step="any"
+                      min="0"
+                      placeholder="e.g. 83.25"
+                      value={newRateForm.exchange_rate}
+                      disabled={rateSaving}
+                      onChange={(e) =>
+                        setNewRateForm((current) => ({
+                          ...current,
+                          exchange_rate: e.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void saveNewExchangeRate()}
+                    disabled={rateSaving}
+                    className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    {rateSaving ? 'Saving…' : 'Add rate'}
+                  </button>
+                </div>
+              </div>
+            )}
+
             {lastExchangeSync && (
               <p className="text-xs text-gray-500">
                 Last exchange rate sync: {formatDateTime(lastExchangeSync)}

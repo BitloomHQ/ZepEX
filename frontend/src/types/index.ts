@@ -885,6 +885,16 @@ export interface CurrencyListResponse {
   results: Currency[]
 }
 
+export type ExchangeRateSource = 'GLOBAL' | 'CUSTOM'
+
+export interface CompanyExchangeRate {
+  id: number
+  from_currency: string
+  to_currency: string
+  exchange_rate: string | number
+  updated_at: string
+}
+
 export interface FinanceSettings {
   id: number
   company: string
@@ -898,6 +908,7 @@ export interface FinanceSettings {
   base_currency_symbol?: string
   base_currency_flag?: string
   auto_currency_conversion: boolean
+  exchange_rate_source: ExchangeRateSource
   exchange_rate_provider: string
   allow_manual_exchange_rate: boolean
   decimal_places: number
