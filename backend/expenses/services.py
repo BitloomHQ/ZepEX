@@ -27,12 +27,28 @@ from decimal import InvalidOperation
 from .audit_services import create_audit_log
 from .models import ExpenseAuditTrail
 
-from .audit_services import create_audit_log
-from .models import ExpenseAuditTrail
-
-
 OLD_BILL_LIMIT_DAYS = 90
 AI_CONFIDENCE_THRESHOLD = Decimal("0.75")
+
+
+def _link_receipt_file_attachment(line_item, receipt) -> None:
+    """
+    Point a line-item attachment at the receipt file without re-uploading.
+
+    Re-assigning receipt.receipt_file to another FileField re-saves the object
+    (and can fail or duplicate blobs on S3-compatible storage).
+    """
+    if not receipt.receipt_file:
+        return
+
+    attachment = ExpenseAttachment(
+        line_item=line_item,
+        receipt=receipt,
+        attachment_type="receipt",
+    )
+    attachment.file.name = receipt.receipt_file.name
+    attachment.save()
+
 
 _TAX_NAME_MARKERS = (
     "tax",
@@ -655,20 +671,12 @@ def sync_receipt_totals_for_report(report):
 
         needs_sync = (
             removed > 0
-            or line_total != stored_total
+            or (line_total > 0 and line_total != stored_total)
             or (line_total > 0 and stored_company != line_total and (
                 not receipt.company_currency
                 or (receipt.original_currency or "").upper()
                 == (receipt.company_currency or "").upper()
             ))
-            or (
-                line_total <= Decimal("0.00")
-                and (
-                    receipt.has_any_violation
-                    or stored_total > Decimal("0.00")
-                    or stored_company > Decimal("0.00")
-                )
-            )
         )
 
         if needs_sync:
@@ -2848,40 +2856,6 @@ Do not return any explanation outside the JSON.
     },
 )
 
-            duplicate = find_duplicate_receipt(
-                receipt=receipt,
-            )
-
-            if duplicate:
-
-                receipt.has_duplicate_violation = True
-                receipt.status = ExpenseReceipt.STATUS_POLICY_VIOLATION
-                receipt.policy_violation_reason = (
-                    f"Duplicate receipt detected. "
-                    f"Original Receipt ID: {duplicate.id}"
-                )
-
-                receipt.save(update_fields=[
-                    "has_duplicate_violation",
-                    "status",
-                    "policy_violation_reason",
-                ])
-
-                DuplicateReceiptLog.objects.get_or_create(
-                    original_receipt=duplicate,
-                    duplicate_receipt=receipt,
-                    defaults={
-                        "duplicate_type": DuplicateReceiptLog.DUPLICATE_SAME_EMPLOYEE,
-                    },
-                )
-
-                return {
-                    "success": False,
-                    "duplicate": True,
-                    "duplicate_receipt_id": str(duplicate.id),
-                    "message": "Duplicate receipt detected.",
-                }
-
             # --------------------------------------------------------
             # Link ticket / invoice references
             # --------------------------------------------------------
@@ -2889,33 +2863,9 @@ Do not return any explanation outside the JSON.
             link_receipt(receipt)
 
             # --------------------------------------------------------
-            # Check duplicate + policy
-            # --------------------------------------------------------
-
-            check_policy_violations(receipt)
-
-            receipt.refresh_from_db()
-
-            # --------------------------------------------------------
-            # STOP if duplicate
-            # --------------------------------------------------------
-
-            if receipt.has_duplicate_violation:
-
-                if receipt.report:
-                    recalculate_report_total(
-                        receipt.report
-                    )
-
-                return {
-                    "success": False,
-                    "duplicate": True,
-                    "message": "Duplicate receipt detected.",
-                    "receipt_id": str(receipt.id),
-                }
-
-            # --------------------------------------------------------
-            # Create Expense Line Items ONLY if receipt is valid
+            # Create line items before duplicate/policy short-circuits.
+            # Otherwise AI_COMPLETED receipts end up with zero lines, and
+            # sync_receipt_totals_for_report later wipes the claim amount.
             # --------------------------------------------------------
 
             for bill in normalized_bills:
@@ -2994,11 +2944,9 @@ Do not return any explanation outside the JSON.
                             expense_item.id
                         )
                         approved_bill_total += item_amount
-                        ExpenseAttachment.objects.create(
-                            line_item=expense_item,
-                            receipt=receipt,
-                            file=receipt.receipt_file,
-                            attachment_type="receipt",
+                        _link_receipt_file_attachment(
+                            expense_item,
+                            receipt,
                         )
                 elif amount > Decimal("0.00"):
                     expense_item = ExpenseLineItem.objects.create(
@@ -3025,13 +2973,47 @@ Do not return any explanation outside the JSON.
                         expense_item.id
                     )
                     approved_bill_total = amount
-                    ExpenseAttachment.objects.create(
-                        line_item=expense_item,
-                        receipt=receipt,
-                        file=receipt.receipt_file,
-                        attachment_type="receipt",
+                    _link_receipt_file_attachment(
+                        expense_item,
+                        receipt,
                     )
-            bill["approved_amount"] = str(approved_bill_total)
+
+                bill["approved_amount"] = str(approved_bill_total)
+
+            # --------------------------------------------------------
+            # Duplicate + policy (after lines exist so UI can show them)
+            # --------------------------------------------------------
+
+            duplicate = find_duplicate_receipt(
+                receipt=receipt,
+            )
+
+            if duplicate:
+                receipt.has_duplicate_violation = True
+                receipt.status = ExpenseReceipt.STATUS_POLICY_VIOLATION
+                receipt.policy_violation_reason = (
+                    f"Duplicate receipt detected. "
+                    f"Original Receipt ID: {duplicate.id}"
+                )
+                receipt.has_any_violation = True
+
+                receipt.save(update_fields=[
+                    "has_duplicate_violation",
+                    "has_any_violation",
+                    "status",
+                    "policy_violation_reason",
+                ])
+
+                DuplicateReceiptLog.objects.get_or_create(
+                    original_receipt=duplicate,
+                    duplicate_receipt=receipt,
+                    defaults={
+                        "duplicate_type": DuplicateReceiptLog.DUPLICATE_SAME_EMPLOYEE,
+                    },
+                )
+            else:
+                check_policy_violations(receipt)
+                receipt.refresh_from_db()
 
             if receipt.report:
                 recalculate_report_total(
