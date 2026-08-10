@@ -175,8 +175,82 @@ STATIC_URL = 'static/'
 # --------------------------------------------------
 
 MEDIA_URL = "/media/"
-
 MEDIA_ROOT = BASE_DIR / "media"
+
+# S3 for receipts/uploads in prod/staging when a bucket is configured.
+# Local/dev keeps filesystem storage under MEDIA_ROOT.
+AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_STORAGE_BUCKET_NAME", "").strip()
+USE_S3_MEDIA = bool(AWS_STORAGE_BUCKET_NAME) and (
+    os.getenv("USE_S3", "").strip().lower() in {"1", "true", "yes"}
+    or ENVIRONMENT in {"production", "testing"}
+)
+
+if USE_S3_MEDIA:
+    INSTALLED_APPS.append("storages")
+
+    AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
+    AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()
+    AWS_S3_REGION_NAME = os.getenv("AWS_S3_REGION_NAME", "us-east-1").strip()
+    AWS_S3_CUSTOM_DOMAIN = os.getenv("AWS_S3_CUSTOM_DOMAIN", "").strip() or None
+    AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_ENDPOINT_URL", "").strip() or None
+    AWS_DEFAULT_ACL = None
+    AWS_QUERYSTRING_AUTH = (
+        os.getenv("AWS_QUERYSTRING_AUTH", "True").strip().lower()
+        in {"1", "true", "yes"}
+    )
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_S3_OBJECT_PARAMETERS = {
+        "CacheControl": "max-age=86400",
+    }
+    AWS_S3_SIGNATURE_VERSION = "s3v4"
+    AWS_LOCATION = os.getenv("AWS_LOCATION", "media").strip() or "media"
+
+    STORAGES = {
+        "default": {
+            "BACKEND": "storages.backends.s3.S3Storage",
+            "OPTIONS": {
+                "bucket_name": AWS_STORAGE_BUCKET_NAME,
+                "region_name": AWS_S3_REGION_NAME,
+                "default_acl": AWS_DEFAULT_ACL,
+                "querystring_auth": AWS_QUERYSTRING_AUTH,
+                "file_overwrite": AWS_S3_FILE_OVERWRITE,
+                "object_parameters": AWS_S3_OBJECT_PARAMETERS,
+                "signature_version": AWS_S3_SIGNATURE_VERSION,
+                "location": AWS_LOCATION,
+                **(
+                    {"access_key": AWS_ACCESS_KEY_ID}
+                    if AWS_ACCESS_KEY_ID
+                    else {}
+                ),
+                **(
+                    {"secret_key": AWS_SECRET_ACCESS_KEY}
+                    if AWS_SECRET_ACCESS_KEY
+                    else {}
+                ),
+                **(
+                    {"custom_domain": AWS_S3_CUSTOM_DOMAIN}
+                    if AWS_S3_CUSTOM_DOMAIN
+                    else {}
+                ),
+                **(
+                    {"endpoint_url": AWS_S3_ENDPOINT_URL}
+                    if AWS_S3_ENDPOINT_URL
+                    else {}
+                ),
+            },
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+
+    if AWS_S3_CUSTOM_DOMAIN:
+        MEDIA_URL = f"https://{AWS_S3_CUSTOM_DOMAIN}/{AWS_LOCATION}/"
+    else:
+        MEDIA_URL = (
+            f"https://{AWS_STORAGE_BUCKET_NAME}.s3."
+            f"{AWS_S3_REGION_NAME}.amazonaws.com/{AWS_LOCATION}/"
+        )
 
 # --------------------------------------------------
 # DEFAULT PRIMARY KEY

@@ -1,4 +1,4 @@
-import { resolveBackendAssetUrl } from '@/lib/backendUrl'
+import { getBackendOrigin, resolveBackendAssetUrl } from '@/lib/backendUrl'
 
 export function resolveMediaUrl(url: string | null | undefined): string | undefined {
   if (!url) return undefined
@@ -11,8 +11,15 @@ export function resolveMediaUrl(url: string | null | undefined): string | undefi
   if (url.startsWith('http://') || url.startsWith('https://')) {
     try {
       const parsed = new URL(url)
+      // Only rewrite Django absolute /media/ URLs that point at the API host.
+      // Leave S3 / CloudFront signed URLs untouched.
       if (parsed.pathname.startsWith('/media/')) {
-        return resolveBackendAssetUrl(parsed.pathname)
+        const backendOrigin = getBackendOrigin()
+        const isBackendHost =
+          !backendOrigin || parsed.origin === new URL(backendOrigin).origin
+        if (isBackendHost) {
+          return resolveBackendAssetUrl(parsed.pathname)
+        }
       }
     } catch {
       return url
