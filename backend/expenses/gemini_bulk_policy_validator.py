@@ -49,7 +49,7 @@ COMPANY POLICY
 =================================================
 
 Category:
-{rule.category.name}
+{rule.category_name}
 
 Description:
 {rule.category_description}

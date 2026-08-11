@@ -88,78 +88,448 @@ def _is_total_line_item(item) -> bool:
     )
 
 
-def normalize_bill_line_items(bill: dict) -> list[dict]:
+def normalize_bill_line_items(bill):
     """
-    Keep receipt line items in receipt sequence:
-    1) charges / products
-    2) taxes / fees of tax type
-    Never persist grand-total rows or zero-amount placeholders.
-    Also promote bill.tip into a Tip line item when present.
+    Normalize Gemini-extracted line items.
+
+    Responsibilities:
+    - Ensure line_items is always a list.
+    - Normalize field names and values.
+    - Remove duplicate tax line items.
+    - Remove exact duplicate line items.
+    - Preserve legitimate non-tax line items.
     """
+
     if not isinstance(bill, dict):
         return []
 
-    raw_items = []
-    for item in bill.get("line_items") or []:
-        if isinstance(item, dict):
-            raw_items.append(dict(item))
+    raw_line_items = bill.get(
+        "line_items",
+        []
+    )
 
-    for tax in bill.get("taxes") or []:
-        if not isinstance(tax, dict):
+    if not isinstance(
+        raw_line_items,
+        list
+    ):
+        raw_line_items = []
+
+    normalized_items = []
+
+    # ====================================================
+    # Tax keywords
+    # ====================================================
+
+    tax_keywords = {
+        "tax",
+        "taxes",
+        "sales tax",
+        "sales t",
+        "sales",
+        "vat",
+        "gst",
+        "cgst",
+        "sgst",
+        "igst",
+        "service tax",
+        "tax amount",
+    }
+
+    # ====================================================
+    # Track duplicate items
+    # ====================================================
+
+    seen_exact_items = set()
+
+    # Specifically track tax items.
+    # This prevents:
+    #
+    # Sales T   2.73
+    # Sales Tax 2.73
+    #
+    # from becoming two DB records.
+    seen_tax_items = set()
+
+    # ====================================================
+    # Process every Gemini line item
+    # ====================================================
+
+    for raw_item in raw_line_items:
+
+        if not isinstance(
+            raw_item,
+            dict
+        ):
             continue
-        tax_amount = tax.get("amount", tax.get("total_price"))
-        raw_items.append(
-            {
-                "name": tax.get("name") or "Tax",
-                "category": bill.get("type") or "miscellaneous",
-                "subcategory": tax.get("name") or "Tax",
-                "quantity": 1,
-                "unit_price": tax_amount,
-                "total_price": tax_amount,
-                "is_reimbursable": True,
-                "reason": "",
-            }
-        )
 
-    # Tip often lives on bill.tip (handwritten gratuity) instead of line_items.
-    tip_amount = _line_item_amount({"total_price": bill.get("tip")})
-    if tip_amount > Decimal("0.00"):
-        already_has_tip = any(
-            "tip" in _line_item_label(item) or "gratuity" in _line_item_label(item)
-            for item in raw_items
-        )
-        if not already_has_tip:
-            raw_items.append(
-                {
-                    "name": "Tip / Gratuity",
-                    "category": bill.get("type") or "miscellaneous",
-                    "subcategory": "Tip",
-                    "quantity": 1,
-                    "unit_price": float(tip_amount),
-                    "total_price": float(tip_amount),
-                    "is_reimbursable": True,
-                    "reason": "",
-                }
+        # ------------------------------------------------
+        # Name
+        # ------------------------------------------------
+
+        name = str(
+            raw_item.get(
+                "name",
+                ""
+            )
+            or ""
+        ).strip()
+
+        # ------------------------------------------------
+        # Category
+        # ------------------------------------------------
+
+        category = str(
+            raw_item.get(
+                "category",
+                bill.get(
+                    "type",
+                    "miscellaneous"
+                )
+            )
+            or "miscellaneous"
+        ).strip().lower()
+
+        # ------------------------------------------------
+        # Subcategory
+        # ------------------------------------------------
+
+        subcategory = str(
+            raw_item.get(
+                "subcategory",
+                ""
+            )
+            or ""
+        ).strip()
+
+        # ------------------------------------------------
+        # Quantity
+        # ------------------------------------------------
+
+        try:
+
+            quantity = Decimal(
+                str(
+                    raw_item.get(
+                        "quantity",
+                        1
+                    )
+                    or 1
+                )
             )
 
-    charges: list[dict] = []
-    taxes: list[dict] = []
+        except (
+            InvalidOperation,
+            TypeError,
+            ValueError,
+        ):
 
-    for item in raw_items:
-        amount = _line_item_amount(item)
-        if amount == Decimal("0.00"):
-            continue
-        if _is_total_line_item(item):
-            continue
-        item["total_price"] = float(amount)
-        if _is_tax_line_item(item):
-            taxes.append(item)
-        else:
-            charges.append(item)
+            quantity = Decimal("1")
 
-    ordered = charges + taxes
-    bill["line_items"] = ordered
-    return ordered
+        if quantity <= Decimal("0"):
+            quantity = Decimal("1")
+
+        # ------------------------------------------------
+        # Unit price
+        # ------------------------------------------------
+
+        try:
+
+            unit_price = Decimal(
+                str(
+                    raw_item.get(
+                        "unit_price",
+                        0
+                    )
+                    or 0
+                )
+                .replace(",", "")
+                .strip()
+            )
+
+        except (
+            InvalidOperation,
+            TypeError,
+            ValueError,
+        ):
+
+            unit_price = Decimal("0.00")
+
+        # ------------------------------------------------
+        # Total price
+        # ------------------------------------------------
+
+        raw_total_price = (
+            raw_item.get(
+                "total_price"
+            )
+        )
+
+        if raw_total_price is None:
+
+            raw_total_price = (
+                raw_item.get(
+                    "amount"
+                )
+            )
+
+        try:
+
+            total_price = Decimal(
+                str(
+                    raw_total_price
+                    if raw_total_price is not None
+                    else "0"
+                )
+                .replace(",", "")
+                .strip()
+            )
+
+        except (
+            InvalidOperation,
+            TypeError,
+            ValueError,
+        ):
+
+            total_price = Decimal("0.00")
+
+        # ------------------------------------------------
+        # If total price is missing, calculate it
+        # ------------------------------------------------
+
+        if (
+            total_price <= Decimal("0.00")
+            and unit_price > Decimal("0.00")
+        ):
+
+            total_price = (
+                unit_price * quantity
+            )
+
+        # ------------------------------------------------
+        # Reimbursable
+        # ------------------------------------------------
+
+        is_reimbursable = bool(
+            raw_item.get(
+                "is_reimbursable",
+                True
+            )
+        )
+
+        # ------------------------------------------------
+        # Reason
+        # ------------------------------------------------
+
+        reason = str(
+            raw_item.get(
+                "reason",
+                ""
+            )
+            or ""
+        ).strip()
+
+        # ====================================================
+        # Normalize name for comparison
+        # ====================================================
+
+        normalized_name = (
+            name.lower()
+            .replace("_", " ")
+            .replace("-", " ")
+            .replace(".", "")
+            .replace(":", "")
+        )
+
+        normalized_name = " ".join(
+            normalized_name.split()
+        )
+
+        normalized_subcategory = (
+            subcategory.lower()
+            .replace("_", " ")
+            .replace("-", " ")
+        )
+
+        normalized_subcategory = " ".join(
+            normalized_subcategory.split()
+        )
+
+        # ====================================================
+        # Detect tax item
+        # ====================================================
+
+        is_tax_item = (
+            category in {
+                "tax",
+                "taxes"
+            }
+            or normalized_subcategory in tax_keywords
+            or normalized_name in tax_keywords
+            or any(
+                keyword in normalized_name
+                for keyword in [
+                    "sales tax",
+                    "sales t",
+                    "tax amount",
+                    "service tax",
+                    "vat",
+                    "gst",
+                    "cgst",
+                    "sgst",
+                    "igst",
+                ]
+            )
+        )
+
+        # ====================================================
+        # TAX DEDUPLICATION
+        # ====================================================
+
+        if is_tax_item:
+
+            tax_key = (
+                category,
+                normalized_subcategory,
+                total_price
+            )
+
+            if tax_key in seen_tax_items:
+
+                print(
+                    "\n========== DUPLICATE TAX ITEM REMOVED =========="
+                )
+
+                print(
+                    "Original item:",
+                    raw_item
+                )
+
+                print(
+                    "Duplicate key:",
+                    tax_key
+                )
+
+                print(
+                    "=================================================\n"
+                )
+
+                continue
+
+            seen_tax_items.add(
+                tax_key
+            )
+
+            # Standardize tax name.
+            name = "Sales Tax"
+
+            subcategory = "Sales Tax"
+
+            category = "taxes"
+
+            normalized_name = "sales tax"
+
+            normalized_subcategory = "sales tax"
+
+        # ====================================================
+        # EXACT DUPLICATE DEDUPLICATION
+        # ====================================================
+
+        exact_key = (
+            normalized_name,
+            category,
+            normalized_subcategory,
+            total_price,
+        )
+
+        if exact_key in seen_exact_items:
+
+            print(
+                "\n========== DUPLICATE LINE ITEM REMOVED =========="
+            )
+
+            print(
+                "Original item:",
+                raw_item
+            )
+
+            print(
+                "Duplicate key:",
+                exact_key
+            )
+
+            print(
+                "==================================================\n"
+            )
+
+            continue
+
+        seen_exact_items.add(
+            exact_key
+        )
+
+        # ====================================================
+        # Build normalized item
+        # ====================================================
+
+        normalized_item = {
+            "name": name,
+
+            "category": category,
+
+            "subcategory": subcategory,
+
+            "quantity": float(
+                quantity
+            ),
+
+            "unit_price": str(
+                unit_price
+            ),
+
+            "total_price": str(
+                total_price
+            ),
+
+            "is_reimbursable": (
+                is_reimbursable
+            ),
+
+            "reason": reason,
+        }
+
+        normalized_items.append(
+            normalized_item
+        )
+
+    # ====================================================
+    # Save normalized items back to bill
+    # ====================================================
+
+    bill["line_items"] = (
+        normalized_items
+    )
+
+    # ====================================================
+    # Debug output
+    # ====================================================
+
+    print(
+        "\n========== NORMALIZED LINE ITEMS =========="
+    )
+
+    print(
+        json.dumps(
+            normalized_items,
+            indent=4,
+            default=str,
+        )
+    )
+
+    print(
+        "===========================================\n"
+    )
+
+    return normalized_items
 
 
 def _line_item_text_label(description=None, subcategory=None) -> str:
@@ -741,67 +1111,292 @@ def extract_receipt_with_gemini(receipt: ExpenseReceipt):
     # Gemini prompt
     # ========================================================
 
-    prompt = f"""
-You are ZepEx Receipt Intelligence, an expert multilingual expense
-receipt, invoice, travel-document and financial-document analyst.
+    prompt = prompt = prompt = f"""
+You are ZepEx Receipt Intelligence, an expert multilingual receipt,
+invoice, expense, travel-document and financial-document extraction engine.
 
-The uploaded document may be written in any language.
-
-You must:
-
-1. Detect and understand the original language.
-2. Extract financial information accurately.
-3. Return only one valid JSON object.
-4. Return all human-readable explanations in:
-   {output_language_name} ({output_language_code})
-5. Preserve original-language text when requested.
-6. Never invent unreadable or missing information.
+The uploaded document may contain one or multiple receipts, invoices,
+checks, tickets, bills, parking receipts, restaurant receipts, hotel
+bills, fuel receipts, medical bills, travel documents, or other
+financial documents.
 
 ============================================================
-LANGUAGE RULES
+PRIMARY RESPONSIBILITY
 ============================================================
+
+YOUR PRIMARY RESPONSIBILITY IS COMPLETE AND ACCURATE EXTRACTION.
+
+The receipt/document itself is the source of truth.
+
+You MUST extract EVERY readable purchased item and EVERY separately
+payable monetary charge appearing on the receipt.
+
+Do NOT summarize away line items.
+
+Do NOT omit readable line items.
+
+Do NOT merge separate purchased items.
+
+Do NOT duplicate the same payable charge.
+
+Do NOT invent unreadable information.
+
+Do NOT perform backend policy validation.
+
+============================================================
+CRITICAL LINE ITEM RULE
+============================================================
+
+EVERY READABLE MONETARY ROW OR SEPARATELY PAYABLE CHARGE ON THE
+RECEIPT MUST BE ANALYZED INDIVIDUALLY.
+
+If the receipt contains:
+
+Description        Qty       Rate       Amount
+
+ITEM A             1        149.00      149.00
+ITEM B             1         95.24       95.24
+ITEM C             1         61.90       61.90
+
+then line_items MUST contain THREE separate objects.
+
+NEVER return:
+
+Food = 306.14
+
+NEVER combine multiple products into one generic item.
+
+NEVER return only the bill total.
+
+NEVER return only the subtotal.
+
+NEVER omit a product because it belongs to the same category as
+another product.
+
+EVERY readable purchased product MUST have its OWN line item.
+
+EVERY separately payable monetary charge MUST have its OWN line item.
+
+============================================================
+PRICE EXTRACTION
+============================================================
+
+For EVERY readable line item extract:
+
+- name
+- category
+- subcategory
+- quantity
+- unit_price
+- total_price
+- is_reimbursable
+- reason
+
+Each line item MUST have its OWN monetary value.
+
+For every readable item, identify the price belonging specifically
+to THAT item.
+
+If the receipt contains:
+
+Qty | Rate | Amount
+
+use:
+
+quantity = Qty
+unit_price = Rate
+total_price = Amount
+
+Example:
+
+BHALLA PAPRI CHAAT     1     149.00     149.00
+
+Return:
+
+{{
+    "name": "BHALLA PAPRI CHAAT",
+    "quantity": 1,
+    "unit_price": 149.00,
+    "total_price": 149.00
+}}
+
+If the receipt contains only:
+
+ITEM 149.00
+
+then:
+
+quantity = null
+unit_price = null
+total_price = 149.00
+
+If the receipt explicitly shows quantity 1:
+
+quantity = 1
+
+Do NOT assume quantity = 1 when it is not supported by the receipt.
+
+NEVER assign the subtotal or grand total as the price of an item.
+
+NEVER copy the same price into multiple line items unless the
+receipt actually shows that same charge multiple times.
+
+============================================================
+COMPLETE ITEM NAME RULE
+============================================================
+
+Preserve the COMPLETE readable item name.
+
+Do NOT truncate an item name because the final characters are close
+to the price column.
+
+Read the complete description column before assigning its price.
+
+For example:
+
+BHALLA PAPRI CHAAT
+
+must be extracted as:
+
+BHALLA PAPRI CHAAT
+
+NOT:
+
+BHALLA PAPRI CHAA
+
+If part of the item name is genuinely unreadable, preserve the
+readable portion.
+
+Do not invent missing characters.
+
+============================================================
+EXAMPLE RECEIPT PRICE MAPPING
+============================================================
+
+For a receipt containing:
+
+BHALLA PAPRI CHAAT       149.00
+SWEET LASSI               95.24
+MASALA CHAACH             61.90
+
+the model MUST map:
+
+BHALLA PAPRI CHAAT -> 149.00
+SWEET LASSI -> 95.24
+MASALA CHAACH -> 61.90
+
+Do NOT combine them.
+
+Do NOT assign the subtotal to any item.
+
+Do NOT assign the grand total to any item.
+
+============================================================
+MULTIPLE RECEIPTS
+============================================================
+
+The uploaded image/PDF may contain multiple independent receipts.
+
+Create ONE object inside "bills" for EACH genuinely independent
+receipt/check/invoice.
+
+For example:
+
+Receipt 1 -> bills[0]
+Receipt 2 -> bills[1]
+Receipt 3 -> bills[2]
+
+Do NOT create separate bills for:
+
+- individual food items
+- individual taxes
+- individual fees
+- pages belonging to the same receipt
+- QR codes
+- barcodes
+- payment information
+- receipt numbers
+
+Multiple items on one receipt belong inside the SAME bill object's
+line_items.
+
+============================================================
+DOCUMENT LANGUAGE
+============================================================
+
+Detect the original document language.
 
 Configured company output language:
 
 - Name: {output_language_name}
 - Code: {output_language_code}
-- Preserve original text: {str(preserve_original_text).lower()}
+- Preserve original text:
+  {str(preserve_original_text).lower()}
 
-The following fields must be written in the configured company language:
+Return generated human-readable fields in:
 
+{output_language_name} ({output_language_code})
+
+The following generated fields MUST use the configured company
+language:
+
+- document_summary
 - additional_info
 - line_items.name
-- taxes.name
 - extraction_notes
-- document_summary
+- translated_original_text
+- review_notes
 
-Do not translate or modify:
+Do NOT translate or modify:
 
-- vendor or legal merchant name
+- vendor/legal merchant name
 - invoice number
-- tax registration number
+- receipt number
+- ticket number
 - PNR
 - flight number
 - train number
 - seat number
+- tax registration number
+- payment reference
+- transaction ID
 - numeric amounts
 - currency codes
 - dates
-- payment reference numbers
-
-The following backend fields must remain normalized:
-
-- type: supported English category key
-- currency: three-letter ISO currency code
-- amount: number
-- bill_date: YYYY-MM-DD
-- confidence values: number between 0 and 1
 
 ============================================================
-SUPPORTED CATEGORY KEYS
+NO INVENTION
 ============================================================
 
-Return type as exactly one of:
+NEVER invent:
+
+- item names
+- quantities
+- prices
+- taxes
+- tax percentages
+- dates
+- totals
+- vendor names
+- invoice numbers
+- payment information
+- categories for unreadable text
+
+If a value is readable, extract it.
+
+If partially readable, preserve the readable portion.
+
+If a value cannot be determined:
+
+- use null for numeric fields
+- use "" for string fields
+- use [] for arrays
+
+============================================================
+DOCUMENT TYPE
+============================================================
+
+Return "type" as exactly one of:
 
 food
 hotel
@@ -822,62 +1417,173 @@ miscellaneous
 
 Examples:
 
-meal, restaurant, lunch, dinner, breakfast -> food
-lodging, accommodation, room stay -> hotel
-airfare, boarding pass, airline ticket -> flight_ticket
-railway ticket, rail fare -> train_ticket
-petrol, diesel, gasoline -> fuel
-mobile, internet, broadband -> telecom
-medicine, pharmacy, consultation -> medical
-stationery, printer paper, office items -> office_supplies
+restaurant / meal / lunch / dinner / breakfast
+-> food
+
+hotel / lodging / accommodation / room
+-> hotel
+
+airfare / airline ticket / boarding pass
+-> flight_ticket
+
+railway ticket / train ticket
+-> train_ticket
+
+petrol / diesel / gasoline
+-> fuel
+
+parking receipt / parking ticket
+-> parking
+
+medicine / pharmacy / medical service
+-> medical
+
+mobile / internet / broadband
+-> telecom
+
+stationery / printer paper / office supplies
+-> office_supplies
+
+taxi / car hire / rental vehicle
+-> car_rental
+
+Anything else
+-> miscellaneous
 
 ============================================================
-FOOD RECEIPT DESCRIPTION RULES
+VENDOR
 ============================================================
 
-For a food or restaurant receipt, additional_info must contain numbered
-points for every readable food item and its price.
+vendor must contain ONLY the merchant/business/provider name.
 
-Use this structure in {output_language_name}:
+Example:
 
-1. Item name — quantity × unit price — item total
-2. Item name — quantity × unit price — item total
-3. Item name — item total
-4. Subtotal — amount
-5. Tax — amount
-6. Tip — amount
-7. Discount — amount
-8. Total — amount
+"JW Marriott Grande Lakes"
 
-Rules:
+"Mithaas Sweets & Restaurant Pvt. Ltd."
 
-- Include every clearly readable food item.
-- Include quantity when available.
-- Include unit price when available.
-- Include item total when available.
-- Include subtotal, taxes, service charge, tip and discount separately.
-- End with the final payable total.
-- Do not invent an item or price.
-- If an item price is unreadable, use an empty string for that price.
-- Keep the list concise but complete.
+Do NOT include:
 
-Example formatting:
+- address
+- phone number
+- GST number
+- tax registration number
+- website
+- additional sentences
 
-1. Veg Burger — 2 × INR 120.00 — INR 240.00
-2. French Fries — INR 90.00
-3. Soft Drink — INR 60.00
-4. Subtotal — INR 390.00
-5. GST — INR 19.50
-6. Total — INR 409.50
+Preserve the official merchant name when readable.
 
-Translate labels such as Subtotal, Tax, Tip, Discount and Total into
-{output_language_name}, but keep currency codes and numbers unchanged.
+If unreadable:
+
+""
 
 ============================================================
-LINE ITEM CLASSIFICATION
+DATE
 ============================================================
 
-Every extracted line item must include:
+bill_date MUST use:
+
+YYYY-MM-DD
+
+Use the transaction/invoice/purchase date printed on the receipt.
+
+For:
+
+- hotel -> invoice/transaction date
+- restaurant -> transaction date
+- parking -> transaction date
+- fuel -> transaction date
+- medical -> invoice date
+- flight/train -> issue date when available
+
+Travel date belongs in additional_info.
+
+If date cannot be reliably determined:
+
+null
+
+============================================================
+FINAL AMOUNT
+============================================================
+
+"amount" MUST be the final payable/grand total for that receipt.
+
+Never use:
+
+- subtotal
+- tax amount
+- tip amount
+- balance
+- cash tendered
+- change returned
+
+when a final payable amount is available.
+
+Example:
+
+Subtotal = 306.14
+CGST = 7.66
+SGST = 7.66
+Grand Total = 321.46
+
+Then:
+
+amount = 321.46
+grand_total = 321.46
+subtotal = 306.14
+
+If the receipt explicitly says:
+
+Amount Including GST = 321.46
+
+then:
+
+amount = 321.46
+grand_total = 321.46
+
+Preserve decimal values exactly.
+
+If the final total is unreadable:
+
+null
+
+============================================================
+CURRENCY
+============================================================
+
+Return ISO 4217 currency codes:
+
+INR
+USD
+EUR
+GBP
+AED
+JPY
+CAD
+AUD
+SGD
+
+Determine currency using:
+
+- currency symbol
+- currency name
+- country
+- document context
+
+Do NOT perform currency conversion.
+
+If currency cannot be determined:
+
+""
+
+============================================================
+EVERY LINE ITEM MUST BE EXTRACTED
+============================================================
+
+EVERY actual purchased product or separately payable charge MUST
+become ONE line item.
+
+Each line item MUST contain:
 
 - name
 - category
@@ -885,491 +1591,288 @@ Every extracted line item must include:
 - quantity
 - unit_price
 - total_price
+- is_reimbursable
+- reason
 
-Rules:
+Examples of items that MUST be extracted:
 
-Category must represent the reimbursement category.
+- food
+- drinks
+- alcohol
+- parking
+- fuel
+- toll
+- hotel room
+- laundry
+- minibar
+- internet
+- taxi
+- service charge
+- delivery fee
+- convenience fee
+- booking fee
+- GST
+- CGST
+- SGST
+- IGST
+- VAT
+- Sales Tax
+- tip
+- gratuity
+- discount
+
+============================================================
+LINE ITEM ORDER
+============================================================
+
+Preserve EXACT top-to-bottom order of actual payable items as they
+appear on the receipt.
+
+Example:
+
+1. Burger
+2. Fries
+3. Coffee
+4. Service Charge
+5. CGST
+6. SGST
+7. Tip
+
+Return line_items in exactly that order.
+
+Do NOT sort alphabetically.
+
+Do NOT reorder by category.
+
+Do NOT reorder by price.
+
+============================================================
+LINE ITEM CATEGORIES
+============================================================
+
+Every readable line item MUST have its own category.
+
+Do NOT simply inherit the bill category.
+
+Allowed categories include:
+
+food
+beverages
+alcohol
+hotel
+flight_ticket
+train_ticket
+car_rental
+fuel
+gas
+parking
+office_supplies
+medical
+courier
+telecom
+training
+relocation
+wfh
+taxes
+fees
+gratuity
+discount
+toll
+miscellaneous
 
 Examples:
 
 Restaurant meal
-→ category = food
+-> food
+
+Paneer Butter Masala
+-> food
+
+Coffee
+-> beverages
+
+Beer
+-> alcohol
 
 Hotel room
-→ category = hotel
-
-Diesel
-→ category = fuel
+-> hotel
 
 Parking Fee
-→ category = parking
+-> parking
 
-Courier Charge
-→ category = courier
+Petrol
+-> fuel
 
 Medicine
-→ category = medical
-
-Internet Recharge
-→ category = telecom
+-> medical
 
 Printer Paper
-→ category = office_supplies
+-> office_supplies
 
-Flight Ticket
-→ category = flight_ticket
-
-Train Ticket
-→ category = train_ticket
-
-Car Rental
-→ category = car_rental
-
-Training Fee
-→ category = training
-
-Remote Office Equipment
-→ category = wfh
-
-Moving Expense
-→ category = relocation
-
-Anything else
-→ miscellaneous
-
-Subcategory should be as specific as possible.
-
-Examples:
-
-Veg Meal
-Non Veg Meal
-Dessert
-Coffee
-Tea
-Soft Drink
-Breakfast
-Lunch
-Dinner
-Stationery
-Fuel
-Medicine
-Parking Fee
-Room Charge
-Laundry
-Mini Bar
 Internet
+-> telecom
+
 Taxi
-Printer Ink
-Laptop Accessories
-Office Furniture
-
-Never leave subcategory empty when it can reasonably be determined.
-
-Do not invent items that do not exist on the receipt.
-
-============================================================
-OTHER RECEIPT DESCRIPTION RULES
-============================================================
-
-For hotel, flight, train, fuel, medical, office supplies, telecom,
-parking, courier, training, car rental or other receipts:
-
-- Return 5 to 6 concise numbered points in additional_info.
-- Include the most useful small details visible in the document.
-- Do not force six points when fewer details are actually readable.
-- Never invent missing information.
-- End with the final payable total.
-
-Examples of useful details:
-
-HOTEL:
-- room type
-- guest name
-- check-in
-- check-out
-- number of nights
-- room charge
-- taxes
-- total
-
-FLIGHT:
-- airline
-- flight number
-- route
-- passenger
-- travel date
-- departure time
-- arrival time
-- class
-- seat
-- PNR
-- total fare
-
-TRAIN:
-- train number and name
-- route
-- passenger
-- travel date
-- class
-- coach
-- seat
-- PNR
-- total fare
-
-FUEL:
-- fuel type
-- quantity
-- price per litre
-- station
-- vehicle number
-- payment method
-- total
-
-MEDICAL:
-- medicine or service names
-- quantities
-- consultation
-- pharmacy or hospital
-- taxes
-- total
-
-OFFICE SUPPLIES:
-- each purchased item
-- quantity
-- unit price
-- item total
-- taxes
-- final total
-
-PARKING:
-- location
-- entry time
-- exit time
-- duration
-- vehicle number
-- total fee
-
-============================================================
-AMOUNT RULES
-============================================================
-
-- amount must be the final payable or grand total for that bill.
-- Do not use subtotal when a grand total is available.
-- Do not use tax amount as the bill amount.
-- Do not use balance, cash tendered or change returned as the amount.
-- Preserve decimal values accurately.
-- If the final total is unreadable, return null.
-
-============================================================
-CURRENCY RULES
-============================================================
-
-- Return a three-letter currency code such as INR, USD, EUR, GBP,
-  AED, JPY, CAD, AUD or SGD.
-- Determine currency using code, currency name, symbol and country.
-- A dollar symbol may be ambiguous; use document context.
-- Do not perform currency conversion.
-- If the currency cannot be determined, return an empty string.
-
-============================================================
-DATE RULES
-============================================================
-
-- bill_date must be YYYY-MM-DD.
-- Prefer invoice date, transaction date or purchase date.
-- For a flight or train ticket, use the document issue date as bill_date
-  when available; keep the travel date inside additional_info.
-- Return null when the date cannot be determined.
-
-============================================================
-VENDOR RULES
-============================================================
-
-- vendor must contain only the merchant, business, hotel, airline,
-  railway, hospital, pharmacy or service-provider name.
-- Do not include address, phone number, tax number or extra sentences.
-- Preserve the vendor's official original name.
-- Return an empty string if vendor is unreadable.
-
-============================================================
-ORIGINAL LANGUAGE RULES
-============================================================
-
-If preserve_original_text is true:
-
-- original_text must preserve the most relevant readable receipt content
-  in its original language.
-- Do not translate original_text.
-- source_language must contain the detected language name.
-- source_language_code should use a language code such as en, hi, es,
-  fr, ar, ja or zh.
-
-If preserve_original_text is false:
-
-- original_text may be null.
-
-translated_original_text must contain a concise translation of the
-important original receipt text in {output_language_name}.
-
-============================================================
-MULTIPLE RECEIPTS
-============================================================
-
-The uploaded PDF or image may contain more than one independent receipt.
-
-- Create one object inside bills for each independent receipt.
-- Do not split one restaurant receipt into separate bills for every food
-  item.
-- Food items belong inside line_items.
-- Each bill amount must represent that receipt's final total.
-
-============================================================
-FRAUD ANALYSIS
-============================================================
-
-Analyse whether the receipt appears suspicious.
-
-Check:
-
-image editing
-
-cropping
-
-duplicate receipt
-
-unusual formatting
-
-missing total
-
-manual handwriting over receipt
-
-missing merchant
-
-missing tax
-
-Return:
-
-fraud_analysis
-
-Do not accuse.
-
-Only estimate confidence.
-
-Return:
-
-suspicious
-
-duplicate_probability
-
-edited_probability
-
-reasons
-
-
-============================================================
-RECEIPT QUALITY ANALYSIS
-============================================================
-
-Evaluate the uploaded receipt.
-
-Return:
-
-receipt_quality
-
-score:
-0.0 to 1.0
-
-status:
-
-EXCELLENT
-GOOD
-FAIR
-POOR
-
-issues:
-
-blur
-
-cropped
-
-low resolution
-
-shadow
-
-reflection
-
-folded paper
-
-missing corners
-
-handwritten over receipt
-
-partial receipt
-
-multiple receipts
-
-Never invent issues.
-
-Only report visible issues.
-
-============================================================
-DOCUMENT METADATA
-============================================================
-
-Detect
-
-QR
-
-Barcode
-
-Signature
-
-Stamp
-
-Handwriting
-
-Receipt type
-
-Invoice
-
-Restaurant
-
-Hotel
-
-Medical
-
-Parking
-
-etc.
-
-Extract payment information.
-
-Cash
-
-Card
-
-UPI
-
-Google Pay
-
-Apple Pay
-
-Bank Transfer
-
-Credit Card
-
-Debit Card
-
-If unavailable
-
-return empty strings.
-
-
-
-
-Return
+-> car_rental
 
 GST
-
-VAT
+-> taxes
 
 CGST
+-> taxes
 
 SGST
-
-IGST
+-> taxes
 
 Sales Tax
+-> taxes
 
-Service Tax
+Service Charge
+-> fees
 
-etc.
+Tip
+-> gratuity
 
+Discount
+-> discount
 
-
-Give reviewer notes.
-
-Examples
-
-Date inferred.
-
-Vendor partially readable.
-
-Tax unreadable.
-
-Currency inferred.
-
-Amount clearly visible.
+Never leave category empty when the line item is readable.
 
 ============================================================
-DOCUMENT LINKING RULES
+SUBCATEGORY
 ============================================================
 
-Many expense reports contain multiple documents that belong to the same journey.
+Every readable line item MUST have a specific subcategory.
+
+Use the exact visible charge whenever possible.
 
 Examples:
 
-• Flight Ticket + Airline Invoice
-• Railway Ticket + GST Invoice
-• Hotel Booking + Hotel Invoice
-• Taxi Booking + Taxi Receipt
-• Fuel Receipt + Toll Receipt
+Parking Fee
+-> category = parking
+-> subcategory = Parking Fee
 
-Extract any reference numbers visible in the document.
+Sales Tax
+-> category = taxes
+-> subcategory = Sales Tax
 
-Return
+GST
+-> category = taxes
+-> subcategory = GST
 
-document_reference
+CGST
+-> category = taxes
+-> subcategory = CGST
 
-Fields:
+SGST
+-> category = taxes
+-> subcategory = SGST
 
-reference_type
+IGST
+-> category = taxes
+-> subcategory = IGST
 
-Possible values:
+VAT
+-> category = taxes
+-> subcategory = VAT
 
-ticket
-invoice
-hotel_invoice
-hotel_booking
-flight_ticket
-train_ticket
-taxi_receipt
-fuel_receipt
-parking_receipt
-miscellaneous
+Service Charge
+-> category = fees
+-> subcategory = Service Charge
 
-reference_number
+Delivery Fee
+-> category = fees
+-> subcategory = Delivery Fee
 
-The unique number printed on THIS document.
+Tip
+-> category = gratuity
+-> subcategory = Tip
 
-Examples:
+Room Charge
+-> category = hotel
+-> subcategory = Room Charge
 
-Ticket Number
-Invoice Number
-Booking ID
-PNR
-Receipt Number
+Laundry
+-> category = hotel
+-> subcategory = Laundry
 
-linked_reference_number
+Mini Bar
+-> category = hotel
+-> subcategory = Mini Bar
 
-If this document clearly references another document, return that number.
+Coffee
+-> category = beverages
+-> subcategory = Coffee
 
-Otherwise return an empty string.
+Tea
+-> category = beverages
+-> subcategory = Tea
 
-Never invent numbers.
+Juice
+-> category = beverages
+-> subcategory = Juice
 
-If no reference exists return empty strings.
+Soft Drink
+-> category = beverages
+-> subcategory = Soft Drink
+
+Lassi
+-> category = beverages
+-> subcategory = Lassi
+
+Buttermilk
+-> category = beverages
+-> subcategory = Buttermilk
+
+Beer
+-> category = alcohol
+-> subcategory = Beer
+
+Wine
+-> category = alcohol
+-> subcategory = Wine
+
+Whiskey
+-> category = alcohol
+-> subcategory = Whiskey
+
+Vodka
+-> category = alcohol
+-> subcategory = Vodka
+
+Burger
+-> category = food
+-> subcategory = Burger
+
+Pizza
+-> category = food
+-> subcategory = Pizza
+
+French Fries
+-> category = food
+-> subcategory = Snacks
+
+Paneer Butter Masala
+-> category = food
+-> subcategory = Vegetarian
+
+Chicken Curry
+-> category = food
+-> subcategory = Non Vegetarian
+
+Fish Fry
+-> category = food
+-> subcategory = Seafood
 
 ============================================================
-FOOD SUBCATEGORY RULES
+FOOD AND BEVERAGE SUBCATEGORIES
 ============================================================
 
-If bill type = food, classify every food item into a subcategory.
-
-Allowed subcategories include:
+Allowed examples:
 
 Vegetarian
 Non Vegetarian
+Seafood
 Alcohol
 Beer
 Wine
@@ -1381,6 +1884,8 @@ Soft Drink
 Coffee
 Tea
 Juice
+Lassi
+Buttermilk
 Dessert
 Bakery
 Fast Food
@@ -1395,634 +1900,336 @@ Lunch
 Dinner
 Snacks
 Ice Cream
-Seafood
 Fruit
+Main Course
+Bread
 Unknown
 
 Examples:
 
-Paneer Butter Masala -> Vegetarian
-Dal Tadka -> Vegetarian
-Chicken Curry -> Non Vegetarian
-Fish Fry -> Seafood
-Beer -> Beer
-Kingfisher Premium -> Beer
-Red Wine -> Wine
-Whiskey -> Whiskey
-Vodka -> Vodka
-Cappuccino -> Coffee
-Latte -> Coffee
-Cold Coffee -> Coffee
-Tea -> Tea
-Orange Juice -> Juice
-Coca Cola -> Soft Drink
-Pepsi -> Soft Drink
-Chocolate Cake -> Dessert
-Brownie -> Dessert
-Croissant -> Bakery
-Pizza -> Pizza
-Burger -> Burger
-French Fries -> Snacks
-
-Return one subcategory for every line item.
-
-Never leave it empty unless unreadable.
-
-============================================================
-ITEM CLASSIFICATION RULES
-============================================================
-
-Every extracted line item must be classified.
-
-Return for every line item:
-
-- category
-- subcategory
-- is_reimbursable
-- reason
-
-Category should describe the business expense type.
-
-Examples:
-
-Food
-Travel
-Fuel
-Medical
-Accommodation
-Office Supplies
-Entertainment
-Telecom
-Parking
-Training
-Courier
-Miscellaneous
-
-Subcategory should describe the actual purchased item.
-
-Examples:
-
-Paneer Butter Masala → Main Course
-Butter Naan → Bread
-Coffee → Coffee
-Tea → Tea
-Beer → Alcohol
-Wine → Alcohol
-Whiskey → Alcohol
-Vodka → Alcohol
-Burger → Fast Food
-Pizza → Fast Food
-Sandwich → Snacks
-Ice Cream → Dessert
-Taxi → Taxi
-Flight Ticket → Flight
-Hotel Room → Room Charge
-Petrol → Petrol
-Diesel → Diesel
-Medicine → Medicine
-Printer Paper → Stationery
-
-Determine whether the individual item is reimbursable.
-
-IMPORTANT:
-- ALWAYS include the item in line_items even if it may not be reimbursable.
-- Never omit food, drinks, alcohol, tips, service charges, or taxes from line_items.
-- Company policy validation decides final reimbursement — extraction must mirror the receipt.
-
-Return:
-
-"is_reimbursable": true
-
-or
-
-"is_reimbursable": false
-
-Default to true for restaurant / hotel / travel purchases, including alcohol,
-unless the receipt clearly marks the item as personal.
-
-Examples of false (soft hint only — still include the line item):
-
-Cigarettes → false
-Personal shopping → false
-Gift item → false
-
-Examples of true:
-
-Business meal → true
-Alcohol on a restaurant bill → true
-Taxi → true
-Flight → true
-Hotel → true
-Fuel → true
-Service charge → true
-Tax → true
-Tip / gratuity → true
-
-If the item is not reimbursable, populate "reason".
-
-Examples:
-
-"Personal expense"
-"Gift item"
-
-Otherwise return an empty string.
-
-============================================================
-DOCUMENT REFERENCE DETECTION
-============================================================
-
-Some documents belong to another receipt.
-
-Detect and extract document references whenever possible.
-
-Examples:
-
-Flight Ticket
-Reference Number = AI302
-
-Boarding Pass
-Linked Reference Number = AI302
-
-Hotel Booking
-Reference = BK23991
-
-Hotel Invoice
-Linked Reference = BK23991
-
-Train Ticket
-Reference = PNR123456
-
-Travel Invoice
-Linked Reference = PNR123456
-
-Credit Note
-Linked Reference = Original Invoice Number
-
-Invoice
-Reference = Invoice Number
-
-Return:
-
-"document_reference": {{
-    "reference_type": "",
-    "reference_number": "",
-    "linked_reference_number": ""
-}}
-
-Never invent values.
-
-Leave empty strings if no reference exists.
-
-============================================================
-ITEM CATEGORY RULES
-============================================================
-
-For every line item determine its own reimbursement category.
-
-Return BOTH category and subcategory.
-
-Examples
-
 Paneer Butter Masala
+-> Vegetarian
 
-category:
-food
+Dal Tadka
+-> Vegetarian
 
-subcategory:
-Main Course
+Chicken Curry
+-> Non Vegetarian
 
-----------------------------
+Fish Fry
+-> Seafood
 
-Butter Naan
+Cappuccino
+-> Coffee
 
-category:
-food
+Latte
+-> Coffee
 
-subcategory:
-Bread
+Orange Juice
+-> Juice
 
-----------------------------
+Coca Cola
+-> Soft Drink
 
-Coffee
+Sweet Lassi
+-> Lassi
 
-category:
-beverages
+Masala Chaach
+-> Buttermilk
 
-subcategory:
-Coffee
+Chocolate Cake
+-> Dessert
 
-----------------------------
+Croissant
+-> Bakery
 
-Green Tea
+Pizza
+-> Pizza
 
-category:
-beverages
+Burger
+-> Burger
 
-subcategory:
-Tea
+French Fries
+-> Snacks
 
-----------------------------
+If the exact classification cannot be reliably determined,
+use the most appropriate visible/contextual category.
 
-Beer
-
-category:
-alcohol
-
-subcategory:
-Beer
-
-----------------------------
-
-Whiskey
-
-category:
-alcohol
-
-subcategory:
-Whiskey
-
-----------------------------
-
-Petrol
-
-category:
-fuel
-
-subcategory:
-Petrol
-
-----------------------------
-
-Diesel
-
-category:
-fuel
-
-subcategory:
-Diesel
-
-----------------------------
-
-Parking Ticket
-
-category:
-parking
-
-subcategory:
-Parking Fee
-
-----------------------------
-
-Laptop Bag
-
-category:
-office_supplies
-
-subcategory:
-Accessories
-
-----------------------------
-
-Medicine
-
-category:
-medical
-
-subcategory:
-Prescription Medicine
-
-Rules
-
-- Every line item MUST have its own category.
-- Categories should describe the reimbursement policy category.
-- Do not inherit the bill category.
-- Do not leave category empty.
-
+Do NOT invent a specific subcategory unsupported by the receipt.
 
 ============================================================
-LINE ITEM EXTRACTION AND NORMALIZATION
+IMPORTANT FOOD RECEIPT EXAMPLE
 ============================================================
 
-Every visible monetary component printed on the receipt must be returned
-as an individual line item.
+If the receipt shows:
 
-Do NOT merge taxes, service charges, fees or discounts into another item.
+BHALLA PAPRI CHAAT       1     149.00     149.00
+SWEET LASSI              1      95.24      95.24
+MASALA CHAACH            1      61.90      61.90
 
-Always extract separately whenever visible:
+you MUST return THREE separate product line items.
 
-- Product
-- Food Item
-- Drink
-- Parking Fee
-- Toll
-- Fuel
-- Room Charge
-- Laundry
-- Mini Bar
-- Internet
-- Taxi Fare
+BHALLA PAPRI CHAAT:
+
+category = food
+subcategory = Vegetarian
+quantity = 1
+unit_price = 149.00
+total_price = 149.00
+
+SWEET LASSI:
+
+category = beverages
+subcategory = Lassi
+quantity = 1
+unit_price = 95.24
+total_price = 95.24
+
+MASALA CHAACH:
+
+category = beverages
+subcategory = Buttermilk
+quantity = 1
+unit_price = 61.90
+total_price = 61.90
+
+Do NOT return only:
+
+food = 306.14
+
+Do NOT merge:
+
+BHALLA PAPRI CHAAT + SWEET LASSI + MASALA CHAACH
+
+into one item.
+
+============================================================
+TAX EXTRACTION
+============================================================
+
+Taxes require special handling because receipts may show:
+
+A. item-level tax calculations/breakdowns
+
+and/or
+
+B. final aggregate payable taxes.
+
+You MUST distinguish between them.
+
+============================================================
+ITEM-LEVEL TAX BREAKDOWN
+============================================================
+
+Example:
+
+SWEET LASSI       95.24
+GST Amt            4.76
+
+MASALA CHAACH     61.90
+GST Amt            3.10
+
+Later:
+
+GST                7.66
+
+If 4.76 and 3.10 are item-level GST calculations and 7.66 is the
+aggregate payable GST:
+
+DO NOT create:
+
+GST 4.76
+GST 3.10
+GST 7.66
+
+as three payable tax line items.
+
+Create only:
+
+GST 7.66
+
+as the payable tax line item.
+
+The 4.76 and 3.10 values may be preserved in tax information when
+useful, but MUST NOT be double-counted.
+
+============================================================
+CRITICAL CGST AND SGST RULE
+============================================================
+
+If the receipt visibly prints multiple final tax components,
+EVERY separately payable tax component MUST be extracted.
+
+For example, if the receipt shows:
+
+Subtotal = 306.14
+CGST = 7.66
+SGST = 7.66
+Grand Total = 321.46
+
+then BOTH CGST and SGST are actual payable taxes.
+
+The output MUST contain:
+
+CGST = 7.66
+
+AND:
+
+SGST = 7.66
+
+Do NOT return only one of them.
+
+Do NOT combine them into a single tax line.
+
+CGST and SGST are NOT duplicates when both are separately printed
+as payable tax components.
+
+CGST and SGST MUST be represented separately in line_items.
+
+CGST:
+
+name = "CGST"
+category = "taxes"
+subcategory = "CGST"
+quantity = null
+unit_price = null
+total_price = 7.66
+
+SGST:
+
+name = "SGST"
+category = "taxes"
+subcategory = "SGST"
+quantity = null
+unit_price = null
+total_price = 7.66
+
+They MUST also be represented separately in the taxes array.
+
+Example:
+
+"taxes": [
+    {{
+        "type": "CGST",
+        "percentage": 2.5,
+        "amount": 7.66
+    }},
+    {{
+        "type": "SGST",
+        "percentage": 2.5,
+        "amount": 7.66
+    }}
+]
+
+If the percentages are not visible, use:
+
+percentage = null
+
+Do NOT invent percentages.
+
+============================================================
+TAX DUPLICATION RULE
+============================================================
+
+NEVER duplicate the same tax component.
+
+Before adding any tax line item, determine:
+
+1. Is this an actual payable charge?
+2. Is this only an item-level calculation/breakdown?
+3. Is the same tax component already represented elsewhere?
+4. Is this the final aggregate payable tax?
+5. Are CGST and SGST separate tax components?
+
+Examples of BAD extraction:
+
+Sales Tax 2.73
+Sales Tax 2.73
+
+GOOD:
+
+Sales Tax 2.73
+
+Another BAD extraction:
+
+GST 4.76
+GST 3.10
+GST 7.66
+
+when 4.76 and 3.10 are item-level calculations and 7.66 is the
+final aggregate payable GST.
+
+GOOD:
+
+GST 7.66
+
+However:
+
+CGST 7.66
+SGST 7.66
+
+is NOT a duplicate.
+
+GOOD:
+
+CGST 7.66
+SGST 7.66
+
+when both are separately printed payable taxes.
+
+============================================================
+TAXES ARRAY
+============================================================
+
+The "taxes" array should contain actual tax information.
+
+Example:
+
+"taxes": [
+    {{
+        "type": "GST",
+        "percentage": 5,
+        "amount": 7.66
+    }}
+]
+
+If CGST and SGST are separately payable:
+
+"taxes": [
+    {{
+        "type": "CGST",
+        "percentage": 2.5,
+        "amount": 7.66
+    }},
+    {{
+        "type": "SGST",
+        "percentage": 2.5,
+        "amount": 7.66
+    }}
+]
+
+Do NOT invent tax percentages.
+
+If percentage is not visible:
+
+percentage = null
+
+============================================================
+FEES AND SERVICE CHARGES
+============================================================
+
+If separately printed and payable, create a separate line item for:
+
 - Service Charge
 - Delivery Fee
 - Convenience Fee
-- GST
-- CGST
-- SGST
-- IGST
-- VAT
-- Sales Tax
-- Tip
-- Discount
-
-Each line item must contain:
-
-- name
-- category
-- subcategory
-- quantity
-- unit_price
-- total_price
-- is_reimbursable
-- reason
-
-Subcategory should use the exact visible charge whenever possible.
-
-Examples
-
-Parking Fee
-→ subcategory = Parking Fee
-
-Sales Tax
-→ subcategory = Sales Tax
-
-GST
-→ subcategory = GST
-
-CGST
-→ subcategory = CGST
-
-SGST
-→ subcategory = SGST
-
-IGST
-→ subcategory = IGST
-
-VAT
-→ subcategory = VAT
-
-Service Charge
-→ subcategory = Service Charge
-
-Room Charge
-→ subcategory = Room Charge
-
-Laundry
-→ subcategory = Laundry
-
-Mini Bar
-→ subcategory = Mini Bar
-
-Beer
-→ subcategory = Beer
-
-Wine
-→ subcategory = Wine
-
-Coffee
-→ subcategory = Coffee
-
-Tea
-→ subcategory = Tea
-
-Burger
-→ subcategory = Burger
-
-Pizza
-→ subcategory = Pizza
-
-French Fries
-→ subcategory = Snacks
-
-Never use generic names like:
-
-- Tax
-- Fee
-- Other
-- Item
-- Miscellaneous
-
-when a more specific name is visible on the receipt.
-
-Examples
-
-Parking Receipt
-
-Parking Fee ............ 42.00
-Sales Tax ............... 2.73
-
-Return
-
-Parking Fee
-Sales Tax
-
-Restaurant Receipt
-
-Burger
-French Fries
-Service Charge
-GST
-
-Return four separate line items.
-
-Hotel Receipt
-
-Room Charge
-Laundry
-Mini Bar
-VAT
-
-Return each as a separate line item.
-
-The sum of all line_items.total_price should approximately equal the bill grand total whenever possible.
-
-CRITICAL ORDERING RULES
-- Keep line_items in the same top-to-bottom order as the printed receipt.
-- Extract every purchased product/drink first, then fees/service charges, then taxes, then tip if printed.
-- Never omit menu items, drinks, or alcohol just because they might be non-reimbursable.
-- Never include Grand Total / Amount Due / Total as a line_item.
-- Put the payable total only in bill.amount and bill.grand_total.
-- Prefer bill.amount / bill.grand_total that includes tip when a tip is present.
-- Always put tip/gratuity in line_items (and also bill.tip) when handwritten or printed.
-- Extract handwritten tip/gratuity as its own line item when present.
-- Do not create extra bills for metadata such as entry time or payment method.
-- Put that metadata only in additional_info.
-- If the image contains multiple separate checks/receipts, return one bill object per check.
-
-============================================================
-AI RECOMMENDATION
-============================================================
-
-Based on the extracted receipt, determine whether the expense appears
-suitable for reimbursement.
-
-Consider:
-
-- Receipt quality
-- Fraud indicators
-- Missing information
-- Policy-sensitive items
-- Duplicate likelihood
-- Linked documents
-- Merchant type
-- Amount consistency
-- OCR confidence
-
-Return one of:
-
-APPROVE
-REVIEW
-REJECT
-
-Rules
-
-APPROVE
-
-- Receipt is clear
-- Information is readable
-- No obvious fraud
-- Receipt looks genuine
-
-REVIEW
-
-- Missing fields
-- Low OCR confidence
-- Linked receipt missing
-- Duplicate possibility
-- Poor quality
-- Cropped receipt
-- Handwritten corrections
-- Suspicious formatting
-
-REJECT
-
-- Fake receipt
-- Edited receipt
-- Required document missing
-- Receipt unusable
-- Fraud probability is high
-
-Also provide a short explanation.
-
-============================================================
-REQUIRED SUPPORTING DOCUMENTS
-============================================================
-
-Determine whether the uploaded receipt requires one or more
-supporting documents.
-
-Examples
-
-Flight
-- Boarding Pass
-- Airline Invoice
-
-Hotel
-- Hotel Invoice
-- GST Invoice (if applicable)
-
-Train
-- Railway Ticket
-
-Fuel
-- Fuel Receipt
-
-Taxi
-- Trip Receipt
-
-Medical
-- Doctor Prescription (if applicable)
-
-Conference
-- Registration Invoice
-
-Parking
-- Parking Receipt
-
-Restaurant
-- Restaurant Receipt
-
-Return
-
-required_documents
-
-uploaded_documents
-
-missing_documents
-
-is_complete
-
-If a supporting document is missing,
-add it to missing_documents.
-
-Do not invent documents.
-
-Only infer them when reasonably required.
-
-============================================================
-RECEIPT FINGERPRINT
-============================================================
-
-Create a fingerprint that uniquely identifies the receipt.
-
-Extract:
-
-merchant
-document_number
-bill_date
-amount
-currency
-
-Rules:
-
-- merchant must be normalized.
-- Remove Pvt Ltd, Pvt. Ltd., Limited, Inc., LLC if they are not important.
-- document_number should use invoice number, ticket number, booking number or receipt number.
-- amount must be the final payable amount.
-- bill_date must be YYYY-MM-DD.
-- currency must be ISO code.
-
-Never invent values.
-
-This fingerprint will be used for duplicate detection.
-
-============================================================
-LINE ITEM EXTRACTION RULES
-============================================================
-
-Every monetary component printed on the receipt must become one line item.
-
-Extract:
-
-- Purchased products
-- Food items
-- Drinks
-- Parking fee
-- Fuel
-- Room charge
-- Service charge
-- Delivery fee
-- Convenience fee
-- Sales tax
-- GST
-- VAT
-- CGST
-- SGST
-- IGST
-- Tips (if printed)
-- Discounts (negative amount)
-
-Do NOT merge these together.
-
-Each must have:
+- Booking Fee
+- Resort Fee
+- Parking Fee
+- Toll
+- other separately payable fees
+
+Each MUST have its own:
 
 name
 category
@@ -2033,1083 +2240,2594 @@ total_price
 is_reimbursable
 reason
 
-Examples
+Do NOT merge fees into the product price.
 
-Parking receipt
+============================================================
+TIP / GRATUITY
+============================================================
 
-Parking Fee ............ 42.00
-Sales Tax .............. 2.73
+If tip/gratuity is printed or handwritten:
 
-Return
+Create a separate line item.
 
-[
-{{
-"name":"Parking Fee",
-"category":"parking",
-"subcategory":"Parking Fee",
-"total_price":42.00
-}},
-{{
-"name":"Sales Tax",
-"category":"parking",
-"subcategory":"Sales Tax",
-"total_price":2.73
-}}
-]
+Example:
+
+Tip = 20.00
+
+Return:
+
+name = "Tip"
+category = "gratuity"
+subcategory = "Tip"
+total_price = 20.00
+
+Also:
+
+bill.tip = 20.00
+
+Do NOT include the tip inside another item's price.
+
+============================================================
+DISCOUNT
+============================================================
+
+If a discount is printed:
+
+Create a separate line item.
+
+Example:
+
+Discount = -20.00
+
+Return:
+
+category = discount
+subcategory = Discount
+total_price = -20.00
+
+Do not hide discounts inside subtotal.
+
+============================================================
+TOTALS ARE NOT LINE ITEMS
+============================================================
+
+NEVER create line items named:
+
+Total
+Grand Total
+Amount Due
+Amount Including GST
+Final Total
+Subtotal
+
+These belong only in:
+
+subtotal
+discount
+tip
+service_charge
+grand_total
+amount
+
+Example:
+
+Subtotal = 306.14
+CGST = 7.66
+SGST = 7.66
+Grand Total = 321.46
+
+Return:
+
+subtotal = 306.14
+grand_total = 321.46
+amount = 321.46
+
+line_items:
+
+BHALLA PAPRI CHAAT = 149.00
+SWEET LASSI = 95.24
+MASALA CHAACH = 61.90
+CGST = 7.66
+SGST = 7.66
+
+============================================================
+TOTAL CONSISTENCY
+============================================================
+
+Whenever possible:
+
+sum of actual payable line_items.total_price
+approximately equals the final grand_total.
+
+However:
+
+DO NOT force mathematical equality.
+
+DO NOT invent a missing charge.
+
+DO NOT modify a printed amount.
+
+DO NOT assign a difference to an arbitrary item.
+
+If there is a legitimate rounding difference, preserve the printed
+values and explain it in extraction_notes.
+
+For example:
+
+149.00
++ 95.24
++ 61.90
++ 7.66
++ 7.66
+= 321.46
+
+Therefore, for the example receipt:
+
+subtotal = 306.14
+CGST = 7.66
+SGST = 7.66
+grand_total = 321.46
+amount = 321.46
+
+============================================================
+REIMBURSABILITY
+============================================================
+
+Extraction and reimbursement are separate operations.
+
+ALWAYS include the item even if it is potentially non-reimbursable.
+
+Default:
+
+"is_reimbursable": true
+
+unless the receipt clearly identifies it as personal/non-business.
+
+Potential examples:
+
+Cigarettes
+Personal shopping
+Gift item
+
+Then:
+
+"is_reimbursable": false
+
+"reason": "Personal expense"
+
+Normal business expenses:
+
+"is_reimbursable": true
+
+"reason": ""
+
+The extraction model MUST NOT perform backend policy validation.
+
+Do NOT return:
+
+"No policy configured for Employee"
+
+"AI policy validation failed"
+
+"validate_receipt_against_policy"
+
+"Over limit"
+
+"Policy not found"
+
+"Duplicate receipt detected"
+
+"Old bill"
+
+The backend policy engine handles those decisions separately.
+
+============================================================
+ADDITIONAL INFO FOR FOOD RECEIPTS
+============================================================
+
+For food receipts, additional_info MUST contain numbered points
+for EVERY readable food/drink item and every actual payable tax/fee.
+
+Example:
+
+1. BHALLA PAPRI CHAAT — 1 × INR 149.00 — INR 149.00
+2. SWEET LASSI — 1 × INR 95.24 — INR 95.24
+3. MASALA CHAACH — 1 × INR 61.90 — INR 61.90
+4. CGST — INR 7.66
+5. SGST — INR 7.66
+6. Total — INR 321.46
+
+Do NOT omit readable items.
+
+============================================================
+OTHER DOCUMENT TYPES
+============================================================
+
+For other receipt types include useful visible details.
+
+HOTEL:
+
+- room type
+- guest
+- check-in
+- check-out
+- nights
+- room charge
+- taxes
+- total
+
+FLIGHT:
+
+- airline
+- flight number
+- route
+- passenger
+- travel date
+- departure
+- arrival
+- class
+- seat
+- PNR
+- fare
+
+TRAIN:
+
+- train number
+- train name
+- route
+- passenger
+- travel date
+- class
+- coach
+- seat
+- PNR
+- fare
+
+FUEL:
+
+- fuel type
+- quantity
+- rate
+- station
+- vehicle number
+- payment
+- total
+
+PARKING:
+
+- location
+- entry
+- exit
+- duration
+- vehicle
+- parking fee
+- tax
+- total
+
+MEDICAL:
+
+- medicine/service
+- quantity
+- doctor/hospital
+- tax
+- total
+
+============================================================
+PAYMENT
+============================================================
+
+Extract when visible:
+
+Cash
+Credit Card
+Debit Card
+UPI
+Google Pay
+Apple Pay
+Bank Transfer
+Other
+
+Extract:
+
+method
+card_last_four
+transaction_id
+reference_number
+
+Do not invent missing values.
+
+============================================================
+DOCUMENT REFERENCES
+============================================================
+
+Extract references such as:
+
+Invoice Number
+Receipt Number
+Ticket Number
+Booking ID
+PNR
+Transaction ID
+
+Return:
+
+document_reference.reference_type
+document_reference.reference_number
+document_reference.linked_reference_number
+
+Examples:
+
+Hotel Booking:
+reference_type = hotel_booking
+
+Hotel Invoice:
+reference_type = hotel_invoice
+
+Flight:
+reference_type = flight_ticket
+
+Train:
+reference_type = train_ticket
+
+Parking:
+reference_type = parking_receipt
+
+If this document clearly references another document,
+put that number into linked_reference_number.
+
+Otherwise:
+
+""
+
+============================================================
+RECEIPT FINGERPRINT
+============================================================
+
+Create a duplicate-detection fingerprint using:
+
+merchant
+document_number
+bill_date
+amount
+currency
+
+merchant in the fingerprint may be normalized.
+
+Remove legal suffixes when appropriate:
+
+Pvt Ltd
+Pvt. Ltd.
+Limited
+Inc.
+LLC
+
+Do NOT change the actual vendor field.
+
+============================================================
+RECEIPT QUALITY
+============================================================
+
+Evaluate only visible evidence.
+
+Check:
+
+- image editing
+- cropping
+- unusual formatting
+- missing total
+- handwriting
+- missing merchant
+- inconsistent totals
+- suspicious formatting
+- duplicate appearance
+
+Do NOT accuse the user of fraud.
+
+Return probabilities only.
+
+Possible status:
+
+EXCELLENT
+GOOD
+FAIR
+POOR
+
+Possible issues:
+
+blur
+cropped
+low resolution
+shadow
+reflection
+folded paper
+missing corners
+handwritten over receipt
+partial receipt
+multiple receipts
+
+Never invent an issue.
+
+============================================================
+DOCUMENT METADATA
+============================================================
+
+Detect:
+
+QR
+Barcode
+Signature
+Stamp
+Handwriting
+
+Also detect document type:
 
 Restaurant
-
-Burger........120
-Fries.........90
-GST...........19.5
-
-Return
-
-Burger
-Fries
-GST
-
 Hotel
+Invoice
+Medical
+Parking
+Flight
+Train
+Fuel
+etc.
 
-Room Charge
-Mini Bar
-Laundry
-Service Charge
-VAT
-
-Return every charge separately.
-
-Never merge tax into another item.
-
-Never omit taxes or fees if they are individually printed.
-
-The sum of all line_items.total_price should approximately equal the bill grand total.
-
-CRITICAL ORDERING RULES
-- Keep line_items in the same top-to-bottom order as the printed receipt.
-- Extract every purchased product/drink first, then fees/service charges, then taxes, then tip if printed.
-- Never omit menu items, drinks, or alcohol just because they might be non-reimbursable.
-- Never include Grand Total / Amount Due / Total as a line_item.
-- Put the payable total only in bill.amount and bill.grand_total.
-- Prefer bill.amount / bill.grand_total that includes tip when a tip is present.
-- Always put tip/gratuity in line_items (and also bill.tip) when handwritten or printed.
-- Extract handwritten tip/gratuity as its own line item when present.
-- Do not create extra bills for metadata such as entry time or payment method.
-- Put that metadata only in additional_info.
-- If the image contains multiple separate checks/receipts, return one bill object per check.
 ============================================================
-OUTPUT JSON
+SUPPORTING DOCUMENTS
 ============================================================
 
-Return exactly this JSON structure:
+Determine whether supporting documents are reasonably required.
+
+Examples:
+
+Flight:
+Boarding Pass / Airline Invoice
+
+Hotel:
+Hotel Invoice
+
+Train:
+Railway Ticket
+
+Fuel:
+Fuel Receipt
+
+Taxi:
+Trip Receipt
+
+Medical:
+Prescription if reasonably required
+
+Restaurant:
+Restaurant Receipt
+
+Do not invent missing documents.
+
+============================================================
+FINAL INTERNAL EXTRACTION CHECK
+============================================================
+
+Before returning JSON, internally inspect the COMPLETE receipt
+from TOP TO BOTTOM.
+
+Perform this checklist:
+
+1. Did I extract every readable product?
+2. Did I extract every readable food item?
+3. Did I extract every readable drink?
+4. Did I extract every alcohol item?
+5. Did I extract every parking/fuel/toll charge?
+6. Did I extract every hotel charge?
+7. Did I extract every medical item?
+8. Did I extract every office-supply item?
+9. Did I extract every telecom charge?
+10. Did I extract every service charge?
+11. Did I extract every fee?
+12. Did I extract every actual payable tax?
+13. If CGST is printed, did I extract CGST?
+14. If SGST is printed, did I extract SGST?
+15. If CGST and SGST are both printed, did I preserve both separately?
+16. Did I extract tip/gratuity?
+17. Did I extract discounts?
+18. Did I accidentally extract subtotal as a line item?
+19. Did I accidentally extract grand total as a line item?
+20. Did I accidentally duplicate a tax?
+21. Did I accidentally duplicate a fee?
+22. Does every readable line item have category?
+23. Does every readable line item have subcategory?
+24. Does every visible quantity appear correctly?
+25. Does every visible rate appear correctly?
+26. Does every visible item amount appear correctly?
+27. Does each line item have its own price?
+28. Are line items in receipt order?
+29. Does bill.amount equal the final payable amount?
+30. Does grand_total equal the printed grand total?
+31. Is the currency correct?
+32. Is the bill date correct?
+33. Is vendor only the merchant name?
+34. Did I preserve the complete readable item name?
+35. Did I avoid truncating product names?
+36. Did I avoid treating tax breakdowns as separate payable taxes?
+37. Did I distinguish CGST and SGST as separate payable components?
+
+============================================================
+CRITICAL EXAMPLE
+============================================================
+
+If the uploaded receipt visibly contains:
+
+BHALLA PAPRI CHAAT       149.00
+SWEET LASSI                95.24
+MASALA CHAACH              61.90
+
+Subtotal                    306.14
+
+CGST                          7.66
+SGST                          7.66
+
+Amount Including GST        321.46
+
+then the line_items MUST contain:
 
 {{
-  "document_language": "",
-  "document_language_code": "",
-  "document_summary": "",
-  "bills": [
-    {{
-      "type": "miscellaneous",
-      "amount": null,
-      "currency": "",
-      "bill_date": null,
-      "vendor":"",
-      "merchant_type":"",
-      "merchant_country":"",
-      "merchant_city":"",
-      "document_reference": {{
-    "reference_type": "",
-    "reference_number": "",
-    "linked_reference_number": ""
-}},
-
-"receipt_fingerprint": {{
-    "merchant": "",
-    "document_number": "",
-    "bill_date": "",
-    "amount": "",
-    "currency": ""
-}},
-      "additional_info": "",
-
-      "line_items":[
-{{
-    "name":"",
-    "category":"",
-    "subcategory":"",
-    "quantity":null,
-    "unit_price":null,
-    "total_price":null
-}}
-]
-
-      "taxes":[
-        {{
-          "type": "GST",
-          "percentage": 18,
-          "amount": 120
-        }}
-      ],
-
-      "subtotal": null,
-      "discount": null,
-      "tip": null,
-      "service_charge": null,
-      "grand_total": null,
-
-      "original_text": null,
-      "translated_original_text": "",
-      "source_language": "",
-      "source_language_code": "",
-
-      "extraction_notes": "",
-
-      "confidence": {{
-        "translation": {{
-          "source_language": "",
-          "target_language": "",
-          "confidence": 0.0
-        }},
-        "overall": 0.0,
-        "vendor": 0.0,
-        "amount": 0.0,
-        "currency": 0.0,
-        "bill_date": 0.0,
-        "category": 0.0,
-        "translation": 0.0
-      }},
-      "receipt_quality": {{
-        "score": 0.0,
-        "status": "",
-        "issues": []
-      }}
-    }}
-  ],
-  "fraud_analysis": {{
-    "suspicious": false,
-    "duplicate_probability": 0.0,
-    "edited_probability": 0.0,
-    "reasons": []
-  }},
-
-  "ai_recommendation": {{
-    "decision": "",
-    "confidence": 0.0,
+    "name": "BHALLA PAPRI CHAAT",
+    "category": "food",
+    "subcategory": "Vegetarian",
+    "quantity": 1,
+    "unit_price": 149.00,
+    "total_price": 149.00,
+    "is_reimbursable": true,
     "reason": ""
-}},
-"document_validation": {{
-    "is_complete": true,
-    "required_documents": [],
-    "uploaded_documents": [],
-    "missing_documents": []
-}},
-  "document_metadata": {{
-    "receipt_type": "",
-    "page_count": 1,
-    "contains_handwriting": false,
-    "contains_signature": false,
-    "contains_stamp": false,
-    "contains_qr": false,
-    "contains_barcode": false
-  }},
-  "payment": {{
-    "method": "",
-    "card_last_four": "",
-    "transaction_id": "",
-    "reference_number": ""
-  }},
-  "review_notes": [],
-  "ocr_confidence": 0.0
 }}
+
+{{
+    "name": "SWEET LASSI",
+    "category": "beverages",
+    "subcategory": "Lassi",
+    "quantity": 1,
+    "unit_price": 95.24,
+    "total_price": 95.24,
+    "is_reimbursable": true,
+    "reason": ""
+}}
+
+{{
+    "name": "MASALA CHAACH",
+    "category": "beverages",
+    "subcategory": "Buttermilk",
+    "quantity": 1,
+    "unit_price": 61.90,
+    "total_price": 61.90,
+    "is_reimbursable": true,
+    "reason": ""
+}}
+
+{{
+    "name": "CGST",
+    "category": "taxes",
+    "subcategory": "CGST",
+    "quantity": null,
+    "unit_price": null,
+    "total_price": 7.66,
+    "is_reimbursable": true,
+    "reason": ""
+}}
+
+{{
+    "name": "SGST",
+    "category": "taxes",
+    "subcategory": "SGST",
+    "quantity": null,
+    "unit_price": null,
+    "total_price": 7.66,
+    "is_reimbursable": true,
+    "reason": ""
+}}
+
+The bill MUST contain:
+
+"subtotal": 306.14
+"grand_total": 321.46
+"amount": 321.46
+
+The taxes MUST contain:
+
+{{
+    "type": "CGST",
+    "percentage": 2.5,
+    "amount": 7.66
+}}
+
+and:
+
+{{
+    "type": "SGST",
+    "percentage": 2.5,
+    "amount": 7.66
+}}
+
+IMPORTANT:
+
+Do NOT return only:
+
+GST = 7.66
+
+when the receipt actually shows:
+
+CGST = 7.66
+SGST = 7.66
+
+Do NOT calculate:
+
+306.14 + 7.66 = 313.80
+
+when both CGST and SGST are payable.
+
+The correct final total is:
+
+306.14 + 7.66 + 7.66 = 321.46
+
+============================================================
+OUTPUT
+============================================================
+
+Return exactly ONE valid JSON object.
 
 Return JSON only.
 
 Do not use Markdown.
 
-Do not wrap the JSON in code fences.
+Do not use code fences.
 
-Do not return any explanation outside the JSON.
+Do not return explanations outside JSON.
+
+Use this exact structure:
+
+{{
+    "document_language": "",
+    "document_language_code": "",
+    "document_summary": "",
+
+    "bills": [
+        {{
+            "type": "miscellaneous",
+            "amount": null,
+            "currency": "",
+            "bill_date": null,
+
+            "vendor": "",
+            "merchant_type": "",
+            "merchant_country": "",
+            "merchant_city": "",
+
+            "document_reference": {{
+                "reference_type": "",
+                "reference_number": "",
+                "linked_reference_number": ""
+            }},
+
+            "receipt_fingerprint": {{
+                "merchant": "",
+                "document_number": "",
+                "bill_date": "",
+                "amount": "",
+                "currency": ""
+            }},
+
+            "additional_info": "",
+
+            "line_items": [
+                {{
+                    "name": "",
+                    "category": "",
+                    "subcategory": "",
+                    "quantity": null,
+                    "unit_price": null,
+                    "total_price": null,
+                    "is_reimbursable": true,
+                    "reason": ""
+                }}
+            ],
+
+            "taxes": [
+                {{
+                    "type": "",
+                    "percentage": null,
+                    "amount": null
+                }}
+            ],
+
+            "subtotal": null,
+            "discount": null,
+            "tip": null,
+            "service_charge": null,
+            "grand_total": null,
+
+            "original_text": null,
+            "translated_original_text": "",
+
+            "source_language": "",
+            "source_language_code": "",
+
+            "extraction_notes": "",
+
+            "confidence": {{
+                "translation": {{
+                    "source_language": "",
+                    "target_language": "",
+                    "confidence": 0.0
+                }},
+                "overall": 0.0,
+                "vendor": 0.0,
+                "amount": 0.0,
+                "currency": 0.0,
+                "bill_date": 0.0,
+                "category": 0.0,
+                "translation": 0.0
+            }},
+
+            "receipt_quality": {{
+                "score": 0.0,
+                "status": "",
+                "issues": []
+            }}
+        }}
+    ],
+
+    "fraud_analysis": {{
+        "suspicious": false,
+        "duplicate_probability": 0.0,
+        "edited_probability": 0.0,
+        "reasons": []
+    }},
+
+    "ai_recommendation": {{
+        "decision": "",
+        "confidence": 0.0,
+        "reason": ""
+    }},
+
+    "document_validation": {{
+        "is_complete": true,
+        "required_documents": [],
+        "uploaded_documents": [],
+        "missing_documents": []
+    }},
+
+    "document_metadata": {{
+        "receipt_type": "",
+        "page_count": 1,
+        "contains_handwriting": false,
+        "contains_signature": false,
+        "contains_stamp": false,
+        "contains_qr": false,
+        "contains_barcode": false
+    }},
+
+    "payment": {{
+        "method": "",
+        "card_last_four": "",
+        "transaction_id": "",
+        "reference_number": ""
+    }},
+
+    "review_notes": [],
+
+    "ocr_confidence": 0.0
+}}
+
+============================================================
+FINAL RULES
+============================================================
+
+The receipt is the source of truth.
+
+EXTRACT EVERYTHING READABLE.
+
+Every readable purchased item gets its own line item.
+
+Every separately payable monetary charge gets its own line item.
+
+Every line item gets:
+
+name
+category
+subcategory
+quantity
+unit_price
+total_price
+is_reimbursable
+reason
+
+Every line item gets its OWN price.
+
+Do not merge products.
+
+Do not merge categories.
+
+Do not omit drinks.
+
+Do not omit alcohol.
+
+Do not omit fees.
+
+Do not omit service charges.
+
+Do not omit payable taxes.
+
+If CGST and SGST are separately printed as payable taxes,
+extract BOTH.
+
+Do not duplicate tax breakdowns.
+
+Do not duplicate charges.
+
+Do not create totals as line items.
+
+Do not invent unreadable values.
+
+Return valid JSON only.
 """
 
+    # ====================================================
+    # Read uploaded receipt
+    # ====================================================
+
+    
+    # ====================================================
+    # Read uploaded receipt
+    # ====================================================
+
+    receipt.receipt_file.open("rb")
+
     try:
-        # ====================================================
-        # Read uploaded receipt
-        # ====================================================
+        file_bytes = receipt.receipt_file.read()
+    finally:
+        receipt.receipt_file.close()
 
-        receipt.receipt_file.open("rb")
-
-        try:
-            file_bytes = receipt.receipt_file.read()
-        finally:
-            receipt.receipt_file.close()
-
-        if not file_bytes:
-            raise Exception(
-                "The uploaded receipt file is empty."
-            )
-
-        base64_data = base64.b64encode(
-            file_bytes
-        ).decode("utf-8")
-
-        file_name = receipt.receipt_file.name
-        ext = file_name.rsplit(".", 1)[-1].lower()
-
-        mime_map = {
-            "pdf": "application/pdf",
-            "jpg": "image/jpeg",
-            "jpeg": "image/jpeg",
-            "png": "image/png",
-            "webp": "image/webp",
-        }
-
-        mime_type = mime_map.get(ext)
-
-        if not mime_type:
-            raise Exception(
-                "Unsupported file type. Please upload "
-                "PDF, JPG, JPEG, PNG, or WEBP."
-            )
-
-        # ====================================================
-        # Gemini REST request
-        # ====================================================
-
-        request_body = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [
-                        {
-                            "inline_data": {
-                                "mime_type": mime_type,
-                                "data": base64_data,
-                            }
-                        },
-                        {
-                            "text": prompt,
-                        },
-                    ],
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0.1,
-                "responseMimeType": "application/json",
-            },
-        }
-
-        response = requests.post(
-            (
-                f"{settings.GEMINI_API_URL}/"
-                f"{settings.GEMINI_RECEIPT_MODEL}"
-                ":generateContent"
-            ),
-            headers={
-                "Content-Type": "application/json",
-                "x-goog-api-key": settings.GEMINI_API_KEY,
-            },
-            data=json.dumps(request_body),
-            timeout=90,
+    if not file_bytes:
+        raise Exception(
+            "The uploaded receipt file is empty."
         )
 
-        try:
-            response_json = response.json()
-        except ValueError as exc:
-            raise Exception(
-                "Gemini returned a non-JSON HTTP response."
-            ) from exc
+    base64_data = base64.b64encode(
+        file_bytes
+    ).decode("utf-8")
 
-        if not response.ok:
-            api_error = response_json.get(
-                "error",
-                {},
+    file_name = receipt.receipt_file.name
+    ext = file_name.rsplit(".", 1)[-1].lower()
+
+    mime_map = {
+        "pdf": "application/pdf",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "webp": "image/webp",
+    }
+
+    mime_type = mime_map.get(ext)
+
+    if not mime_type:
+        raise Exception(
+            "Unsupported file type. Please upload "
+            "PDF, JPG, JPEG, PNG, or WEBP."
+        )
+
+    # ====================================================
+    # Gemini REST request
+    # ====================================================
+
+    request_body = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": base64_data,
+                        }
+                    },
+                    {
+                        "text": prompt,
+                    },
+                ],
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.1,
+            "responseMimeType": "application/json",
+        },
+    }
+
+    response = requests.post(
+        (
+            f"{settings.GEMINI_API_URL}/"
+            f"{settings.GEMINI_RECEIPT_MODEL}"
+            ":generateContent"
+        ),
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": settings.GEMINI_API_KEY,
+        },
+        data=json.dumps(request_body),
+        timeout=90,
+    )
+
+    # ====================================================
+    # Parse Gemini HTTP response
+    # ====================================================
+
+    try:
+        response_json = response.json()
+    except ValueError as exc:
+        raise Exception(
+            "Gemini returned a non-JSON HTTP response."
+        ) from exc
+
+    if not response.ok:
+        api_error = response_json.get(
+            "error",
+            {},
+        )
+
+        raise Exception(
+            api_error.get(
+                "message",
+                (
+                    "Gemini request failed with "
+                    f"HTTP {response.status_code}."
+                ),
+            )
+        )
+
+    if "error" in response_json:
+        raise Exception(
+            response_json["error"].get(
+                "message",
+                "Gemini receipt extraction failed.",
+            )
+        )
+
+    candidates = response_json.get(
+        "candidates",
+        []
+    )
+
+    if not candidates:
+        prompt_feedback = response_json.get(
+            "promptFeedback",
+            {}
+        )
+
+        raise Exception(
+            "Gemini returned no receipt result. "
+            f"Feedback: {prompt_feedback}"
+        )
+
+    parts = (
+        candidates[0]
+        .get("content", {})
+        .get("parts", [])
+    )
+
+    gemini_text = "".join(
+        part.get("text", "")
+        for part in parts
+        if part.get("text")
+    ).strip()
+
+    if not gemini_text:
+        raise Exception(
+            "Gemini returned an empty receipt extraction result."
+        )
+
+    # ====================================================
+    # Clean Gemini JSON
+    # ====================================================
+
+    cleaned_text = gemini_text.strip()
+
+    if cleaned_text.startswith("```"):
+        cleaned_text = re.sub(
+            r"^```(?:json)?\s*",
+            "",
+            cleaned_text,
+            flags=re.IGNORECASE,
+        )
+
+        cleaned_text = re.sub(
+            r"\s*```$",
+            "",
+            cleaned_text,
+        )
+
+    # ====================================================
+    # Parse JSON
+    # ====================================================
+
+    try:
+        parsed_data = json.loads(
+            cleaned_text
+        )
+
+    except json.JSONDecodeError:
+        match = re.search(
+            r"\{.*\}",
+            cleaned_text,
+            re.DOTALL,
+        )
+
+        if not match:
+            raise Exception(
+                "No valid JSON was returned by Gemini."
             )
 
-            raise Exception(
-                api_error.get(
-                    "message",
-                    f"Gemini request failed with HTTP {response.status_code}.",
+        parsed_data = json.loads(
+            match.group(0)
+        )
+
+    print(
+        "\n================ GEMINI JSON ================\n"
+    )
+
+    print(
+        json.dumps(
+            parsed_data,
+            indent=4,
+            default=str,
+        )
+    )
+
+    print(
+        "\n=============================================\n"
+    )
+
+    # ====================================================
+    # OCR confidence
+    # ====================================================
+
+    try:
+        overall_confidence = Decimal(
+            str(
+                parsed_data.get(
+                    "ocr_confidence",
+                    0,
                 )
             )
+        )
+    except (
+        InvalidOperation,
+        TypeError,
+        ValueError,
+    ):
+        overall_confidence = Decimal("0")
 
-        if "error" in response_json:
-            raise Exception(
-                response_json["error"].get(
-                    "message",
-                    "Gemini receipt extraction failed.",
-                )
+    # ====================================================
+    # Get bills
+    # ====================================================
+
+    bills = parsed_data.get(
+        "bills",
+        []
+    )
+
+    if not isinstance(
+        bills,
+        list,
+    ) or not bills:
+        raise Exception(
+            "Receipt image is not readable. "
+            "Please upload a clearer receipt."
+        )
+
+    # ====================================================
+    # Ensure every bill has line items
+    # ====================================================
+
+    for bill in bills:
+
+        if not isinstance(
+            bill,
+            dict,
+        ):
+            continue
+
+        print(
+            "\n================ BILL FROM GEMINI ================"
+        )
+
+        print(
+            json.dumps(
+                bill,
+                indent=4,
+                default=str,
             )
+        )
 
-        candidates = response_json.get(
-            "candidates",
+        print(
+            "=================================================="
+        )
+
+        line_items = bill.get(
+            "line_items",
             []
         )
 
-        if not candidates:
-            prompt_feedback = response_json.get(
-                "promptFeedback",
-                {}
-            )
-
-            raise Exception(
-                "Gemini returned no receipt result. "
-                f"Feedback: {prompt_feedback}"
-            )
-
-        parts = (
-            candidates[0]
-            .get("content", {})
-            .get("parts", [])
+        print(
+            "Original line_items:",
+            line_items,
         )
 
-        gemini_text = "".join(
-            part.get("text", "")
-            for part in parts
-            if part.get("text")
+        # ------------------------------------------------
+        # Fallback line item
+        # ------------------------------------------------
+
+        if not isinstance(
+            line_items,
+            list,
+        ) or not line_items:
+
+            print(
+                "No line items found. "
+                "Creating fallback line item..."
+            )
+
+            amount = bill.get(
+                "grand_total"
+            )
+
+            if amount is None:
+                amount = bill.get(
+                    "amount"
+                )
+
+            category = bill.get(
+                "type",
+                "miscellaneous",
+            )
+
+            vendor = bill.get(
+                "vendor",
+                "",
+            )
+
+            line_name = (
+                str(category)
+                .replace("_", " ")
+                .title()
+            )
+
+            if vendor:
+                line_name = (
+                    f"{vendor} - {line_name}"
+                )
+
+            bill["line_items"] = [
+                {
+                    "name": line_name,
+                    "category": category,
+                    "subcategory": (
+                        str(category)
+                        .replace("_", " ")
+                        .title()
+                    ),
+                    "quantity": 1,
+                    "unit_price": amount,
+                    "total_price": amount,
+                    "is_reimbursable": True,
+                    "reason": "",
+                }
+            ]
+
+            print(
+                "Fallback created:"
+            )
+
+            print(
+                json.dumps(
+                    bill["line_items"],
+                    indent=4,
+                    default=str,
+                )
+            )
+
+        else:
+
+            print(
+                f"Gemini extracted "
+                f"{len(line_items)} line item(s):"
+            )
+
+            print(
+                json.dumps(
+                    line_items,
+                    indent=4,
+                    default=str,
+                )
+            )
+
+        # ------------------------------------------------
+        # Normalize line items
+        # ------------------------------------------------
+
+        normalize_bill_line_items(
+            bill
+        )
+
+        print(
+            "Normalized line_items:"
+        )
+
+        print(
+            json.dumps(
+                bill.get(
+                    "line_items",
+                    []
+                ),
+                indent=4,
+                default=str,
+            )
+        )
+
+    # ====================================================
+    # Initialize variables
+    # ====================================================
+
+    normalized_bills = []
+
+    total_amount = Decimal(
+        "0.00"
+    )
+
+    created_items = []
+
+    db_line_items = []
+
+    final_line_items = []
+
+    conversion_result = None
+
+    allowed_categories = {
+        "food",
+        "hotel",
+        "flight_ticket",
+        "train_ticket",
+        "car_rental",
+        "fuel",
+        "gas",
+        "parking",
+        "office_supplies",
+        "medical",
+        "courier",
+        "telecom",
+        "training",
+        "relocation",
+        "wfh",
+        "miscellaneous",
+    }
+
+    # ====================================================
+    # Normalize bills
+    # ====================================================
+
+    for bill_index, bill in enumerate(
+        bills
+    ):
+
+        if not isinstance(
+            bill,
+            dict,
+        ):
+            continue
+
+        # ------------------------------------------------
+        # Amount
+        # ------------------------------------------------
+
+        raw_amount = (
+            bill.get("amount")
+            if bill.get("amount") is not None
+            else bill.get("grand_total")
+        )
+
+        try:
+            amount = Decimal(
+                str(
+                    raw_amount
+                    if raw_amount is not None
+                    else "0.00"
+                )
+                .replace(",", "")
+                .strip()
+            )
+
+        except (
+            InvalidOperation,
+            TypeError,
+            ValueError,
+        ):
+            amount = Decimal(
+                "0.00"
+            )
+
+        if amount < Decimal(
+            "0.00"
+        ):
+            amount = Decimal(
+                "0.00"
+            )
+
+        # ------------------------------------------------
+        # Category
+        # ------------------------------------------------
+
+        category = str(
+            bill.get("type")
+            or "miscellaneous"
+        ).strip().lower()
+
+        if category not in allowed_categories:
+            category = "miscellaneous"
+
+        # ------------------------------------------------
+        # Currency
+        # ------------------------------------------------
+
+        currency = str(
+            bill.get("currency")
+            or ""
+        ).strip().upper()
+
+        if len(currency) != 3:
+            currency = ""
+
+        # ------------------------------------------------
+        # Bill date
+        # ------------------------------------------------
+
+        raw_bill_date = bill.get(
+            "bill_date"
+        )
+
+        bill_date = None
+
+        if raw_bill_date:
+
+            try:
+                bill_date = datetime.strptime(
+                    str(
+                        raw_bill_date
+                    ).strip(),
+                    "%Y-%m-%d",
+                ).date()
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+                bill_date = None
+
+        # ------------------------------------------------
+        # Vendor
+        # ------------------------------------------------
+
+        vendor = str(
+            bill.get("vendor")
+            or ""
+        ).strip()[:255]
+
+        # ------------------------------------------------
+        # Additional information
+        # ------------------------------------------------
+
+        additional_info = str(
+            bill.get("additional_info")
+            or ""
         ).strip()
 
-        if not gemini_text:
-            raise Exception(
-                "Gemini returned an empty receipt extraction result."
-            )
+        if not additional_info:
 
-        # JSON mode normally returns plain JSON. The fallback handles
-        # models that still wrap the result in a code block.
-        cleaned_text = gemini_text.strip()
-
-        if cleaned_text.startswith("```"):
-            cleaned_text = re.sub(
-                r"^```(?:json)?\s*",
-                "",
-                cleaned_text,
-                flags=re.IGNORECASE,
-            )
-
-            cleaned_text = re.sub(
-                r"\s*```$",
-                "",
-                cleaned_text,
-            )
-
-        try:
-            parsed_data = json.loads(
-                cleaned_text
-            )
-            print("\n================ GEMINI JSON ================\n")
-            print(json.dumps(parsed_data, indent=4))
-            print("\n=============================================\n")
-            overall_confidence = Decimal(
-                str(
-                    parsed_data.get(
-                        "ocr_confidence",
-                        0,
-                    )
+            additional_info = str(
+                bill.get(
+                    "translated_original_text"
                 )
-            )
-        except json.JSONDecodeError:
-            match = re.search(
-                r"\{.*\}",
-                cleaned_text,
-                re.DOTALL,
-            )
-
-            if not match:
-                raise Exception(
-                    "No valid JSON was returned by Gemini."
+                or bill.get(
+                    "extraction_notes"
                 )
+                or ""
+            ).strip()
 
-            parsed_data = json.loads(
-                match.group(0)
-            )
-            print("\n================ GEMINI JSON ================\n")
-            print(json.dumps(parsed_data, indent=4))
-            print("\n=============================================\n")
+        # ------------------------------------------------
+        # Normalized bill
+        # ------------------------------------------------
 
-        bills = parsed_data.get(
-            "bills",
-            []
-        )
+        normalized_bill = {
+            "merchant_type": bill.get(
+                "merchant_type",
+                "",
+            ),
 
-        if not isinstance(bills, list) or not bills:
-            raise Exception(
-                "Receipt image is not readable. "
-                "Please upload a clearer receipt."
-            )
+            "merchant_country": bill.get(
+                "merchant_country",
+                "",
+            ),
 
-        # -------------------------------------------------------
-        # Ensure every bill has at least one line item
-        # -------------------------------------------------------
+            "merchant_city": bill.get(
+                "merchant_city",
+                "",
+            ),
 
-        for bill in bills:
-            if not isinstance(bill, dict):
-                continue
+            **bill,
 
-            print("\n================ BILL FROM GEMINI ================")
-            print(json.dumps(bill, indent=4))
-            print("==================================================")
+            "type": category,
 
-            line_items = bill.get("line_items")
+            "amount": str(
+                amount
+            ),
 
-            print("Original line_items:", line_items)
+            "currency": currency,
 
-            if not line_items:
-                print("No line items found. Creating fallback line item...")
+            "bill_date": (
+                bill_date.isoformat()
+                if bill_date
+                else None
+            ),
 
-                amount = bill.get("grand_total")
+            "vendor": vendor,
 
-                if amount is None:
-                    amount = bill.get("amount")
-
-                category = bill.get("type", "miscellaneous")
-                vendor = bill.get("vendor", "")
-
-                line_name = str(category).replace("_", " ").title()
-
-                if vendor:
-                    line_name = f"{vendor} - {line_name}"
-
-                bill["line_items"] = [
-                    {
-                        "name": line_name,
-                        "category": category,
-                        "subcategory": str(category).replace("_", " ").title(),
-                        "quantity": 1,
-                        "unit_price": amount,
-                        "total_price": amount,
-                        "is_reimbursable": True,
-                        "reason": ""
-                    }
-                ]
-
-                print("Fallback created:")
-                print(json.dumps(bill["line_items"], indent=4))
-
-            else:
-                print(f"Gemini extracted {len(line_items)} line item(s):")
-                print(json.dumps(line_items, indent=4))
-
-            normalize_bill_line_items(bill)
-            print("Normalized line_items:")
-            print(json.dumps(bill["line_items"], indent=4))
-        # ====================================================
-        # Validate and save extracted data
-        # ====================================================
-
-        normalized_bills = []
-        total_amount = Decimal("0.00")
-        created_items = []
-
-        allowed_categories = {
-            "food",
-            "hotel",
-            "flight_ticket",
-            "train_ticket",
-            "car_rental",
-            "fuel",
-            "gas",
-            "parking",
-            "office_supplies",
-            "medical",
-            "courier",
-            "telecom",
-            "training",
-            "relocation",
-            "wfh",
-            "miscellaneous",
+            "additional_info": additional_info,
         }
 
-        for bill_index, bill in enumerate(bills):
-            if not isinstance(bill, dict):
-                continue
+        normalized_bills.append(
+            normalized_bill
+        )
 
-            raw_amount = (
-                bill.get("amount")
-                if bill.get("amount") is not None
-                else bill.get("grand_total")
+        total_amount += amount
+
+    # ====================================================
+    # Validate normalized bills
+    # ====================================================
+
+    if not normalized_bills:
+        raise Exception(
+            "No valid bill information was extracted."
+        )
+
+    if total_amount <= Decimal(
+        "0.00"
+    ):
+        raise Exception(
+            "The final payable amount could not be read. "
+            "Please upload a clearer receipt."
+        )
+
+    # ====================================================
+    # DATABASE TRANSACTION
+    # ====================================================
+
+    with transaction.atomic():
+
+        # ------------------------------------------------
+        # Remove old line items
+        # ------------------------------------------------
+
+        ExpenseLineItem.objects.filter(
+            receipt=receipt
+        ).delete()
+
+        ExpenseAttachment.objects.filter(
+            receipt=receipt
+        ).delete()
+
+        # ------------------------------------------------
+        # First bill
+        # ------------------------------------------------
+
+        first_bill = normalized_bills[0]
+
+        # ------------------------------------------------
+        # Document reference
+        # ------------------------------------------------
+
+        document_reference = first_bill.get(
+            "document_reference",
+            {},
+        )
+
+        if not isinstance(
+            document_reference,
+            dict,
+        ):
+            document_reference = {}
+
+        receipt.reference_number = (
+            document_reference.get(
+                "reference_number",
+                "",
             )
+        )
+
+        receipt.reference_type = (
+            document_reference.get(
+                "reference_type",
+                "",
+            )
+        )
+
+        receipt.linked_reference_number = (
+            document_reference.get(
+                "linked_reference_number",
+                "",
+            )
+        )
+
+        # ------------------------------------------------
+        # Fingerprint
+        # ------------------------------------------------
+
+        fingerprint = first_bill.get(
+            "receipt_fingerprint",
+            {},
+        )
+
+        if not isinstance(
+            fingerprint,
+            dict,
+        ):
+            fingerprint = {}
+
+        receipt.receipt_fingerprint = (
+            fingerprint
+        )
+
+        fingerprint_string = "|".join(
+            [
+                str(
+                    fingerprint.get(
+                        "merchant",
+                        "",
+                    )
+                ).strip().upper(),
+
+                str(
+                    fingerprint.get(
+                        "document_number",
+                        "",
+                    )
+                ).strip().upper(),
+
+                str(
+                    fingerprint.get(
+                        "bill_date",
+                        "",
+                    )
+                ).strip(),
+
+                str(
+                    fingerprint.get(
+                        "amount",
+                        "",
+                    )
+                ).strip(),
+
+                str(
+                    fingerprint.get(
+                        "currency",
+                        "",
+                    )
+                ).strip().upper(),
+            ]
+        )
+
+        receipt.fingerprint_hash = (
+            hashlib.sha256(
+                fingerprint_string.encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+        )
+
+        # ------------------------------------------------
+        # Receipt basic information
+        # ------------------------------------------------
+
+        extracted_currency = (
+            first_bill.get(
+                "currency"
+            )
+            or "INR"
+        ).upper()
+
+        try:
+            finance_settings = (
+                receipt.company.finance_settings
+            )
+        except Exception:
+            finance_settings = None
+
+        company_currency = (
+            finance_settings.base_currency.code
+            if (
+                finance_settings
+                and finance_settings.base_currency
+            )
+            else extracted_currency
+        ).upper()
+
+        receipt.vendor_name = (
+            first_bill.get(
+                "vendor",
+                "",
+            )
+        )
+
+        receipt.original_amount = (
+            total_amount
+        )
+
+        receipt.original_currency = (
+            extracted_currency
+        )
+
+        receipt.currency = (
+            extracted_currency
+        )
+
+        # ------------------------------------------------
+        # Invoice date
+        # ------------------------------------------------
+
+        first_bill_date = first_bill.get(
+            "bill_date"
+        )
+
+        if first_bill_date:
+
+            try:
+                receipt.invoice_date = (
+                    datetime.strptime(
+                        first_bill_date,
+                        "%Y-%m-%d",
+                    ).date()
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+                receipt.invoice_date = (
+                    timezone.now().date()
+                )
+
+        elif not receipt.invoice_date:
+
+            receipt.invoice_date = (
+                timezone.now().date()
+            )
+
+        # ------------------------------------------------
+        # Currency conversion
+        # ------------------------------------------------
+
+        auto_conversion_enabled = bool(
+            finance_settings
+            and finance_settings.auto_currency_conversion
+        )
+
+        if auto_conversion_enabled:
+
+            conversion_result = convert_currency(
+                amount=receipt.original_amount,
+                from_currency=(
+                    receipt.original_currency
+                ),
+                to_currency=company_currency,
+                company=receipt.company,
+            )
+
+            if conversion_result.get(
+                "success"
+            ):
+
+                receipt.company_amount = (
+                    conversion_result[
+                        "company_amount"
+                    ]
+                )
+
+                receipt.company_currency = (
+                    conversion_result[
+                        "company_currency"
+                    ]
+                )
+
+                receipt.exchange_rate = (
+                    conversion_result[
+                        "exchange_rate"
+                    ]
+                )
+
+                receipt.exchange_rate_date = (
+                    conversion_result[
+                        "exchange_rate_date"
+                    ]
+                )
+
+                receipt.exchange_rate_provider = (
+                    conversion_result[
+                        "exchange_rate_provider"
+                    ]
+                )
+
+                if finance_settings:
+
+                    finance_settings.last_exchange_sync = (
+                        timezone.now()
+                    )
+
+                    finance_settings.save(
+                        update_fields=[
+                            "last_exchange_sync"
+                        ]
+                    )
+
+            else:
+
+                receipt.company_amount = (
+                    receipt.original_amount
+                )
+
+                receipt.company_currency = (
+                    receipt.original_currency
+                )
+
+                receipt.exchange_rate = None
+                receipt.exchange_rate_date = None
+                receipt.exchange_rate_provider = None
+
+        else:
+
+            receipt.company_amount = (
+                receipt.original_amount
+            )
+
+            receipt.company_currency = (
+                receipt.original_currency
+            )
+
+            receipt.exchange_rate = Decimal(
+                "1"
+            )
+
+            receipt.exchange_rate_date = (
+                timezone.now()
+            )
+
+            receipt.exchange_rate_provider = (
+                "Conversion Disabled"
+            )
+
+        receipt.total_amount = (
+            receipt.company_amount
+        )
+
+        # ------------------------------------------------
+        # AI information
+        # ------------------------------------------------
+
+        receipt.status = (
+            ExpenseReceipt.STATUS_AI_PROCESSED
+        )
+
+        receipt.ai_status = (
+            ExpenseReceipt.AI_COMPLETED
+        )
+
+        receipt.ai_error_message = None
+
+        receipt.ai_extracted_data = (
+            parsed_data
+        )
+
+        document_validation = (
+            parsed_data.get(
+                "document_validation",
+                {},
+            )
+        )
+
+        if not isinstance(
+            document_validation,
+            dict,
+        ):
+            document_validation = {}
+
+        receipt.document_validation = (
+            document_validation
+        )
+
+        ai_recommendation = (
+            parsed_data.get(
+                "ai_recommendation",
+                {},
+            )
+        )
+
+        if not isinstance(
+            ai_recommendation,
+            dict,
+        ):
+            ai_recommendation = {}
+
+        receipt.ai_decision = (
+            ai_recommendation.get(
+                "decision",
+                "",
+            )
+        )
+
+        receipt.ai_decision_reason = (
+            ai_recommendation.get(
+                "reason",
+                "",
+            )
+        )
+
+        receipt.ai_decision_confidence = (
+            ai_recommendation.get(
+                "confidence",
+                0,
+            )
+        )
+
+        receipt.original_language = (
+            parsed_data.get(
+                "document_language"
+            )
+        )
+
+        receipt.original_language_code = (
+            parsed_data.get(
+                "document_language_code"
+            )
+        )
+
+        receipt.output_language = (
+            output_language_name
+        )
+
+        receipt.output_language_code = (
+            output_language_code
+        )
+
+        receipt.ai_confidence = (
+            overall_confidence
+        )
+
+        receipt.save()
+
+        # ------------------------------------------------
+        # Audit log
+        # ------------------------------------------------
+
+        create_audit_log(
+            receipt=receipt,
+            action=(
+                ExpenseAuditTrail.ACTION_AI_COMPLETED
+            ),
+            remarks=(
+                "AI successfully extracted "
+                "receipt data."
+            ),
+            metadata={
+                "vendor": receipt.vendor_name,
+                "amount": str(
+                    receipt.original_amount
+                ),
+                "currency": (
+                    receipt.original_currency
+                ),
+            },
+        )
+
+        # ------------------------------------------------
+        # Link invoice/ticket
+        # ------------------------------------------------
+
+        link_receipt(
+            receipt
+        )
+
+        # =================================================
+        # CREATE EXPENSE LINE ITEMS
+        # =================================================
+
+        for bill_index, bill in enumerate(
+            normalized_bills
+        ):
 
             try:
                 amount = Decimal(
                     str(
-                        raw_amount
-                        if raw_amount is not None
-                        else "0.00"
+                        bill.get(
+                            "amount",
+                            "0.00",
+                        )
                     )
-                    .replace(",", "")
-                    .strip()
                 )
             except (
                 InvalidOperation,
                 TypeError,
                 ValueError,
             ):
-                amount = Decimal("0.00")
+                amount = Decimal(
+                    "0.00"
+                )
 
-            if amount < Decimal("0.00"):
-                amount = Decimal("0.00")
-
-            category = str(
-                bill.get("type")
-                or "miscellaneous"
-            ).strip().lower()
-
-            if category not in allowed_categories:
-                category = "miscellaneous"
-
-            currency = str(
-                bill.get("currency")
-                or ""
-            ).strip().upper()
-
-            if len(currency) != 3:
-                currency = ""
-
-            raw_bill_date = bill.get(
-                "bill_date"
+            approved_bill_total = (
+                Decimal("0.00")
             )
+
+            # ------------------------------------------------
+            # Bill date
+            # ------------------------------------------------
 
             bill_date = None
 
-            if raw_bill_date:
+            if bill.get(
+                "bill_date"
+            ):
+
                 try:
-                    bill_date = datetime.strptime(
-                        str(raw_bill_date).strip(),
-                        "%Y-%m-%d",
-                    ).date()
+                    bill_date = (
+                        datetime.strptime(
+                            bill["bill_date"],
+                            "%Y-%m-%d",
+                        ).date()
+                    )
+
                 except (
                     TypeError,
                     ValueError,
                 ):
                     bill_date = None
 
-            vendor = str(
-                bill.get("vendor")
-                or ""
-            ).strip()[:255]
+            # ------------------------------------------------
+            # Normalize line items
+            # ------------------------------------------------
 
-            additional_info = str(
-                bill.get("additional_info")
-                or ""
-            ).strip()
-
-            if not additional_info:
-                additional_info = str(
-                    bill.get("translated_original_text")
-                    or bill.get("extraction_notes")
-                    or ""
-                ).strip()
-
-            normalized_bill = {
-                "merchant_type": bill.get(
-                    "merchant_type",
-                    "",
-                ),
-                "merchant_country": bill.get(
-                    "merchant_country",
-                    "",
-                ),
-                "merchant_city": bill.get(
-                    "merchant_city",
-                    "",
-                ),
-                **bill,
-                "type": category,
-                "amount": str(amount),
-                "currency": currency,
-                "bill_date": (
-                    bill_date.isoformat()
-                    if bill_date
-                    else None
-                ),
-                "vendor": vendor,
-                "additional_info": additional_info,
-            }
-
-            normalized_bills.append(normalized_bill)
-
-# Add the extracted bill amount
-            total_amount += amount
-
-        if not normalized_bills:
-            raise Exception(
-                "No valid bill information was extracted."
-            )
-
-        if total_amount <= Decimal("0.00"):
-            raise Exception(
-                "The final payable amount could not be read. "
-                "Please upload a clearer receipt."
-            )
-
-        # ============================================================
-        # All database changes happen atomically
-        # ============================================================
-
-        with transaction.atomic():
-
-            # Remove old line items if AI is re-run
-            ExpenseLineItem.objects.filter(
-                receipt=receipt
-            ).delete()
-
-            first_bill = normalized_bills[0]
-
-            # --------------------------------------------------------
-            # Save document reference
-            # --------------------------------------------------------
-
-            document_reference = first_bill.get(
-                "document_reference",
-                {},
-            )
-
-            receipt.reference_number = document_reference.get(
-                "reference_number",
-                "",
-            )
-
-            receipt.reference_type = document_reference.get(
-                "reference_type",
-                "",
-            )
-
-            receipt.linked_reference_number = document_reference.get(
-                "linked_reference_number",
-                "",
-            )
-            fingerprint = first_bill.get(
-                "receipt_fingerprint",
-                {},
-            )
-
-            receipt.receipt_fingerprint = fingerprint
-
-            fingerprint_string = "|".join([
-                str(fingerprint.get("merchant", "")).strip().upper(),
-                str(fingerprint.get("document_number", "")).strip().upper(),
-                str(fingerprint.get("bill_date", "")).strip(),
-                str(fingerprint.get("amount", "")).strip(),
-                str(fingerprint.get("currency", "")).strip().upper(),
-            ])
-
-            receipt.fingerprint_hash = hashlib.sha256(
-                fingerprint_string.encode("utf-8")
-            ).hexdigest()  
-
-            # --------------------------------------------------------
-            # Receipt basic information
-            # --------------------------------------------------------
-
-            extracted_currency = (
-                first_bill.get("currency")
-                or "INR"
-            ).upper()
-
-            try:
-                finance_settings = receipt.company.finance_settings
-            except Exception:
-                finance_settings = None
-
-            company_currency = (
-                finance_settings.base_currency.code
-                if (
-                    finance_settings
-                    and finance_settings.base_currency
+            line_items = (
+                normalize_bill_line_items(
+                    bill
                 )
-                else extracted_currency
-            ).upper()
-
-            receipt.vendor_name = first_bill.get(
-                "vendor",
-                "",
             )
 
-            receipt.original_amount = total_amount
-            receipt.original_currency = extracted_currency
-            receipt.currency = extracted_currency
-
-            first_bill_date = first_bill.get("bill_date")
-
-            if first_bill_date:
-                try:
-                    receipt.invoice_date = datetime.strptime(
-                        first_bill_date,
-                        "%Y-%m-%d",
-                    ).date()
-                except (TypeError, ValueError):
-                    receipt.invoice_date = timezone.now().date()
-            elif not receipt.invoice_date:
-                receipt.invoice_date = timezone.now().date()
-
-            # --------------------------------------------------------
-            # Currency Conversion
-            # --------------------------------------------------------
-
-            conversion_result = None
-
-            auto_conversion_enabled = bool(
-                finance_settings
-                and finance_settings.auto_currency_conversion
+            print(
+                "\n=================================================="
             )
 
-            if auto_conversion_enabled:
+            print(
+                f"BILL {bill_index + 1} "
+                "LINE ITEMS BEFORE DB CREATION"
+            )
 
-                conversion_result = convert_currency(
-                    amount=receipt.original_amount,
-                    from_currency=receipt.original_currency,
-                    to_currency=company_currency,
-                    company=receipt.company,
+            print(
+                json.dumps(
+                    line_items,
+                    indent=4,
+                    default=str,
                 )
-
-                if conversion_result.get("success"):
-
-                    receipt.company_amount = conversion_result["company_amount"]
-                    receipt.company_currency = conversion_result["company_currency"]
-                    receipt.exchange_rate = conversion_result["exchange_rate"]
-                    receipt.exchange_rate_date = conversion_result["exchange_rate_date"]
-                    receipt.exchange_rate_provider = conversion_result["exchange_rate_provider"]
-
-                    finance_settings.last_exchange_sync = timezone.now()
-
-                    finance_settings.save(
-                        update_fields=["last_exchange_sync"]
-                    )
-
-                else:
-
-                    receipt.company_amount = receipt.original_amount
-                    receipt.company_currency = receipt.original_currency
-                    receipt.exchange_rate = None
-                    receipt.exchange_rate_date = None
-                    receipt.exchange_rate_provider = None
-
-            else:
-
-                receipt.company_amount = receipt.original_amount
-                receipt.company_currency = receipt.original_currency
-                receipt.exchange_rate = Decimal("1")
-                receipt.exchange_rate_date = timezone.now()
-                receipt.exchange_rate_provider = "Conversion Disabled"
-
-            receipt.total_amount = receipt.company_amount
-
-            receipt.status = ExpenseReceipt.STATUS_AI_PROCESSED
-            receipt.ai_status = ExpenseReceipt.AI_COMPLETED
-            receipt.ai_error_message = None
-            receipt.ai_extracted_data = parsed_data
-            document_validation = parsed_data.get(
-                "document_validation",
-                {},
             )
 
-            receipt.document_validation = document_validation
-            ai_recommendation = parsed_data.get(
-                "ai_recommendation",
-                {},
+            print(
+                "==================================================\n"
             )
 
-            receipt.ai_decision = ai_recommendation.get(
-                "decision",
-                "",
-            )
+            # ------------------------------------------------
+            # Create extracted line items
+            # ------------------------------------------------
 
-            receipt.ai_decision_reason = ai_recommendation.get(
-                "reason",
-                "",
-            )
+            if line_items:
 
-            receipt.ai_decision_confidence = ai_recommendation.get(
-                "confidence",
-                0,
-            )
+                for item_index, item in enumerate(
+                    line_items
+                ):
 
-            receipt.original_language = parsed_data.get(
-                "document_language"
-            )
-
-            receipt.original_language_code = parsed_data.get(
-                "document_language_code"
-            )
-
-            receipt.output_language = output_language_name
-            receipt.output_language_code = output_language_code
-            receipt.ai_extracted_data = parsed_data
-            receipt.ai_confidence = overall_confidence
-
-            receipt.save()
-            create_audit_log(
-    receipt=receipt,
-    action=ExpenseAuditTrail.ACTION_AI_COMPLETED,
-    remarks="AI successfully extracted receipt data.",
-    metadata={
-        "vendor": receipt.vendor_name,
-        "amount": str(receipt.original_amount),
-        "currency": receipt.original_currency,
-    },
-)
-
-            duplicate = find_duplicate_receipt(
-                receipt=receipt,
-            )
-
-            if duplicate:
-
-                receipt.has_duplicate_violation = True
-                receipt.status = ExpenseReceipt.STATUS_POLICY_VIOLATION
-                receipt.policy_violation_reason = (
-                    f"Duplicate receipt detected. "
-                    f"Original Receipt ID: {duplicate.id}"
-                )
-
-                receipt.save(update_fields=[
-                    "has_duplicate_violation",
-                    "status",
-                    "policy_violation_reason",
-                ])
-
-                DuplicateReceiptLog.objects.get_or_create(
-                    original_receipt=duplicate,
-                    duplicate_receipt=receipt,
-                    defaults={
-                        "duplicate_type": DuplicateReceiptLog.DUPLICATE_SAME_EMPLOYEE,
-                    },
-                )
-
-                return {
-                    "success": False,
-                    "duplicate": True,
-                    "duplicate_receipt_id": str(duplicate.id),
-                    "message": "Duplicate receipt detected.",
-                }
-
-            # --------------------------------------------------------
-            # Link ticket / invoice references
-            # --------------------------------------------------------
-
-            link_receipt(receipt)
-
-            # --------------------------------------------------------
-            # Check duplicate + policy
-            # --------------------------------------------------------
-
-            check_policy_violations(receipt)
-
-            receipt.refresh_from_db()
-
-            # --------------------------------------------------------
-            # STOP if duplicate
-            # --------------------------------------------------------
-
-            if receipt.has_duplicate_violation:
-
-                if receipt.report:
-                    recalculate_report_total(
-                        receipt.report
-                    )
-
-                return {
-                    "success": False,
-                    "duplicate": True,
-                    "message": "Duplicate receipt detected.",
-                    "receipt_id": str(receipt.id),
-                }
-
-            # --------------------------------------------------------
-            # Create Expense Line Items ONLY if receipt is valid
-            # --------------------------------------------------------
-
-            for bill in normalized_bills:
-
-                amount = Decimal(
-                    bill["amount"]
-                )
-                approved_bill_total = Decimal("0.00")
-
-                bill_date = (
-                    datetime.strptime(
-                        bill["bill_date"],
-                        "%Y-%m-%d",
-                    ).date()
-                    if bill.get("bill_date")
-                    else None
-                )
-
-                line_items = normalize_bill_line_items(bill)
-
-                if line_items:
-                    for item in line_items:
-                        item_name = item.get(
+                    item_name = str(
+                        item.get(
                             "name",
                             "",
                         )
+                    ).strip()
 
-                        item_subcategory = item.get(
+                    if not item_name:
+
+                        item_name = (
+                            bill.get(
+                                "vendor"
+                            )
+                            or bill.get(
+                                "type"
+                            )
+                            or "Expense"
+                        )
+
+                    item_subcategory = str(
+                        item.get(
                             "subcategory",
                             "",
                         )
+                        or ""
+                    ).strip()
 
-                        try:
-                            item_amount = Decimal(
-                                str(item.get("total_price") or 0)
+                    try:
+
+                        item_amount = Decimal(
+                            str(
+                                item.get(
+                                    "total_price"
+                                )
+                                or item.get(
+                                    "amount"
+                                )
+                                or "0"
                             )
-                        except Exception:
-                            item_amount = Decimal("0.00")
-
-                        if item_amount <= Decimal("0.00"):
-                            continue
-
-                        # Keep every printed line item. Non-reimbursable is a soft
-                        # flag for policy review — never drop extracted products.
-                        is_reimbursable = bool(item.get("is_reimbursable", True))
-                        print(
-                            "Creating ExpenseLineItem:",
-                            item_name,
-                            item_amount,
-                            "reimbursable=",
-                            is_reimbursable,
                         )
-                        expense_item = ExpenseLineItem.objects.create(
+
+                    except (
+                        InvalidOperation,
+                        TypeError,
+                        ValueError,
+                    ):
+
+                        item_amount = (
+                            Decimal("0.00")
+                        )
+
+                    if item_amount <= Decimal(
+                        "0.00"
+                    ):
+
+                        print(
+                            "Skipping zero amount "
+                            "line item:",
+                            item_name,
+                        )
+
+                        continue
+
+                    is_reimbursable = bool(
+                        item.get(
+                            "is_reimbursable",
+                            True,
+                        )
+                    )
+
+                    item_reason = str(
+                        item.get(
+                            "reason",
+                            "",
+                        )
+                        or ""
+                    ).strip()
+
+                    item_category = str(
+                        item.get(
+                            "category",
+                            bill.get(
+                                "type",
+                                "miscellaneous",
+                            ),
+                        )
+                        or "miscellaneous"
+                    ).strip().lower()
+
+                    item_vendor = str(
+                        bill.get(
+                            "vendor",
+                            "",
+                        )
+                        or ""
+                    ).strip()[:255]
+
+                    print(
+                        "\n========== CREATING DB LINE ITEM =========="
+                    )
+
+                    print(
+                        "Receipt ID:",
+                        receipt.id,
+                    )
+
+                    print(
+                        "Item:",
+                        item_name,
+                    )
+
+                    print(
+                        "Category:",
+                        item_category,
+                    )
+
+                    print(
+                        "Subcategory:",
+                        item_subcategory,
+                    )
+
+                    print(
+                        "Amount:",
+                        item_amount,
+                    )
+
+                    print(
+                        "Reimbursable:",
+                        is_reimbursable,
+                    )
+
+                    # -----------------------------------------
+                    # ACTUAL DATABASE CREATE
+                    # -----------------------------------------
+
+                    expense_item = (
+                        ExpenseLineItem.objects.create(
                             receipt=receipt,
                             description=item_name,
-                            category=item.get(
-                                "category",
-                                bill.get("type", "miscellaneous"),
+                            category=item_category,
+                            subcategory=(
+                                item_subcategory
                             ),
-                            subcategory=item_subcategory,
-                            vendor=bill.get(
-                                "vendor",
-                                "",
-                            )[:255],
+                            vendor=item_vendor,
                             amount=item_amount,
                             bill_date=bill_date,
-                            is_violating=not is_reimbursable,
+                            is_violating=(
+                                not is_reimbursable
+                            ),
                             violation_reason=(
-                                item.get("reason", "")
+                                item_reason
                                 if not is_reimbursable
                                 else ""
                             ),
                         )
+                    )
 
-                        created_items.append(
-                            expense_item.id
-                        )
-                        approved_bill_total += item_amount
-                        ExpenseAttachment.objects.create(
-                            line_item=expense_item,
-                            receipt=receipt,
-                            file=receipt.receipt_file,
-                            attachment_type="receipt",
-                        )
-                elif amount > Decimal("0.00"):
-                    expense_item = ExpenseLineItem.objects.create(
-                        receipt=receipt,
-                        description=(
-                            bill.get("vendor")
-                            or bill.get("type")
-                            or "Receipt total"
-                        ),
-                        category=bill.get(
-                            "type",
-                            "miscellaneous",
-                        ),
-                        subcategory="",
-                        vendor=bill.get(
-                            "vendor",
-                            "",
-                        )[:255],
-                        amount=amount,
-                        bill_date=bill_date,
+                    print(
+                        "========== DB LINE ITEM CREATED =========="
+                    )
+
+                    print(
+                        "ID:",
+                        expense_item.id,
+                    )
+
+                    print(
+                        "Receipt:",
+                        expense_item.receipt_id,
+                    )
+
+                    print(
+                        "Description:",
+                        expense_item.description,
+                    )
+
+                    print(
+                        "Category:",
+                        expense_item.category,
+                    )
+
+                    print(
+                        "Subcategory:",
+                        expense_item.subcategory,
+                    )
+
+                    print(
+                        "Amount:",
+                        expense_item.amount,
+                    )
+
+                    print(
+                        "=========================================="
                     )
 
                     created_items.append(
                         expense_item.id
                     )
-                    approved_bill_total = amount
+
+                    approved_bill_total += (
+                        item_amount
+                    )
+
                     ExpenseAttachment.objects.create(
                         line_item=expense_item,
                         receipt=receipt,
                         file=receipt.receipt_file,
                         attachment_type="receipt",
                     )
-            bill["approved_amount"] = str(approved_bill_total)
 
-            if receipt.report:
-                recalculate_report_total(
-                    receipt.report
+            # ------------------------------------------------
+            # Fallback line item
+            # ------------------------------------------------
+
+            elif amount > Decimal(
+                "0.00"
+            ):
+
+                fallback_name = (
+                    bill.get(
+                        "vendor"
+                    )
+                    or bill.get(
+                        "type"
+                    )
+                    or "Receipt total"
                 )
-                
 
-        # ====================================================
-        # Success response
-        # ====================================================
+                expense_item = (
+                    ExpenseLineItem.objects.create(
+                        receipt=receipt,
+                        description=str(
+                            fallback_name
+                        ),
+                        category=bill.get(
+                            "type",
+                            "miscellaneous",
+                        ),
+                        subcategory="",
+                        vendor=str(
+                            bill.get(
+                                "vendor",
+                                "",
+                            )
+                            or ""
+                        )[:255],
+                        amount=amount,
+                        bill_date=bill_date,
+                        is_violating=False,
+                        violation_reason="",
+                    )
+                )
 
-        return {
-            "success": True,
-            "receipt_id": str(receipt.id),
-            "ai_status": ExpenseReceipt.AI_COMPLETED,
+                print(
+                    "========== FALLBACK DB LINE ITEM CREATED =========="
+                )
 
-            "document_language": parsed_data.get(
+                print(
+                    "ID:",
+                    expense_item.id,
+                )
+
+                print(
+                    "Receipt:",
+                    expense_item.receipt_id,
+                )
+
+                print(
+                    "Description:",
+                    expense_item.description,
+                )
+
+                print(
+                    "Amount:",
+                    expense_item.amount,
+                )
+
+                print(
+                    "===================================================="
+                )
+
+                created_items.append(
+                    expense_item.id
+                )
+
+                approved_bill_total = (
+                    amount
+                )
+
+                ExpenseAttachment.objects.create(
+                    line_item=expense_item,
+                    receipt=receipt,
+                    file=receipt.receipt_file,
+                    attachment_type="receipt",
+                )
+
+            bill["approved_amount"] = str(
+                approved_bill_total
+            )
+
+        # =================================================
+        # VERIFY LINE ITEMS INSIDE TRANSACTION
+        # =================================================
+
+        db_line_items = list(
+            ExpenseLineItem.objects.filter(
+                receipt=receipt
+            ).values(
+                "id",
+                "description",
+                "category",
+                "subcategory",
+                "vendor",
+                "amount",
+                "bill_date",
+                "is_violating",
+                "violation_reason",
+            )
+        )
+
+        print(
+            "\n========== LINE ITEMS BEFORE COMMIT =========="
+        )
+
+        print(
+            json.dumps(
+                db_line_items,
+                indent=4,
+                default=str,
+            )
+        )
+
+        print(
+            "LINE ITEM COUNT:",
+            len(db_line_items),
+        )
+
+        print(
+            "==============================================\n"
+        )
+
+        if not db_line_items:
+
+            raise Exception(
+                "Gemini extracted receipt data, "
+                "but no ExpenseLineItem records were created."
+            )
+
+        # ------------------------------------------------
+        # Recalculate report
+        # ------------------------------------------------
+
+        if receipt.report:
+
+            recalculate_report_total(
+                receipt.report
+            )
+
+    # ====================================================
+    # TRANSACTION HAS COMMITTED HERE
+    # ====================================================
+
+    print(
+        "\n========== TRANSACTION COMMITTED =========="
+    )
+
+    print(
+        "Receipt ID:",
+        receipt.id,
+    )
+
+    print(
+        "============================================\n"
+    )
+
+    # ====================================================
+    # POLICY VALIDATION
+    # ====================================================
+
+    try:
+
+        check_policy_violations(
+            receipt
+        )
+
+    except Exception as policy_error:
+
+        print(
+            "\n========== POLICY VALIDATION ERROR =========="
+        )
+
+        print(
+            str(policy_error)
+        )
+
+        print(
+            "Line items were already committed."
+        )
+
+        print(
+            "=============================================\n"
+        )
+
+        receipt.refresh_from_db()
+
+        receipt.ai_error_message = (
+            "Policy validation warning: "
+            f"{str(policy_error)}"
+        )
+
+        receipt.save(
+            update_fields=[
+                "ai_error_message",
+                "updated_at",
+            ]
+        )
+
+    # ====================================================
+    # Refresh receipt
+    # ====================================================
+
+    receipt.refresh_from_db()
+
+    # ====================================================
+    # FINAL DATABASE VERIFICATION
+    # ====================================================
+
+    final_line_items = list(
+        ExpenseLineItem.objects.filter(
+            receipt=receipt
+        ).values(
+            "id",
+            "description",
+            "category",
+            "subcategory",
+            "vendor",
+            "amount",
+            "bill_date",
+            "is_violating",
+            "violation_reason",
+        )
+    )
+
+    print(
+        "\n=================================================="
+    )
+
+    print(
+        "FINAL COMMITTED LINE ITEMS"
+    )
+
+    print(
+        json.dumps(
+            final_line_items,
+            indent=4,
+            default=str,
+        )
+    )
+
+    print(
+        "FINAL COUNT:",
+        len(final_line_items),
+    )
+
+    print(
+        "==================================================\n"
+    )
+
+    if not final_line_items:
+
+        raise Exception(
+            "Receipt processing completed, "
+            "but no ExpenseLineItem records exist "
+            "after transaction commit."
+        )
+
+    # ====================================================
+    # Success response
+    # ====================================================
+
+    return {
+        "success": True,
+
+        "receipt_id": str(
+            receipt.id
+        ),
+
+        "ai_status": (
+            ExpenseReceipt.AI_COMPLETED
+        ),
+
+        "document_language": (
+            parsed_data.get(
                 "document_language"
-            ),
+            )
+        ),
 
-            "document_language_code": parsed_data.get(
+        "document_language_code": (
+            parsed_data.get(
                 "document_language_code"
-            ),
+            )
+        ),
 
-            "document_summary": parsed_data.get(
+        "document_summary": (
+            parsed_data.get(
                 "document_summary"
-            ),
+            )
+        ),
 
-            "receipt_quality": parsed_data.get(
+        "receipt_quality": (
+            parsed_data.get(
                 "receipt_quality"
-            ),
+            )
+        ),
 
-            "fraud_analysis": parsed_data.get(
+        "fraud_analysis": (
+            parsed_data.get(
                 "fraud_analysis"
-            ),
+            )
+        ),
 
-            "document_metadata": parsed_data.get(
+        "document_metadata": (
+            parsed_data.get(
                 "document_metadata"
+            )
+        ),
+
+        "output_language": {
+            "code": output_language_code,
+            "name": output_language_name,
+            "preserve_original_text": (
+                preserve_original_text
             ),
+        },
 
-            "output_language": {
-                "code": output_language_code,
-                "name": output_language_name,
-                "preserve_original_text": preserve_original_text,
-            },
+        "bills": normalized_bills,
 
-            "bills": normalized_bills,
+        "line_items_created": [
+            str(
+                item["id"]
+            )
+            for item in final_line_items
+        ],
 
-            "line_items_created": [
-                str(item_id)
-                for item_id in created_items
-            ],
+        "line_items": final_line_items,
 
-            "original_amount": str(receipt.original_amount),
-            "original_currency": receipt.original_currency,
+        "original_amount": str(
+            receipt.original_amount
+        ),
 
-            "company_amount": str(receipt.company_amount),
-            "company_currency": receipt.company_currency,
+        "original_currency": (
+            receipt.original_currency
+        ),
 
-            "exchange_rate": (
-                str(receipt.exchange_rate)
-                if receipt.exchange_rate is not None
-                else None
-            ),
+        "company_amount": str(
+            receipt.company_amount
+        ),
 
-            "exchange_rate_date": (
-                receipt.exchange_rate_date.isoformat()
-                if receipt.exchange_rate_date
-                else None
-            ),
+        "company_currency": (
+            receipt.company_currency
+        ),
 
-            "exchange_rate_provider": receipt.exchange_rate_provider,
+        "exchange_rate": (
+            str(
+                receipt.exchange_rate
+            )
+            if receipt.exchange_rate is not None
+            else None
+        ),
 
-            "currency_conversion": conversion_result,
+        "exchange_rate_date": (
+            receipt.exchange_rate_date.isoformat()
+            if receipt.exchange_rate_date
+            else None
+        ),
 
-            "has_any_violation": receipt.has_any_violation,
-            "violation_reason": receipt.policy_violation_reason,
-        }
+        "exchange_rate_provider": (
+            receipt.exchange_rate_provider
+        ),
 
-    except Exception as e:
-        return _apply_ai_failure(receipt, str(e))
+        "currency_conversion": (
+            conversion_result
+        ),
+
+        "has_any_violation": (
+            receipt.has_any_violation
+        ),
+
+        "violation_reason": (
+            receipt.policy_violation_reason
+        ),
+    }
+
+
+# NOTE: Global exception handling should be implemented at the caller level.
+# The previous top-level 'except' block was removed because it caused
+# a syntax error when left unmatched. Exceptions should be caught inside
+# functions or by the task/worker that invokes this processing routine.

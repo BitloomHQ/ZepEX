@@ -1357,6 +1357,8 @@ class CompanyPreferences(models.Model):
             f"{self.company.name} - "
             f"{self.output_language_name}"
         )
+
+
     
 class PolicyVersionComparison(models.Model):
 
@@ -1524,3 +1526,5 @@ class PolicyVersionComparison(models.Model):
             f"v{self.old_version.version_number} → "
             f"v{self.new_version.version_number}"
         )
+
+

@@ -6,6 +6,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 import os
 
+
+
 # --------------------------------------------------
 # BASE DIR
 # --------------------------------------------------
@@ -71,6 +73,7 @@ INSTALLED_APPS = [
     'audit_logs',
     "drf_spectacular",
     "platform_access",
+    "integrations"
 ]
 
 # --------------------------------------------------
@@ -362,13 +365,13 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Receipt AI Model
 GEMINI_RECEIPT_MODEL = os.getenv(
     "GEMINI_RECEIPT_MODEL",
-    "gemini-2.5-flash"
+    "gemini-3.5-flash-lite"
 )
 
 # Policy AI Model
 GEMINI_POLICY_MODEL = os.getenv(
     "GEMINI_POLICY_MODEL",
-    "gemini-2.5-flash"
+    "gemini-3.5-flash-lite"
 )
 
 # API Base URL
@@ -453,3 +456,17 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 
+BAMBOOHR_CLIENT_ID = os.getenv("BAMBOOHR_CLIENT_ID")
+BAMBOOHR_CLIENT_SECRET = os.getenv("BAMBOOHR_CLIENT_SECRET")
+
+RIPPLING_CLIENT_ID = os.getenv("RIPPLING_CLIENT_ID")
+RIPPLING_CLIENT_SECRET = os.getenv("RIPPLING_CLIENT_SECRET")
+
+ADP_CLIENT_ID = os.getenv("ADP_CLIENT_ID")
+ADP_CLIENT_SECRET = os.getenv("ADP_CLIENT_SECRET")
+
+WORKDAY_CLIENT_ID = os.getenv("WORKDAY_CLIENT_ID")
+WORKDAY_CLIENT_SECRET = os.getenv("WORKDAY_CLIENT_SECRET")
+
+QUICKBOOKS_CLIENT_ID = os.getenv("QUICKBOOKS_CLIENT_ID")
+QUICKBOOKS_CLIENT_SECRET = os.getenv("QUICKBOOKS_CLIENT_SECRET")

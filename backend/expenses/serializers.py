@@ -32,7 +32,16 @@ class ExpenseLineItemSerializer(serializers.ModelSerializer):
 
 
 class ExpenseReceiptSerializer(serializers.ModelSerializer):
+
+    # Existing field
     line_items = ExpenseLineItemSerializer(
+        many=True,
+        read_only=True
+    )
+
+    # Explicit frontend-friendly alias
+    claim_lines = ExpenseLineItemSerializer(
+        source="line_items",
         many=True,
         read_only=True
     )
@@ -67,19 +76,19 @@ class ExpenseReceiptSerializer(serializers.ModelSerializer):
             "vendor_name",
             "invoice_date",
 
-            # Existing (keep for backward compatibility)
+            # Existing
             "total_amount",
             "currency",
 
-            # Original Receipt
+            # Original receipt
             "original_amount",
             "original_currency",
 
-            # Company Reimbursement
+            # Company reimbursement
             "company_amount",
             "company_currency",
 
-            # Exchange Details
+            # Exchange details
             "exchange_rate",
             "exchange_rate_date",
             "exchange_rate_provider",
@@ -99,7 +108,11 @@ class ExpenseReceiptSerializer(serializers.ModelSerializer):
             "has_amount_violation",
             "has_any_violation",
 
+            # Expense line items
             "line_items",
+
+            # Frontend alias
+            "claim_lines",
 
             "created_at",
             "updated_at",
@@ -141,6 +154,9 @@ class ExpenseReceiptSerializer(serializers.ModelSerializer):
             "has_old_bill_violation",
             "has_amount_violation",
             "has_any_violation",
+
+            "line_items",
+            "claim_lines",
 
             "created_at",
             "updated_at",

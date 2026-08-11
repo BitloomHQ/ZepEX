@@ -17,12 +17,13 @@ def validate_receipt_against_policy(
     items_text = []
 
     for index, item in enumerate(items, start=1):
-
         items_text.append(
             f"""
-Item {index}
+Item ID: {item.id}
+Item Number: {index}
 
-Name: {item.description}
+Name:
+{item.description}
 
 Category:
 {item.category}
@@ -43,12 +44,12 @@ You are an AI Expense Policy Validator.
 Your task is to determine whether EACH receipt item is reimbursable
 according to the company expense policy.
 
-=================================================
+==================================================
 COMPANY POLICY
-=================================================
+==================================================
 
 Policy Category:
-{rule.category.name}
+{rule.category_name}
 
 Policy Description:
 {rule.category_description}
@@ -62,61 +63,103 @@ Maximum Amount:
 Unlimited:
 {rule.is_unlimited}
 
-=================================================
+==================================================
 RECEIPT ITEMS
-=================================================
+==================================================
 
 {items_text}
 
-=================================================
-RULES
-=================================================
+==================================================
+VALIDATION RULES
+==================================================
 
-1. Read the company policy carefully.
+1. Evaluate EVERY receipt item individually.
 
-2. Understand every receipt item.
+2. Every input Item ID MUST appear exactly once in the output.
 
-3. Decide whether each item is reimbursable.
+3. Return the SAME Item ID provided in the input.
 
-4. Never guess.
+4. Use ONLY the company policy provided above.
 
-5. Use ONLY the company policy.
+5. Do NOT use hardcoded assumptions.
 
-6. Do NOT use hardcoded assumptions such as:
-   - Beer is always rejected.
-   - Coffee is always approved.
+6. Do NOT assume that a category is reimbursable or
+   non-reimbursable unless the company policy supports that decision.
 
-7. Reject an item ONLY if the company policy
-   explicitly or logically excludes it.
+7. If the company policy explicitly excludes an item,
+   set "allowed" to false.
 
-8. If the policy allows meals, determine whether
-   each food item qualifies.
+8. If the company policy explicitly allows an item,
+   set "allowed" to true.
 
-9. If the policy excludes alcohol, reject only
-   alcoholic beverages.
+9. If the policy has a maximum amount and the item exceeds
+   that maximum, consider the item according to the stated
+   policy limit.
 
-10. Every item must receive its own decision.
+10. If "Unlimited" is true, do not reject an item because
+    of an amount limit.
 
-=================================================
-OUTPUT
-=================================================
+11. Consider the item's:
+    - name
+    - category
+    - subcategory
+    - amount
 
-Return ONLY JSON.
+12. Do NOT change the receipt item's category or subcategory.
+
+13. Do NOT invent policy rules.
+
+14. Do NOT apply general knowledge unless it is explicitly
+    supported by the company policy.
+
+15. If the policy does not clearly allow or exclude the item,
+    do not invent a reason. Use the safest interpretation
+    supported by the policy.
+
+16. Every item must receive its own decision.
+
+17. The "reason" must briefly explain the decision using
+    ONLY the company policy.
+
+18. Do NOT return policy configuration errors.
+
+19. Do NOT return:
+    - "No policy configured"
+    - "Policy not found"
+    - "Duplicate receipt detected"
+    - "Old bill"
+    - "Over limit" unless the provided policy actually
+      defines and triggers that limit.
+
+==================================================
+OUTPUT FORMAT
+==================================================
+
+Return ONLY valid JSON.
 
 {{
-    "items":[
+    "items": [
         {{
-            "name":"Paneer Butter Masala",
-            "allowed":true,
-            "reason":""
-        }},
-        {{
-            "name":"Beer",
-            "allowed":false,
-            "reason":"Alcohol is excluded by company policy."
+            "item_id": "ITEM_ID_FROM_INPUT",
+            "allowed": true,
+            "reason": ""
         }}
     ]
 }}
+
+IMPORTANT:
+
+The number of output items MUST exactly match the number
+of input receipt items.
+
+Every input Item ID MUST appear exactly once.
+
+Do not omit any item.
+
+Do not create additional items.
+
+Do not use item names as identifiers.
+Use Item ID.
 """
 
     request_body = {
@@ -174,7 +217,12 @@ Return ONLY JSON.
 
     for item in result.get("items", []):
 
-        output[item.get("name", "")] = {
+        item_id = str(item.get("item_id", "")).strip()
+
+        if not item_id:
+            continue
+
+        output[item_id] = {
             "allowed": item.get("allowed", True),
             "reason": item.get("reason", ""),
         }
