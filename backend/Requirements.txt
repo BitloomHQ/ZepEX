@@ -20,3 +20,5 @@ google-genai
 pydantic
 python-docx
 email-validator
+django-storages[s3]
+boto3

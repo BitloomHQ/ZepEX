@@ -27,12 +27,28 @@ from decimal import InvalidOperation
 from .audit_services import create_audit_log
 from .models import ExpenseAuditTrail
 
-from .audit_services import create_audit_log
-from .models import ExpenseAuditTrail
-
-
 OLD_BILL_LIMIT_DAYS = 90
 AI_CONFIDENCE_THRESHOLD = Decimal("0.75")
+
+
+def _link_receipt_file_attachment(line_item, receipt) -> None:
+    """
+    Point a line-item attachment at the receipt file without re-uploading.
+
+    Re-assigning receipt.receipt_file to another FileField re-saves the object
+    (and can fail or duplicate blobs on S3-compatible storage).
+    """
+    if not receipt.receipt_file:
+        return
+
+    attachment = ExpenseAttachment(
+        line_item=line_item,
+        receipt=receipt,
+        attachment_type="receipt",
+    )
+    attachment.file.name = receipt.receipt_file.name
+    attachment.save()
+
 
 _TAX_NAME_MARKERS = (
     "tax",
@@ -1025,20 +1041,12 @@ def sync_receipt_totals_for_report(report):
 
         needs_sync = (
             removed > 0
-            or line_total != stored_total
+            or (line_total > 0 and line_total != stored_total)
             or (line_total > 0 and stored_company != line_total and (
                 not receipt.company_currency
                 or (receipt.original_currency or "").upper()
                 == (receipt.company_currency or "").upper()
             ))
-            or (
-                line_total <= Decimal("0.00")
-                and (
-                    receipt.has_any_violation
-                    or stored_total > Decimal("0.00")
-                    or stored_company > Decimal("0.00")
-                )
-            )
         )
 
         if needs_sync:

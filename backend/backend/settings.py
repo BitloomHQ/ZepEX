@@ -178,8 +178,92 @@ STATIC_URL = 'static/'
 # --------------------------------------------------
 
 MEDIA_URL = "/media/"
-
 MEDIA_ROOT = BASE_DIR / "media"
+
+# Prefer S3_* (Supabase / S3-compatible). AWS_* kept as fallbacks.
+AWS_STORAGE_BUCKET_NAME = (
+    os.getenv("S3_BUCKET") or os.getenv("AWS_STORAGE_BUCKET_NAME") or ""
+).strip()
+AWS_ACCESS_KEY_ID = (
+    os.getenv("S3_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID") or ""
+).strip()
+AWS_SECRET_ACCESS_KEY = (
+    os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY") or ""
+).strip()
+AWS_S3_REGION_NAME = (
+    os.getenv("S3_REGION") or os.getenv("AWS_S3_REGION_NAME") or "us-east-1"
+).strip()
+AWS_S3_ENDPOINT_URL = (
+    os.getenv("S3_ENDPOINT") or os.getenv("AWS_S3_ENDPOINT_URL") or ""
+).strip() or None
+AWS_S3_CUSTOM_DOMAIN = os.getenv("AWS_S3_CUSTOM_DOMAIN", "").strip() or None
+AWS_LOCATION = os.getenv("AWS_LOCATION", "media").strip() or "media"
+
+_force_path_style = (
+    os.getenv("S3_FORCE_PATH_STYLE", "false").strip().lower()
+    in {"1", "true", "yes"}
+)
+_force_s3 = os.getenv("USE_S3", "").strip().lower() in {"1", "true", "yes"}
+_env_wants_s3 = ENVIRONMENT in {"production", "testing"}
+_has_s3_credentials = bool(AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)
+
+USE_S3_MEDIA = bool(AWS_STORAGE_BUCKET_NAME) and _has_s3_credentials and (
+    _force_s3 or _env_wants_s3 or bool(AWS_S3_ENDPOINT_URL)
+)
+
+if USE_S3_MEDIA:
+    AWS_DEFAULT_ACL = None
+    AWS_QUERYSTRING_AUTH = (
+        os.getenv("AWS_QUERYSTRING_AUTH", "True").strip().lower()
+        in {"1", "true", "yes"}
+    )
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_S3_SIGNATURE_VERSION = "s3v4"
+    AWS_S3_ADDRESSING_STYLE = "path" if _force_path_style else "auto"
+    AWS_S3_OBJECT_PARAMETERS = {
+        "CacheControl": "max-age=86400",
+    }
+
+    _s3_options = {
+        "bucket_name": AWS_STORAGE_BUCKET_NAME,
+        "access_key": AWS_ACCESS_KEY_ID,
+        "secret_key": AWS_SECRET_ACCESS_KEY,
+        "region_name": AWS_S3_REGION_NAME,
+        "default_acl": AWS_DEFAULT_ACL,
+        "querystring_auth": AWS_QUERYSTRING_AUTH,
+        "file_overwrite": AWS_S3_FILE_OVERWRITE,
+        "object_parameters": AWS_S3_OBJECT_PARAMETERS,
+        "signature_version": AWS_S3_SIGNATURE_VERSION,
+        "location": AWS_LOCATION,
+        "addressing_style": AWS_S3_ADDRESSING_STYLE,
+    }
+    if AWS_S3_ENDPOINT_URL:
+        _s3_options["endpoint_url"] = AWS_S3_ENDPOINT_URL
+    if AWS_S3_CUSTOM_DOMAIN:
+        _s3_options["custom_domain"] = AWS_S3_CUSTOM_DOMAIN
+
+    STORAGES = {
+        "default": {
+            "BACKEND": "storages.backends.s3.S3Storage",
+            "OPTIONS": _s3_options,
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+
+    if AWS_S3_CUSTOM_DOMAIN:
+        MEDIA_URL = f"https://{AWS_S3_CUSTOM_DOMAIN}/{AWS_LOCATION}/"
+    elif AWS_S3_ENDPOINT_URL:
+        MEDIA_URL = (
+            f"{AWS_S3_ENDPOINT_URL.rstrip('/')}/"
+            f"{AWS_STORAGE_BUCKET_NAME}/{AWS_LOCATION}/"
+        )
+    else:
+        MEDIA_URL = (
+            f"https://{AWS_STORAGE_BUCKET_NAME}.s3."
+            f"{AWS_S3_REGION_NAME}.amazonaws.com/{AWS_LOCATION}/"
+        )
 
 # --------------------------------------------------
 # DEFAULT PRIMARY KEY
