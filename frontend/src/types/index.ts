@@ -1,5 +1,6 @@
 export type UserRole =
   | 'PLATFORM_OWNER'
+  | 'PLATFORM_ADMIN'
   | 'COMPANY_ADMIN'
   | 'MANAGER'
   | 'EMPLOYEE'
@@ -125,6 +126,32 @@ export interface CreateEmployeeResponse {
   invite_status: 'SENT' | 'FAILED'
   email_error?: string | null
   employee: EmployeeRecord
+}
+
+export interface PlatformPermission {
+  id: number
+  name: string
+  code: string
+  module: string
+}
+
+export interface PlatformAdminUser {
+  id: number | string
+  company: string | null
+  user: number
+  user_name: string
+  user_email: string
+  is_owner: boolean
+  is_active: boolean
+  permissions: string[]
+  created_at: string
+}
+
+export interface CreatePlatformUserResponse {
+  message: string
+  temporary_password: string | null
+  password_generated: boolean
+  data: PlatformAdminUser
 }
 
 export interface DepartmentRecord {

@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     create_platform_admin,
+    create_platform_user,
     list_platform_permissions,
     list_platform_admins,
     update_platform_admin,
@@ -15,6 +16,12 @@ urlpatterns = [
         "create/",
         create_platform_admin,
         name="create-platform-admin",
+    ),
+
+    path(
+        "users/create/",
+        create_platform_user,
+        name="create-platform-user",
     ),
 
     path(

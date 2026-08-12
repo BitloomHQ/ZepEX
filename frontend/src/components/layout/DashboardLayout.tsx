@@ -163,6 +163,7 @@ export const platformNav: NavItem[] = [
   { label: 'Dashboard', to: '/platform', icon: LayoutDashboard },
   { label: 'Companies', to: '/platform/companies', icon: Building2 },
   { label: 'Company Requests', to: '/platform/requests', icon: ClipboardList },
+  { label: 'Platform Users', to: '/platform/users', icon: Users },
 ]
 
 export const platformNavWithAudit: NavItem[] = [
