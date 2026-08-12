@@ -1,5 +1,6 @@
 export type UserRole =
   | 'PLATFORM_OWNER'
+  | 'PLATFORM_ADMIN'
   | 'COMPANY_ADMIN'
   | 'MANAGER'
   | 'EMPLOYEE'
@@ -125,6 +126,32 @@ export interface CreateEmployeeResponse {
   invite_status: 'SENT' | 'FAILED'
   email_error?: string | null
   employee: EmployeeRecord
+}
+
+export interface PlatformPermission {
+  id: number
+  name: string
+  code: string
+  module: string
+}
+
+export interface PlatformAdminUser {
+  id: number | string
+  company: string | null
+  user: number
+  user_name: string
+  user_email: string
+  is_owner: boolean
+  is_active: boolean
+  permissions: string[]
+  created_at: string
+}
+
+export interface CreatePlatformUserResponse {
+  message: string
+  temporary_password: string | null
+  password_generated: boolean
+  data: PlatformAdminUser
 }
 
 export interface DepartmentRecord {
@@ -381,6 +408,7 @@ export interface ApprovalWorkflowListResponse {
 
 export interface LineItem {
   id: string
+  receipt?: string
   description: string
   category: string
   subcategory?: string
@@ -389,6 +417,13 @@ export interface LineItem {
   bill_date: string
   is_violating: boolean
   violation_reason: string | null
+  is_removed?: boolean
+  removed_by?: string | null
+  removed_at?: string | null
+  removal_reason?: string | null
+  is_deleted?: boolean
+  deleted_at?: string | null
+  deleted_by?: string | null
   created_at: string
 }
 
@@ -423,6 +458,8 @@ export interface Receipt {
   has_amount_violation: boolean
   has_any_violation: boolean
   line_items: LineItem[]
+  /** Frontend-friendly alias of line_items from the API. */
+  claim_lines?: LineItem[]
   created_at: string
   updated_at: string
 }
@@ -440,9 +477,43 @@ export interface WorkflowTimelineEntry {
 export interface ReportCurrentStep {
   id?: string
   step_order: number
+  approver_type?: string
   approver_role: string
-  routing_type: 'DEPARTMENT' | 'COMPANY'
+  routing_type: 'DEPARTMENT' | 'COMPANY' | 'ANY'
   department: string | null
+  specific_user?: string | null
+}
+
+export type ApprovalHistoryAction =
+  | 'REPORT_SUBMITTED'
+  | 'STEP_APPROVED'
+  | 'STEP_REJECTED'
+  | 'RECEIPT_APPROVED'
+  | 'RECEIPT_REJECTED'
+  | 'LINE_ITEM_UPDATED'
+  | 'LINE_ITEM_REMOVED'
+  | 'LINE_ITEM_RESTORED'
+  | 'PAID'
+
+export interface ApprovalHistoryEntry {
+  id?: string
+  report?: string
+  receipt?: string | null
+  action: ApprovalHistoryAction | string
+  action_by?: string | null
+  action_by_email?: string | null
+  action_by_role?: string | null
+  comments?: string | null
+  created_at: string
+}
+
+export interface ReportApprovalContext {
+  enabled: boolean
+  busy?: boolean
+  onApproveReceipt: (receiptId: string, notes?: string) => Promise<void>
+  onRejectReceipt: (receiptId: string, notes: string) => Promise<void>
+  onRemoveLineItem: (lineItemId: string, reason: string) => Promise<void>
+  onRestoreLineItem: (lineItemId: string, notes?: string) => Promise<void>
 }
 
 export interface LatestRejectionReason {
@@ -474,8 +545,10 @@ export interface ExpenseReport {
   submitted_at: string | null
   paid_at: string | null
   paid_notes?: string | null
+  current_workflow_step?: string | null
   current_step?: ReportCurrentStep | null
   workflow_timeline?: WorkflowTimelineEntry[]
+  approval_history?: ApprovalHistoryEntry[]
   latest_rejection_reason?: LatestRejectionReason | null
   workflow_completed?: boolean
   receipts: Receipt[]
@@ -524,6 +597,56 @@ export interface MarkPaidReportResponse {
   paid_by: string
   is_company_admin_override?: boolean
   report: ExpenseReport
+}
+
+export interface ApproveReceiptResponse {
+  message: string
+  approved?: boolean
+  receipt_id?: string
+  status: string
+  notes?: string
+  receipt?: {
+    id: string
+    status: string
+  }
+}
+
+export interface RejectReceiptResponse {
+  message: string
+  rejected?: boolean
+  receipt_id?: string
+  status: string
+  reason: string
+  receipt?: {
+    id: string
+    status: string
+  }
+}
+
+export interface RemoveLineItemResponse {
+  message: string
+  removed?: boolean
+  line_item_id?: string
+  receipt_id?: string
+  category?: string
+  subcategory?: string
+  reason?: string
+  status?: {
+    is_removed: boolean
+    is_deleted: boolean
+  }
+  line_item?: LineItem
+  receipt?: Pick<Receipt, 'id' | 'original_amount' | 'company_amount' | 'total_amount'>
+}
+
+export interface RestoreLineItemResponse {
+  message: string
+  restored?: boolean
+  line_item_id?: string
+  receipt_id?: string
+  removed?: boolean
+  line_item?: LineItem
+  receipt?: Pick<Receipt, 'id' | 'original_amount' | 'company_amount' | 'total_amount'>
 }
 
 export interface AddWorkflowStepResponse {

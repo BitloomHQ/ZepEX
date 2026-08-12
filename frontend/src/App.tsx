@@ -13,6 +13,7 @@ import { CompanyRequestsPage } from '@/pages/platform/CompanyRequestsPage'
 import { CompanyDetailPage } from '@/pages/platform/CompanyDetailPage'
 import { PlatformCompaniesPage } from '@/pages/platform/PlatformCompaniesPage'
 import { PlatformAuditLogsPage } from '@/pages/platform/PlatformAuditLogsPage'
+import { PlatformUsersPage } from '@/pages/platform/PlatformUsersPage'
 import { AdminDashboard } from '@/pages/tenant/admin/AdminDashboard'
 import { DepartmentsPage } from '@/pages/tenant/admin/DepartmentsPage'
 import { EmployeesPage } from '@/pages/tenant/admin/EmployeesPage'
@@ -71,6 +72,7 @@ export default function App() {
               <ProtectedRoute
                 allowedRoles={[
                   'PLATFORM_OWNER',
+                  'PLATFORM_ADMIN',
                   'COMPANY_ADMIN',
                   'MANAGER',
                   'EMPLOYEE',
@@ -85,7 +87,7 @@ export default function App() {
 
           <Route
             element={
-              <ProtectedRoute allowedRoles={['PLATFORM_OWNER']} loginPath="/platform/login" />
+              <ProtectedRoute allowedRoles={['PLATFORM_OWNER', 'PLATFORM_ADMIN']} loginPath="/platform/login" />
             }
           >
             <Route path="/platform" element={<PlatformDashboard />} />
@@ -93,6 +95,7 @@ export default function App() {
             <Route path="/platform/requests" element={<CompanyRequestsPage />} />
             <Route path="/platform/companies/:companyId" element={<CompanyDetailPage />} />
             <Route path="/platform/audit-logs" element={<PlatformAuditLogsPage />} />
+            <Route path="/platform/users" element={<PlatformUsersPage />} />
             <Route path="/platform-dashboard" element={<Navigate to="/platform" replace />} />
           </Route>
 

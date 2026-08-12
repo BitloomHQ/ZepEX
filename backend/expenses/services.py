@@ -863,13 +863,17 @@ def _apply_ai_failure(receipt: ExpenseReceipt, error: str):
 def recalculate_report_total(report):
     total = Decimal("0.00")
 
-    for receipt in report.receipts.filter(
-        ai_status=ExpenseReceipt.AI_COMPLETED
-    ):
+    for receipt in report.receipts.all():
         amount = receipt.company_amount
         if amount is None:
             amount = receipt.total_amount
-        total += amount or Decimal("0.00")
+
+        if amount is not None and amount > Decimal("0.00"):
+            total += amount
+            continue
+
+        if receipt.ai_status == ExpenseReceipt.AI_COMPLETED:
+            total += amount or Decimal("0.00")
 
     report.total_amount = total
     report.save(update_fields=["total_amount", "updated_at"])
@@ -995,7 +999,6 @@ def recalculate_receipt_from_line_items(receipt):
 
     active_line_items = receipt.line_items.filter(
         is_removed=False,
-        is_deleted=False,
     )
 
     # --------------------------------------------------
@@ -1014,6 +1017,15 @@ def recalculate_receipt_from_line_items(receipt):
     # --------------------------------------------------
 
     if line_total <= Decimal("0.00"):
+        stored_original = receipt.original_amount or Decimal("0.00")
+        stored_company = receipt.company_amount or Decimal("0.00")
+
+        # Keep AI-extracted amounts when line items are not ready yet (or were
+        # temporarily cleared). sync_receipt_totals must not wipe claim totals.
+        if stored_original > Decimal("0.00") or stored_company > Decimal("0.00"):
+            if receipt.report_id:
+                recalculate_report_total(receipt.report)
+            return
 
         receipt.original_amount = Decimal("0.00")
         receipt.company_amount = Decimal("0.00")
@@ -4610,11 +4622,9 @@ Return valid JSON only.
                         item_amount
                     )
 
-                    ExpenseAttachment.objects.create(
-                        line_item=expense_item,
-                        receipt=receipt,
-                        file=receipt.receipt_file,
-                        attachment_type="receipt",
+                    _link_receipt_file_attachment(
+                        expense_item,
+                        receipt,
                     )
 
             # ------------------------------------------------
@@ -4696,11 +4706,9 @@ Return valid JSON only.
                     amount
                 )
 
-                ExpenseAttachment.objects.create(
-                    line_item=expense_item,
-                    receipt=receipt,
-                    file=receipt.receipt_file,
-                    attachment_type="receipt",
+                _link_receipt_file_attachment(
+                    expense_item,
+                    receipt,
                 )
 
             bill["approved_amount"] = str(
@@ -4756,8 +4764,10 @@ Return valid JSON only.
             )
 
         # ------------------------------------------------
-        # Recalculate report
+        # Recalculate receipt + report from line items
         # ------------------------------------------------
+
+        recalculate_receipt_from_line_items(receipt)
 
         if receipt.report:
 

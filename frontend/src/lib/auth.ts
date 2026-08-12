@@ -3,6 +3,7 @@ import { resolveUserPermissions } from '@/lib/permissions'
 
 export const roleHome: Record<UserRole, string> = {
   PLATFORM_OWNER: '/platform',
+  PLATFORM_ADMIN: '/platform',
   COMPANY_ADMIN: '/admin',
   MANAGER: '/manager',
   EMPLOYEE: '/employee',

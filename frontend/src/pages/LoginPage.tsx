@@ -37,7 +37,7 @@ export function LoginPage() {
       const redirect = await login(email, password)
       const stored = localStorage.getItem('zepex_user')
       const user = stored ? JSON.parse(stored) : null
-      if (user?.role === 'PLATFORM_OWNER') {
+      if (user?.role === 'PLATFORM_OWNER' || user?.role === 'PLATFORM_ADMIN') {
         logout()
         setError('Platform accounts must sign in at /platform/login')
         return

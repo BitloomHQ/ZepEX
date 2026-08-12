@@ -26,7 +26,7 @@ export function PlatformLoginPage() {
       await login(email, password)
       const stored = localStorage.getItem('zepex_user')
       const user = stored ? JSON.parse(stored) : null
-      if (user?.role !== 'PLATFORM_OWNER') {
+      if (user?.role !== 'PLATFORM_OWNER' && user?.role !== 'PLATFORM_ADMIN') {
         logout()
         setError('This account is not authorized for platform access.')
         return

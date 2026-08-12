@@ -47,7 +47,9 @@ class PlatformAdmin(models.Model):
 
     company = models.ForeignKey(
         Company,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="platform_admins",
     )
 

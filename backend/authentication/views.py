@@ -27,6 +27,43 @@ from django.core.mail import EmailMultiAlternatives
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
 
+PLATFORM_OWNER_PERMISSIONS = [
+    "view_dashboard",
+    "view_companies",
+    "approve_company",
+    "reject_company",
+    "edit_company",
+    "delete_company",
+    "view_platform_users",
+    "create_platform_user",
+    "edit_platform_user",
+    "delete_platform_user",
+    "view_company_users",
+    "create_company_user",
+    "edit_company_user",
+    "delete_company_user",
+    "manage_departments",
+    "manage_policies",
+    "manage_workflow",
+    "view_reports",
+    "export_reports",
+    "view_audit_logs",
+    "manage_billing",
+    "manage_settings",
+]
+
+PLATFORM_USER_PERMISSIONS = {
+    "can_upload_receipt": False,
+    "can_submit_expense": False,
+    "can_approve_expense": False,
+    "can_mark_paid": False,
+    "can_manage_users": False,
+    "can_manage_policy": False,
+    "can_manage_workflow": False,
+    "can_view_all_reports": False,
+    "can_view_audit_logs": True,
+}
+
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def login_api(request):
@@ -43,22 +80,24 @@ def login_api(request):
     token, created = Token.objects.get_or_create(user=user)
 
     platform_admin = None
+    profile = getattr(user, "profile", None)
 
     # -------------------------------------------------
-    # Check Platform Admin / Platform Owner
+    # Check Platform Admin (UserProfile + PlatformAdmin)
     # -------------------------------------------------
 
-    try:
-        platform_admin = (
-            PlatformAdmin.objects
-            .prefetch_related("permissions__permission")
-            .get(
-                user=user.profile,
-                is_active=True,
+    if profile is not None:
+        try:
+            platform_admin = (
+                PlatformAdmin.objects
+                .prefetch_related("permissions__permission")
+                .get(
+                    user=profile,
+                    is_active=True,
+                )
             )
-        )
-    except Exception:
-        platform_admin = None
+        except Exception:
+            platform_admin = None
 
     if platform_admin:
 
@@ -73,47 +112,11 @@ def login_api(request):
         company = None
         department = None
 
-        permissions = {
-            "can_upload_receipt": False,
-            "can_submit_expense": False,
-            "can_approve_expense": False,
-            "can_mark_paid": False,
-            "can_manage_users": False,
-            "can_manage_policy": False,
-            "can_manage_workflow": False,
-            "can_view_all_reports": False,
-            "can_view_audit_logs": True,
-        }
+        permissions = PLATFORM_USER_PERMISSIONS.copy()
 
         if platform_admin.is_owner:
-
-            platform_permissions = [
-                "view_dashboard",
-                "view_companies",
-                "approve_company",
-                "reject_company",
-                "edit_company",
-                "delete_company",
-                "view_platform_users",
-                "create_platform_user",
-                "edit_platform_user",
-                "delete_platform_user",
-                "view_company_users",
-                "create_company_user",
-                "edit_company_user",
-                "delete_company_user",
-                "manage_departments",
-                "manage_policies",
-                "manage_workflow",
-                "view_reports",
-                "export_reports",
-                "view_audit_logs",
-                "manage_billing",
-                "manage_settings",
-            ]
-
+            platform_permissions = PLATFORM_OWNER_PERMISSIONS
         else:
-
             platform_permissions = list(
                 platform_admin.permissions.values_list(
                     "permission__code",
@@ -121,16 +124,24 @@ def login_api(request):
                 )
             )
 
+    elif getattr(user, "platform_owner", None) or user.is_superuser:
+        # Legacy platform owners are linked directly to auth.User
+        # (no tenants.UserProfile). profile_detail_api already supports this.
+        system_role = "PLATFORM_OWNER"
+        company_role = None
+        company_role_id = None
+        company = None
+        department = None
+        permissions = PLATFORM_USER_PERMISSIONS.copy()
+        platform_permissions = PLATFORM_OWNER_PERMISSIONS
+
     else:
 
         # -------------------------------------------------
         # Company User
         # -------------------------------------------------
 
-        try:
-            profile = user.profile
-
-        except Exception:
+        if profile is None:
             return Response(
                 {
                     "error": "User profile not found."
@@ -233,11 +244,18 @@ def login_api(request):
 
                 "system_role": system_role,
 
-                "is_platform_admin": platform_admin is not None,
+                "is_platform_admin": (
+                    platform_admin is not None
+                    or getattr(user, "platform_owner", None) is not None
+                    or user.is_superuser
+                ),
                 "is_platform_owner": (
                     platform_admin.is_owner
                     if platform_admin
-                    else False
+                    else bool(
+                        getattr(user, "platform_owner", None)
+                        or user.is_superuser
+                    )
                 ),
 
                 "platform_permissions": platform_permissions,

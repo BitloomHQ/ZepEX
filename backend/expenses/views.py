@@ -3228,7 +3228,6 @@ def remove_receipt_line_item_api(request, report_id, line_item_id):
             "subcategory": line_item.subcategory,
             "status": {
                 "is_removed": line_item.is_removed,
-                "is_deleted": line_item.is_deleted,
             },
             "reason": reason,
         },
@@ -3298,7 +3297,6 @@ def restore_receipt_line_item_api(request, report_id, line_item_id):
             "subcategory": line_item.subcategory,
             "status": {
                 "is_removed": line_item.is_removed,
-                "is_deleted": line_item.is_deleted,
             },
             "notes": notes,
         },

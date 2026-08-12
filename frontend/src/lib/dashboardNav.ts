@@ -21,6 +21,7 @@ export function getNavForUser(user: User | null, adminNavItems?: NavItem[]): Nav
     case 'ACCOUNTS':
       return buildAccountsNav(user)
     case 'PLATFORM_OWNER':
+    case 'PLATFORM_ADMIN':
       return platformNavWithAudit
     default:
       return buildEmployeeNav(user)
@@ -32,6 +33,7 @@ export function userRoleLabel(user: User | null): string {
   if (user.company_role) return user.company_role
   const labels: Record<string, string> = {
     PLATFORM_OWNER: 'Platform Owner',
+    PLATFORM_ADMIN: 'Platform Admin',
     COMPANY_ADMIN: 'Company Admin',
     MANAGER: 'Manager',
     EMPLOYEE: 'Employee',

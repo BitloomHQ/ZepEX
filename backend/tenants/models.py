@@ -183,6 +183,7 @@ class UserProfile(models.Model):
         ("MANAGER", "Manager"),
         ("ACCOUNTS", "Accounts"),
         ("EMPLOYEE", "Employee"),
+        ("PLATFORM_ADMIN", "Platform Admin"),
     )
 
     user = models.OneToOneField(
@@ -193,7 +194,9 @@ class UserProfile(models.Model):
 
     company = models.ForeignKey(
         Company,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="users"
     )
 

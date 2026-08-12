@@ -72,16 +72,10 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
     # Removed line item:
     #     is_removed = True
     #
-    # Deleted line item:
-    #     is_deleted = True
-    #
-    # Both must NOT participate in policy validation.
-    # =====================================================
-
+    # Deleted line items are hard-deleted by employees and never appear here.
     line_items = list(
         receipt.line_items.filter(
             is_removed=False,
-            is_deleted=False,
         )
     )
 

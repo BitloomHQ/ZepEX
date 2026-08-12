@@ -414,6 +414,26 @@ export const listPlatformCompanies = () =>
     results: Array<{ id: string; name: string; domain: string; is_verified: boolean }>
   }>('/platform/companies/')
 
+export const listPlatformPermissions = () =>
+  api.get<import('@/types').PlatformPermission[]>('/platform-admin/permissions/')
+
+export const listPlatformAdmins = () =>
+  api.get<import('@/types').PlatformAdminUser[]>('/platform-admin/list/')
+
+export const createPlatformUser = (payload: {
+  email: string
+  first_name: string
+  last_name?: string
+  password?: string
+  permissions: string[]
+}) => api.post<import('@/types').CreatePlatformUserResponse>('/platform-admin/users/create/', payload)
+
+export const updatePlatformAdminPermissions = (adminId: number, permissions: string[]) =>
+  api.put<{ message: string; data: import('@/types').PlatformAdminUser }>(
+    `/platform-admin/${adminId}/update/`,
+    { permissions },
+  )
+
 function uploadCsv(
   path: string,
   file: File,
@@ -664,6 +684,30 @@ export const approveReport = (reportId: string, notes?: string) =>
 
 export const rejectReport = (reportId: string, notes: string) =>
   api.post<RejectReportResponse>(`/expenses/reports/${reportId}/reject/`, { notes })
+
+export const approveReceipt = (reportId: string, receiptId: string, notes?: string) =>
+  api.post<import('@/types').ApproveReceiptResponse>(
+    `/expenses/reports/${reportId}/receipts/${receiptId}/approve/`,
+    { notes },
+  )
+
+export const rejectReceipt = (reportId: string, receiptId: string, notes: string) =>
+  api.post<import('@/types').RejectReceiptResponse>(
+    `/expenses/reports/${reportId}/receipts/${receiptId}/reject/`,
+    { notes },
+  )
+
+export const removeReportLineItem = (reportId: string, lineItemId: string, reason: string) =>
+  api.post<import('@/types').RemoveLineItemResponse>(
+    `/expenses/reports/${reportId}/line-items/${lineItemId}/remove/`,
+    { reason },
+  )
+
+export const restoreReportLineItem = (reportId: string, lineItemId: string, notes?: string) =>
+  api.post<import('@/types').RestoreLineItemResponse>(
+    `/expenses/reports/${reportId}/line-items/${lineItemId}/restore/`,
+    { notes },
+  )
 
 export const accountsMarkPaid = (reportId: string, notes = '') =>
   api.post<MarkPaidReportResponse>(`/expenses/accounts/reports/${reportId}/paid/`, { notes })

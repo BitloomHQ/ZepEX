@@ -1037,21 +1037,21 @@ def platform_dashboard(request):
 @permission_classes([IsAuthenticated])
 def dashboard_router(request):
 
-    profile = request.user.profile
+    profile = getattr(request.user, "profile", None)
 
     if has_platform_permission(
+        user=request.user,
         profile=profile,
         permission_code="view_dashboard",
     ):
         return platform_dashboard(request)
 
-    if profile.role == "COMPANY_ADMIN":
-        return company_admin_dashboard(request)
-    profile = request.user.profile
+    if profile is None:
+        return Response(
+            {"error": "User profile is not configured."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
-    # -----------------------------
-    # Company Admin
-    # -----------------------------
     if profile.role == "COMPANY_ADMIN":
         return company_admin_dashboard(request)
 

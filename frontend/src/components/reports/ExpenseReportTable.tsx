@@ -9,6 +9,7 @@ import {
   tableHeadRowClass,
 } from '@/lib/tableStyles'
 import { formatDate } from '@/lib/utils'
+import { formatReportTotal } from '@/lib/receiptDisplay'
 import type { ExpenseReport } from '@/types'
 import { cn } from '@/lib/utils'
 
@@ -26,7 +27,7 @@ export function ExpenseReportTable({
   defaultExpandedId = null,
 }: ExpenseReportTableProps) {
   const [expandedId, setExpandedId] = useState<string | null>(defaultExpandedId ?? null)
-  const columnCount = renderRowActions ? 6 : 5
+  const columnCount = renderRowActions ? 7 : 6
 
   useEffect(() => {
     if (defaultExpandedId) {
@@ -45,6 +46,7 @@ export function ExpenseReportTable({
             <th className={tableHeadCellClass}>Employee</th>
             <th className={tableHeadCellClass}>Department</th>
             <th className={tableHeadCellClass}>Report month</th>
+            <th className={tableHeadCellClass}>Total</th>
             <th className={tableHeadCellClass}>Status</th>
             {renderRowActions && <th className={tableHeadCellClass}>Actions</th>}
           </tr>
@@ -111,6 +113,9 @@ function ExpenseReportRow({
         </td>
         <td className={tableBodyCellClass}>{report.department_name}</td>
         <td className={tableBodyCellClass}>{formatDate(report.month)}</td>
+        <td className={cn(tableBodyCellClass, 'text-right font-semibold tabular-nums text-gray-900')}>
+          {formatReportTotal(report)}
+        </td>
         <td className={tableBodyCellClass}>
           <WorkflowStepper timeline={report.workflow_timeline ?? []} />
         </td>

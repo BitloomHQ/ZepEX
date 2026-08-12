@@ -30,6 +30,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { TabbedTablePageShimmer } from '@/components/ui/shimmer'
 import { useAdminNav } from '@/hooks/useAdminNav'
 import { showReportActionToast } from '@/lib/reportActions'
+import { createReportApprovalContext } from '@/lib/reportApprovalHandlers'
 import { fetchAllPages } from '@/lib/pagination'
 import { toAdminApiParams, type AdminReportFilters } from '@/lib/reportFilters'
 import { toast } from '@/lib/toast'
@@ -64,6 +65,7 @@ function AdminReportExpandedPanel({
   onApprove,
   onReject,
   onMarkPaid,
+  onRefresh,
 }: {
   report: ExpenseReport
   status: string
@@ -73,15 +75,26 @@ function AdminReportExpandedPanel({
   onApprove: (reportId: string) => void
   onReject: (reportId: string) => void
   onMarkPaid: (reportId: string) => void
+  onRefresh: () => Promise<void>
 }) {
   const showActions = status === 'SUBMITTED' || status === 'APPROVED'
   const employeeLabel = report.employee_name || report.employee_email
+  const approvalContext =
+    status === 'SUBMITTED'
+      ? createReportApprovalContext(report.id, {
+          enabled: true,
+          busy: actionId === report.id,
+          onRefresh,
+        })
+      : undefined
 
   return (
     <div className="space-y-4">
       {showActions && (
         <div className="space-y-3 rounded-lg border border-[#e2e8f0] bg-white px-4 py-3">
-          <p className="text-sm font-medium text-gray-900">{employeeLabel}</p>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <p className="text-sm font-medium text-gray-900">{employeeLabel}</p>
+          </div>
           <Textarea
             placeholder={
               status === 'SUBMITTED'
@@ -124,7 +137,12 @@ function AdminReportExpandedPanel({
           </div>
         </div>
       )}
-      <ReportDetail report={report} showEmployee={false} showAdminOverride />
+      <ReportDetail
+        report={report}
+        showEmployee={false}
+        showAdminOverride
+        approvalContext={approvalContext}
+      />
     </div>
   )
 }
@@ -484,6 +502,7 @@ export function AdminReportsPage() {
                   onApprove={handleApprove}
                   onReject={handleReject}
                   onMarkPaid={handleMarkPaid}
+                  onRefresh={load}
                 />
               )}
             />
