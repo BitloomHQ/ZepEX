@@ -28,6 +28,12 @@ from .views import (
     delete_workflow,
     simulate_workflow_api,
     delete_receipt,
+    approval_remove_line_item,
+    approval_restore_line_item,
+    approve_receipt_api,
+    reject_receipt_api,
+    remove_receipt_line_item_api,
+    restore_receipt_line_item_api,
 
 )
 
@@ -95,5 +101,38 @@ path(
     delete_receipt,
     name="delete-receipt",
 ),
+path(
+    "approvals/line-items/<uuid:line_item_id>/remove/",
+    approval_remove_line_item,
+    name="approval-remove-line-item",
+),
 
+path(
+    "approvals/line-items/<uuid:line_item_id>/restore/",
+    approval_restore_line_item,
+    name="approval-restore-line-item",
+),
+path(
+    "reports/<uuid:report_id>/receipts/<uuid:receipt_id>/approve/",
+    approve_receipt_api,
+    name="approve-receipt",
+),
+
+path(
+    "reports/<uuid:report_id>/receipts/<uuid:receipt_id>/reject/",
+    reject_receipt_api,
+    name="reject-receipt",
+),
+
+path(
+    "reports/<uuid:report_id>/line-items/<uuid:line_item_id>/remove/",
+    remove_receipt_line_item_api,
+    name="remove-receipt-line-item",
+),
+
+path(
+    "reports/<uuid:report_id>/line-items/<uuid:line_item_id>/restore/",
+    restore_receipt_line_item_api,
+    name="restore-receipt-line-item",
+),
 ]

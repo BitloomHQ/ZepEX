@@ -15,10 +15,12 @@ from tenants.media_utils import profile_picture_url
 
 
 class ExpenseLineItemSerializer(serializers.ModelSerializer):
+
     class Meta:
         model = ExpenseLineItem
         fields = [
             "id",
+            "receipt",
             "description",
             "category",
             "subcategory",
@@ -27,29 +29,64 @@ class ExpenseLineItemSerializer(serializers.ModelSerializer):
             "bill_date",
             "is_violating",
             "violation_reason",
+
+            # Approval fields
+            "is_removed",
+            "removed_by",
+            "removed_at",
+            "removal_reason",
+
+            # Deleted fields
+            "is_deleted",
+            "deleted_at",
+            "deleted_by",
+
+            "created_at",
+        ]
+        read_only_fields = [
+            "id",
+            "receipt",
+            "is_removed",
+            "removed_by",
+            "removed_at",
+            "removal_reason",
+            "is_deleted",
+            "deleted_at",
+            "deleted_by",
             "created_at",
         ]
 
 
 class ExpenseReceiptSerializer(serializers.ModelSerializer):
 
-    # Existing field
+    # -----------------------------------------
+    # Expense line items
+    # -----------------------------------------
+
     line_items = ExpenseLineItemSerializer(
         many=True,
         read_only=True
     )
 
-    # Explicit frontend-friendly alias
+    # Frontend-friendly alias
     claim_lines = ExpenseLineItemSerializer(
         source="line_items",
         many=True,
         read_only=True
     )
 
+    # -----------------------------------------
+    # Employee
+    # -----------------------------------------
+
     employee_email = serializers.EmailField(
         source="employee.user.email",
         read_only=True
     )
+
+    # -----------------------------------------
+    # Department
+    # -----------------------------------------
 
     department_name = serializers.CharField(
         source="department.name",
@@ -60,104 +97,170 @@ class ExpenseReceiptSerializer(serializers.ModelSerializer):
         model = ExpenseReceipt
 
         fields = [
+            # ---------------------------------
+            # IDs / relationships
+            # ---------------------------------
             "id",
             "report",
             "submission",
             "company",
 
+            # ---------------------------------
+            # Employee
+            # ---------------------------------
             "employee",
             "employee_email",
 
+            # ---------------------------------
+            # Department
+            # ---------------------------------
             "department",
             "department_name",
 
+            # ---------------------------------
+            # Receipt
+            # ---------------------------------
             "receipt_file",
-
             "vendor_name",
             "invoice_date",
 
-            # Existing
+            # ---------------------------------
+            # Amount
+            # ---------------------------------
             "total_amount",
             "currency",
 
-            # Original receipt
+            # ---------------------------------
+            # Original receipt currency
+            # ---------------------------------
             "original_amount",
             "original_currency",
 
-            # Company reimbursement
+            # ---------------------------------
+            # Company reimbursement currency
+            # ---------------------------------
             "company_amount",
             "company_currency",
 
-            # Exchange details
+            # ---------------------------------
+            # Exchange information
+            # ---------------------------------
             "exchange_rate",
             "exchange_rate_date",
             "exchange_rate_provider",
 
-            # Status
+            # ---------------------------------
+            # Receipt status
+            # ---------------------------------
             "status",
 
-            # AI extraction
+            # ---------------------------------
+            # AI
+            # ---------------------------------
             "ai_status",
             "ai_error_message",
             "ai_retry_count",
 
+            # ---------------------------------
             # Policy
+            # ---------------------------------
             "policy_violation_reason",
             "has_duplicate_violation",
             "has_old_bill_violation",
             "has_amount_violation",
             "has_any_violation",
 
-            # Expense line items
+            # ---------------------------------
+            # Line items
+            # ---------------------------------
             "line_items",
 
             # Frontend alias
             "claim_lines",
 
+            # ---------------------------------
+            # Timestamps
+            # ---------------------------------
             "created_at",
             "updated_at",
         ]
 
         read_only_fields = [
+            # ---------------------------------
+            # IDs / relationships
+            # ---------------------------------
             "id",
             "report",
             "submission",
             "company",
 
+            # ---------------------------------
+            # Employee
+            # ---------------------------------
             "employee",
             "department",
 
+            # ---------------------------------
+            # Receipt information
+            # ---------------------------------
             "vendor_name",
             "invoice_date",
 
+            # ---------------------------------
+            # Amount
+            # ---------------------------------
             "total_amount",
             "currency",
 
+            # ---------------------------------
+            # Original currency
+            # ---------------------------------
             "original_amount",
             "original_currency",
 
+            # ---------------------------------
+            # Company currency
+            # ---------------------------------
             "company_amount",
             "company_currency",
 
+            # ---------------------------------
+            # Exchange information
+            # ---------------------------------
             "exchange_rate",
             "exchange_rate_date",
             "exchange_rate_provider",
 
+            # ---------------------------------
+            # Status
+            # ---------------------------------
             "status",
 
+            # ---------------------------------
+            # AI
+            # ---------------------------------
             "ai_status",
             "ai_error_message",
             "ai_retry_count",
 
+            # ---------------------------------
+            # Policy
+            # ---------------------------------
             "policy_violation_reason",
             "has_duplicate_violation",
             "has_old_bill_violation",
             "has_amount_violation",
             "has_any_violation",
 
+            # ---------------------------------
+            # Line items
+            # ---------------------------------
             "line_items",
             "claim_lines",
 
+            # ---------------------------------
+            # Timestamps
+            # ---------------------------------
             "created_at",
             "updated_at",
         ]
@@ -254,15 +357,27 @@ class ApprovalWorkflowStepSerializer(serializers.ModelSerializer):
 
 class ExpenseReportSerializer(serializers.ModelSerializer):
 
+    # ==========================================================
+    # RECEIPTS
+    # ==========================================================
+
     receipts = ExpenseReceiptSerializer(
         many=True,
         read_only=True
     )
 
+    # ==========================================================
+    # APPROVAL HISTORY
+    # ==========================================================
+
     approval_history = ApprovalHistorySerializer(
         many=True,
         read_only=True
     )
+
+    # ==========================================================
+    # EMPLOYEE
+    # ==========================================================
 
     employee_email = serializers.EmailField(
         source="employee.user.email",
@@ -273,10 +388,18 @@ class ExpenseReportSerializer(serializers.ModelSerializer):
 
     employee_profile_picture = serializers.SerializerMethodField()
 
+    # ==========================================================
+    # DEPARTMENT
+    # ==========================================================
+
     department_name = serializers.CharField(
         source="department.name",
         read_only=True
     )
+
+    # ==========================================================
+    # WORKFLOW
+    # ==========================================================
 
     current_step = serializers.SerializerMethodField()
 
@@ -290,76 +413,205 @@ class ExpenseReportSerializer(serializers.ModelSerializer):
 
     view_only_for_workflow = serializers.SerializerMethodField()
 
+    # ==========================================================
+    # CURRENCY
+    # ==========================================================
+
     company_currency = serializers.SerializerMethodField()
+
+    # ==========================================================
+    # META
+    # ==========================================================
 
     class Meta:
         model = ExpenseReport
 
         fields = [
+            # --------------------------------------------------
+            # Basic
+            # --------------------------------------------------
+
             "id",
             "company",
+
+            # --------------------------------------------------
+            # Employee
+            # --------------------------------------------------
+
             "employee",
             "employee_name",
             "employee_profile_picture",
             "employee_email",
+
+            # --------------------------------------------------
+            # Department
+            # --------------------------------------------------
+
             "department",
             "department_name",
+
+            # --------------------------------------------------
+            # Report
+            # --------------------------------------------------
+
             "month",
             "status",
+
+            # --------------------------------------------------
+            # Auto approval
+            # --------------------------------------------------
+
             "is_auto_approved",
             "auto_approved_at",
+
+            # --------------------------------------------------
+            # Approval information
+            # --------------------------------------------------
+
             "approval_type",
             "approval_required",
             "view_only_for_workflow",
+
+            # --------------------------------------------------
+            # Amount
+            # --------------------------------------------------
+
             "total_amount",
             "company_currency",
+
+            # --------------------------------------------------
+            # Dates
+            # --------------------------------------------------
+
             "submitted_at",
             "paid_at",
             "paid_notes",
+
+            # --------------------------------------------------
+            # Workflow
+            # --------------------------------------------------
+
             "current_workflow_step",
             "current_step",
             "workflow_timeline",
             "latest_rejection_reason",
             "workflow_completed",
+
+            # --------------------------------------------------
+            # Receipts
+            # --------------------------------------------------
+
             "receipts",
+
+            # --------------------------------------------------
+            # Approval history
+            # --------------------------------------------------
+
             "approval_history",
+
+            # --------------------------------------------------
+            # Timestamps
+            # --------------------------------------------------
+
             "created_at",
             "updated_at",
         ]
 
         read_only_fields = [
+            # --------------------------------------------------
+            # Basic
+            # --------------------------------------------------
+
             "id",
             "company",
+
+            # --------------------------------------------------
+            # Employee
+            # --------------------------------------------------
+
             "employee",
+
+            # --------------------------------------------------
+            # Department
+            # --------------------------------------------------
+
             "department",
+
+            # --------------------------------------------------
+            # Report status
+            # --------------------------------------------------
+
             "status",
+
+            # --------------------------------------------------
+            # Auto approval
+            # --------------------------------------------------
+
             "is_auto_approved",
             "auto_approved_at",
+
+            # --------------------------------------------------
+            # Approval
+            # --------------------------------------------------
+
             "approval_type",
             "approval_required",
             "view_only_for_workflow",
+
+            # --------------------------------------------------
+            # Amount
+            # --------------------------------------------------
+
             "total_amount",
             "company_currency",
+
+            # --------------------------------------------------
+            # Dates
+            # --------------------------------------------------
+
             "submitted_at",
             "paid_at",
             "paid_notes",
+
+            # --------------------------------------------------
+            # Workflow
+            # --------------------------------------------------
+
             "current_workflow_step",
             "workflow_completed",
+
+            # --------------------------------------------------
+            # Timestamps
+            # --------------------------------------------------
+
             "created_at",
             "updated_at",
         ]
 
+    # ==========================================================
+    # COMPANY CURRENCY
+    # ==========================================================
+
     def get_company_currency(self, obj):
+
         try:
             finance_settings = obj.company.finance_settings
         except Exception:
             finance_settings = None
 
-        if finance_settings and finance_settings.base_currency_id:
+        if (
+            finance_settings
+            and finance_settings.base_currency_id
+        ):
             return finance_settings.base_currency.code.upper()
 
         for receipt in obj.receipts.all():
-            amount = receipt.company_amount or receipt.total_amount
+
+            amount = (
+                receipt.company_amount
+                or receipt.total_amount
+            )
+
             if (
                 receipt.company_currency
                 and amount is not None
@@ -369,21 +621,39 @@ class ExpenseReportSerializer(serializers.ModelSerializer):
 
         return "USD"
 
+    # ==========================================================
+    # EMPLOYEE NAME
+    # ==========================================================
+
     def get_employee_name(self, obj):
+
         full_name = (
             f"{obj.employee.user.first_name} "
             f"{obj.employee.user.last_name}"
         ).strip()
 
-        return full_name or obj.employee.user.email
+        return (
+            full_name
+            or obj.employee.user.email
+        )
+
+    # ==========================================================
+    # EMPLOYEE PROFILE PICTURE
+    # ==========================================================
 
     def get_employee_profile_picture(self, obj):
+
         return profile_picture_url(
             obj.employee,
             self.context.get("request")
         )
 
+    # ==========================================================
+    # APPROVAL TYPE
+    # ==========================================================
+
     def get_approval_type(self, obj):
+
         if obj.is_auto_approved:
             return "SYSTEM_AUTO_APPROVED"
 
@@ -398,14 +668,24 @@ class ExpenseReportSerializer(serializers.ModelSerializer):
 
         return "NOT_SUBMITTED"
 
+    # ==========================================================
+    # APPROVAL REQUIRED
+    # ==========================================================
+
     def get_approval_required(self, obj):
+
         return (
             obj.status == ExpenseReport.STATUS_SUBMITTED
             and not obj.workflow_completed
             and not obj.is_auto_approved
         )
 
+    # ==========================================================
+    # VIEW ONLY
+    # ==========================================================
+
     def get_view_only_for_workflow(self, obj):
+
         return (
             obj.is_auto_approved
             and obj.status in [
@@ -414,7 +694,12 @@ class ExpenseReportSerializer(serializers.ModelSerializer):
             ]
         )
 
+    # ==========================================================
+    # CURRENT WORKFLOW STEP
+    # ==========================================================
+
     def get_current_step(self, obj):
+
         step = obj.current_workflow_step
 
         if not step:
@@ -422,135 +707,257 @@ class ExpenseReportSerializer(serializers.ModelSerializer):
 
         return {
             "id": str(step.id),
+
             "step_order": step.step_order,
-            "approver_role": step.approver_role.name,
+
+            "approver_type": step.approver_type,
+
+            "approver_role": (
+                step.approver_role.name
+                if step.approver_role
+                else None
+            ),
+
             "routing_type": step.routing_type,
+
             "department": (
                 step.department.name
-                if step.department else None
+                if step.department
+                else None
+            ),
+
+            "specific_user": (
+                step.specific_user.user.email
+                if step.specific_user
+                else None
             ),
         }
 
+    # ==========================================================
+    # LATEST REJECTION
+    # ==========================================================
+
     def get_latest_rejection_reason(self, obj):
-        rejection = obj.approval_history.filter(
-            action=ApprovalHistory.ACTION_STEP_REJECTED
-        ).order_by("-created_at").first()
+
+        rejection = (
+            obj.approval_history
+            .filter(
+                action=ApprovalHistory.ACTION_STEP_REJECTED
+            )
+            .order_by("-created_at")
+            .first()
+        )
 
         if not rejection:
             return None
 
         return {
-            "rejected_by": rejection.action_by.user.email,
+            "rejected_by": (
+                rejection.action_by.user.email
+                if rejection.action_by
+                else None
+            ),
+
             "role": (
                 rejection.action_by.company_role.name
-                if rejection.action_by.company_role
-                else rejection.action_by.role
+                if (
+                    rejection.action_by
+                    and rejection.action_by.company_role
+                )
+                else (
+                    rejection.action_by.role
+                    if rejection.action_by
+                    else None
+                )
             ),
+
             "reason": rejection.comments,
+
             "rejected_at": rejection.created_at,
         }
 
+    # ==========================================================
+    # WORKFLOW TIMELINE
+    # ==========================================================
+
     def get_workflow_timeline(self, obj):
+
         timeline = []
+
+        # ------------------------------------------------------
+        # Employee submission
+        # ------------------------------------------------------
 
         timeline.append({
             "step_order": 0,
             "step_name": "Employee Submission",
+
             "status": (
                 "COMPLETED"
                 if obj.submitted_at
                 else "DRAFT"
             ),
+
             "action_by": obj.employee.user.email,
+
             "action_role": "EMPLOYEE",
+
             "comments": None,
+
             "action_at": obj.submitted_at,
         })
 
+        # ------------------------------------------------------
+        # Auto approved
+        # ------------------------------------------------------
+
         if obj.is_auto_approved:
+
             timeline.append({
                 "step_order": 1,
                 "step_name": "System Auto Approval",
+
                 "status": "AUTO_APPROVED",
+
                 "action_by": "SYSTEM",
+
                 "action_role": "SYSTEM",
+
                 "comments": (
-                    "Approved automatically because all receipts satisfied "
-                    "company policy."
+                    "Approved automatically because all "
+                    "receipts satisfied company policy."
                 ),
+
                 "action_at": obj.auto_approved_at,
             })
 
-            workflow_steps = ApprovalWorkflowStep.objects.filter(
-                workflow__company=obj.company,
-                is_active=True
-            ).select_related(
-                "approver_role",
-                "department"
-            ).order_by(
-                "step_order"
+            workflow_steps = (
+                ApprovalWorkflowStep.objects
+                .filter(
+                    workflow__company=obj.company,
+                    is_active=True
+                )
+                .select_related(
+                    "approver_role",
+                    "department"
+                )
+                .order_by("step_order")
             )
 
             for step in workflow_steps:
+
                 timeline.append({
                     "step_order": step.step_order + 1,
-                    "step_name": step.approver_role.name,
+
+                    "step_name": (
+                        step.approver_role.name
+                        if step.approver_role
+                        else step.approver_type
+                    ),
+
                     "status": "VIEW_ONLY",
+
                     "action_by": None,
-                    "action_role": step.approver_role.name,
-                    "comments": "No action required. Auto approved by system.",
+
+                    "action_role": (
+                        step.approver_role.name
+                        if step.approver_role
+                        else step.approver_type
+                    ),
+
+                    "comments": (
+                        "No action required. "
+                        "Auto approved by system."
+                    ),
+
                     "action_at": None,
                 })
 
+            # --------------------------------------------------
+            # Payment
+            # --------------------------------------------------
+
             if obj.status == ExpenseReport.STATUS_PAID:
-                paid_history = obj.approval_history.filter(
-                    action=ApprovalHistory.ACTION_PAID
-                ).first()
+
+                paid_history = (
+                    obj.approval_history
+                    .filter(
+                        action=ApprovalHistory.ACTION_PAID
+                    )
+                    .first()
+                )
 
                 timeline.append({
                     "step_order": 999,
+
                     "step_name": "Payment",
+
                     "status": "PAID",
+
                     "action_by": (
                         paid_history.action_by.user.email
-                        if paid_history and paid_history.action_by
+                        if (
+                            paid_history
+                            and paid_history.action_by
+                        )
                         else None
                     ),
+
                     "action_role": "ACCOUNTS",
+
                     "comments": (
                         paid_history.comments
                         if paid_history
                         else obj.paid_notes
                     ),
+
                     "action_at": obj.paid_at,
                 })
 
             else:
+
                 timeline.append({
                     "step_order": 999,
+
                     "step_name": "Payment",
+
                     "status": "PENDING_PAYMENT",
+
                     "action_by": None,
+
                     "action_role": "ACCOUNTS",
+
                     "comments": None,
+
                     "action_at": None,
                 })
 
             return timeline
 
+        # ======================================================
+        # MANUAL WORKFLOW
+        # ======================================================
+
         workflow = None
 
         if obj.current_workflow_step:
-            workflow = obj.current_workflow_step.workflow
+
+            workflow = (
+                obj.current_workflow_step.workflow
+            )
+
         else:
-            first_step = ApprovalWorkflowStep.objects.filter(
-                workflow__company=obj.company,
-                is_active=True
-            ).select_related(
-                "workflow"
-            ).order_by(
-                "step_order"
-            ).first()
+
+            first_step = (
+                ApprovalWorkflowStep.objects
+                .filter(
+                    workflow__company=obj.company,
+                    is_active=True
+                )
+                .select_related("workflow")
+                .order_by("step_order")
+                .first()
+            )
 
             if first_step:
                 workflow = first_step.workflow
@@ -558,9 +965,107 @@ class ExpenseReportSerializer(serializers.ModelSerializer):
         if not workflow:
             return timeline
 
+        # ------------------------------------------------------
+        # History
+        # ------------------------------------------------------
+
+        # ------------------------------------------------------
+        # Approval history
+        # ------------------------------------------------------
+
+        approval_histories = (
+            obj.approval_history
+            .select_related(
+                "action_by",
+                "action_by__user",
+                "action_by__company_role",
+                "line_item",
+                "receipt",
+            )
+            .order_by("created_at")
+        )
+
         history_map = {}
 
-        for history in obj.approval_history.all():
+        line_item_actions = []
+
+        for history in approval_histories:
+
+            # ----------------------------------------------
+            # Line item actions
+            # ----------------------------------------------
+
+            if history.action in [
+                ApprovalHistory.ACTION_LINE_ITEM_REMOVED,
+                ApprovalHistory.ACTION_LINE_ITEM_RESTORED,
+                ApprovalHistory.ACTION_LINE_ITEM_UPDATED,
+            ]:
+
+                line_item_actions.append({
+                    "action": history.action,
+                    "action_by": (
+                        history.action_by.user.email
+                        if history.action_by
+                        else None
+                    ),
+                    "action_role": (
+                        history.action_by.company_role.name
+                        if (
+                            history.action_by
+                            and history.action_by.company_role
+                        )
+                        else (
+                            history.action_by.role
+                            if history.action_by
+                            else None
+                        )
+                    ),
+                    "comments": history.comments,
+                    "action_at": history.created_at,
+
+                    "line_item_id": (
+                        str(history.line_item_id)
+                        if history.line_item_id
+                        else None
+                    ),
+
+                    "receipt_id": (
+                        str(history.receipt_id)
+                        if history.receipt_id
+                        else None
+                    ),
+
+                    "description": (
+                        history.line_item.description
+                        if history.line_item
+                        else None
+                    ),
+
+                    "category": (
+                        history.line_item.category
+                        if history.line_item
+                        else None
+                    ),
+
+                    "subcategory": (
+                        history.line_item.subcategory
+                        if history.line_item
+                        else None
+                    ),
+
+                    "amount": (
+                        str(history.line_item.amount)
+                        if history.line_item
+                        else None
+                    ),
+                })
+
+                continue
+
+            # ----------------------------------------------
+            # Normal workflow actions
+            # ----------------------------------------------
+
             if not history.action_by:
                 continue
 
@@ -572,99 +1077,220 @@ class ExpenseReportSerializer(serializers.ModelSerializer):
 
             history_map[role_name] = history
 
-        workflow_steps = workflow.steps.filter(
-            is_active=True
-        ).select_related(
-            "approver_role",
-            "department"
-        ).order_by(
-            "step_order"
+        # ------------------------------------------------------
+        # Workflow steps
+        # ------------------------------------------------------
+
+        workflow_steps = (
+            workflow.steps
+            .filter(is_active=True)
+            .select_related(
+                "approver_role",
+                "department"
+            )
+            .order_by("step_order")
         )
 
-        workflow_stopped = obj.status == ExpenseReport.STATUS_REJECTED
+        workflow_stopped = (
+            obj.status == ExpenseReport.STATUS_REJECTED
+        )
 
         for step in workflow_steps:
-            role_name = step.approver_role.name
+
+            role_name = (
+                step.approver_role.name
+                if step.approver_role
+                else step.approver_type
+            )
+
             history = history_map.get(role_name)
 
             if history:
-                if history.action == ApprovalHistory.ACTION_STEP_APPROVED:
+
+                if (
+                    history.action
+                    == ApprovalHistory.ACTION_STEP_APPROVED
+                ):
                     status_value = "APPROVED"
-                elif history.action == ApprovalHistory.ACTION_STEP_REJECTED:
+
+                elif (
+                    history.action
+                    == ApprovalHistory.ACTION_STEP_REJECTED
+                ):
                     status_value = "REJECTED"
+
                 else:
                     status_value = history.action
 
                 timeline.append({
                     "step_order": step.step_order,
+
                     "step_name": role_name,
+
                     "status": status_value,
-                    "action_by": history.action_by.user.email,
+
+                    "action_by": (
+                        history.action_by.user.email
+                        if history.action_by
+                        else None
+                    ),
+
                     "action_role": role_name,
+
                     "comments": history.comments,
+
                     "action_at": history.created_at,
                 })
 
             else:
+
                 if workflow_stopped:
+
                     status_value = "CANCELLED"
+
                 elif (
                     obj.current_workflow_step
-                    and obj.current_workflow_step.id == step.id
+                    and obj.current_workflow_step.id
+                    == step.id
                 ):
-                    if is_payment_queue_role(step.approver_role):
+
+                    if is_payment_queue_role(
+                        step.approver_role
+                    ):
                         status_value = "PENDING_PAYMENT"
+
                     else:
                         status_value = "PENDING"
-                elif obj.workflow_completed or obj.status in [
-                    ExpenseReport.STATUS_APPROVED,
-                    ExpenseReport.STATUS_PAID,
-                ]:
+
+                elif (
+                    obj.workflow_completed
+                    or obj.status in [
+                        ExpenseReport.STATUS_APPROVED,
+                        ExpenseReport.STATUS_PAID,
+                    ]
+                ):
+
                     status_value = "APPROVED"
+
                 else:
+
                     status_value = "WAITING"
 
                 timeline.append({
                     "step_order": step.step_order,
+
                     "step_name": role_name,
+
                     "status": status_value,
+
                     "action_by": None,
+
                     "action_role": role_name,
+
                     "comments": None,
+
                     "action_at": None,
                 })
 
+        # ======================================================
+        # LINE ITEM ACTIONS
+        # ======================================================
+
+        for action in line_item_actions:
+
+            if action["action"] == ApprovalHistory.ACTION_LINE_ITEM_REMOVED:
+                status_value = "LINE_ITEM_REMOVED"
+                step_name = "Expense Item Removed"
+
+            elif action["action"] == ApprovalHistory.ACTION_LINE_ITEM_RESTORED:
+                status_value = "LINE_ITEM_RESTORED"
+                step_name = "Expense Item Restored"
+
+            else:
+                status_value = "LINE_ITEM_UPDATED"
+                step_name = "Expense Item Updated"
+
+            timeline.append({
+                "step_order": 500,
+
+                "step_name": step_name,
+
+                "status": status_value,
+
+                "action_by": action["action_by"],
+
+                "action_role": action["action_role"],
+
+                "comments": action["comments"],
+
+                "action_at": action["action_at"],
+
+                "line_item": {
+                    "id": action["line_item_id"],
+                    "receipt_id": action["receipt_id"],
+                    "description": action["description"],
+                    "category": action["category"],
+                    "subcategory": action["subcategory"],
+                    "amount": action["amount"],
+                },
+            })
+
+        # ======================================================
+        # PAYMENT
+        # ======================================================
+
         if obj.status == ExpenseReport.STATUS_PAID:
-            paid_history = obj.approval_history.filter(
-                action=ApprovalHistory.ACTION_PAID
-            ).first()
+
+            paid_history = (
+                obj.approval_history
+                .filter(
+                    action=ApprovalHistory.ACTION_PAID
+                )
+                .first()
+            )
 
             timeline.append({
                 "step_order": 999,
+
                 "step_name": "Payment",
+
                 "status": "PAID",
+
                 "action_by": (
                     paid_history.action_by.user.email
-                    if paid_history and paid_history.action_by
+                    if (
+                        paid_history
+                        and paid_history.action_by
+                    )
                     else None
                 ),
+
                 "action_role": "ACCOUNTS",
+
                 "comments": (
                     paid_history.comments
                     if paid_history
                     else obj.paid_notes
                 ),
+
                 "action_at": obj.paid_at,
             })
 
         elif obj.status == ExpenseReport.STATUS_APPROVED:
+
             timeline.append({
                 "step_order": 999,
+
                 "step_name": "Payment",
+
                 "status": "PENDING_PAYMENT",
+
                 "action_by": None,
+
                 "action_role": "ACCOUNTS",
+
                 "comments": None,
+
                 "action_at": None,
             })
 

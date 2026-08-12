@@ -489,9 +489,9 @@ class ExpenseLineItem(models.Model):
     )
 
     description = models.TextField(
-    blank=True,
-    default="",
-)
+        blank=True,
+        default="",
+    )
 
     category = models.CharField(
         max_length=100
@@ -521,19 +521,44 @@ class ExpenseLineItem(models.Model):
         blank=True,
         null=True
     )
+
     subcategory = models.CharField(
-    max_length=100,
-    blank=True,
-)
+        max_length=100,
+        blank=True,
+    )
+
+    # ---------------------------------
+    # Approval-stage removal / restore
+    # ---------------------------------
+
+    is_removed = models.BooleanField(
+        default=False
+    )
+
+    removed_by = models.ForeignKey(
+        UserProfile,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="removed_expense_line_items"
+    )
+
+    removed_at = models.DateTimeField(
+        null=True,
+        blank=True
+    )
+
+    removal_reason = models.TextField(
+        blank=True,
+        null=True
+    )
 
     created_at = models.DateTimeField(
         auto_now_add=True
     )
-    
 
     def __str__(self):
         return f"{self.category} - {self.amount}"
-
 
 class ApprovalHistory(models.Model):
 
@@ -542,14 +567,24 @@ class ApprovalHistory(models.Model):
     ACTION_STEP_APPROVED = "STEP_APPROVED"
     ACTION_STEP_REJECTED = "STEP_REJECTED"
 
+    ACTION_RECEIPT_APPROVED = "RECEIPT_APPROVED"
+    ACTION_RECEIPT_REJECTED = "RECEIPT_REJECTED"
+
+    ACTION_LINE_ITEM_UPDATED = "LINE_ITEM_UPDATED"
+    ACTION_LINE_ITEM_REMOVED = "LINE_ITEM_REMOVED"
+    ACTION_LINE_ITEM_RESTORED = "LINE_ITEM_RESTORED"
+
     ACTION_PAID = "PAID"
 
     ACTION_CHOICES = (
         (ACTION_REPORT_SUBMITTED, "Report Submitted"),
-
         (ACTION_STEP_APPROVED, "Step Approved"),
         (ACTION_STEP_REJECTED, "Step Rejected"),
-
+        (ACTION_RECEIPT_APPROVED, "Receipt Approved"),
+        (ACTION_RECEIPT_REJECTED, "Receipt Rejected"),
+        (ACTION_LINE_ITEM_UPDATED, "Line Item Updated"),
+        (ACTION_LINE_ITEM_REMOVED, "Line Item Removed"),
+        (ACTION_LINE_ITEM_RESTORED, "Line Item Restored"),
         (ACTION_PAID, "Paid"),
     )
 
@@ -570,6 +605,14 @@ class ApprovalHistory(models.Model):
     receipt = models.ForeignKey(
         ExpenseReceipt,
         on_delete=models.CASCADE,
+        related_name="approval_history",
+        null=True,
+        blank=True
+    )
+
+    line_item = models.ForeignKey(
+        ExpenseLineItem,
+        on_delete=models.SET_NULL,
         related_name="approval_history",
         null=True,
         blank=True
@@ -598,11 +641,15 @@ class ApprovalHistory(models.Model):
     )
 
     def __str__(self):
-        target = self.report_id or self.receipt_id
+        target = (
+            self.line_item_id
+            or self.receipt_id
+            or self.report_id
+        )
         return f"{target} - {self.action}"
+    
 from tenants.models import CompanyRole
 class ApprovalWorkflow(models.Model):
-
     company = models.ForeignKey(
         Company,
         on_delete=models.CASCADE,
@@ -615,12 +662,12 @@ class ApprovalWorkflow(models.Model):
     )
 
     start_role = models.ForeignKey(
-    CompanyRole,
-    on_delete=models.CASCADE,
-    related_name="starting_workflows",
-    null=True,
-    blank=True
-)
+        CompanyRole,
+        on_delete=models.CASCADE,
+        related_name="starting_workflows",
+        null=True,
+        blank=True
+    )
 
     is_active = models.BooleanField(
         default=True
@@ -643,7 +690,7 @@ class ApprovalWorkflow(models.Model):
     def __str__(self):
         return (
             f"{self.company.name} - "
-            f"{self.start_role.name}"
+            f"{self.start_role.name if self.start_role else 'No Start Role'}"
         )
 
 

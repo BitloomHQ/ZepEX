@@ -56,6 +56,15 @@ from .workflow_engine import can_user_approve_step,approve_current_step,reject_c
 from django.db import transaction
 from expenses.workflow_validator import validate_workflow
 
+from .workflow_engine import (
+    approve_current_step,
+    reject_current_step,
+    approve_receipt,
+    reject_receipt,
+    remove_receipt_line_item,
+    restore_receipt_line_item,
+)
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 @parser_classes([MultiPartParser, FormParser])
@@ -949,19 +958,30 @@ def accounts_mark_paid(request, report_id):
 
     profile = request.user.profile
 
+    # --------------------------------------------------
+    # 1. Permission check
+    # --------------------------------------------------
+
     is_company_admin = profile.role == "COMPANY_ADMIN"
 
     if not is_company_admin:
 
         if not profile.company_role:
             return Response(
-                {"error": "Your company role is not assigned."},
+                {
+                    "error": "Your company role is not assigned."
+                },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         if not profile.company_role.can_mark_paid:
             return Response(
-                {"error": "Your role is not allowed to mark reports as paid."},
+                {
+                    "error": (
+                        "Your role is not allowed to mark "
+                        "reports as paid."
+                    )
+                },
                 status=status.HTTP_403_FORBIDDEN
             )
 
@@ -970,6 +990,10 @@ def accounts_mark_paid(request, report_id):
         if is_company_admin
         else profile.company_role.name
     )
+
+    # --------------------------------------------------
+    # 2. Get report from Accounts payment queue
+    # --------------------------------------------------
 
     try:
         report = get_reports_awaiting_payment(
@@ -981,13 +1005,72 @@ def accounts_mark_paid(request, report_id):
 
     except ExpenseReport.DoesNotExist:
         return Response(
-            {"error": "Report not found in accounts/payment queue."},
+            {
+                "error": (
+                    "Report not found in accounts/payment queue."
+                )
+            },
             status=status.HTTP_404_NOT_FOUND
         )
+
+    # --------------------------------------------------
+    # 3. Final safety check
+    # --------------------------------------------------
+
+    if report.status != ExpenseReport.STATUS_APPROVED:
+        return Response(
+            {
+                "error": (
+                    "Only approved expense reports can "
+                    "be marked as paid."
+                )
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if not report.workflow_completed:
+        return Response(
+            {
+                "error": (
+                    "This report has not completed "
+                    "the approval workflow."
+                )
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # --------------------------------------------------
+    # 4. Recalculate final receipt/report totals
+    # --------------------------------------------------
+    #
+    # This is important because an approver may have:
+    #
+    # - removed a category
+    # - removed a subcategory
+    # - restored a category/subcategory
+    #
+    # The Accounts amount must use the final state.
+    # --------------------------------------------------
+
+    for receipt in report.receipts.all():
+
+        recalculate_receipt_from_line_items(receipt)
+
+    recalculate_report_total(report)
+
+    report.refresh_from_db()
+
+    # --------------------------------------------------
+    # 5. Payment notes
+    # --------------------------------------------------
 
     notes = request.data.get("notes", "").strip()
 
     previous_status = report.status
+
+    # --------------------------------------------------
+    # 6. Mark report as PAID
+    # --------------------------------------------------
 
     report.status = ExpenseReport.STATUS_PAID
     report.paid_notes = notes
@@ -996,19 +1079,39 @@ def accounts_mark_paid(request, report_id):
     report.current_workflow_step = None
     report.current_approver = None
 
-    report.save(update_fields=[
-        "status",
-        "paid_notes",
-        "paid_at",
-        "workflow_completed",
-        "current_workflow_step",
-        "current_approver",
-        "updated_at",
-    ])
+    report.save(
+        update_fields=[
+            "status",
+            "paid_notes",
+            "paid_at",
+            "workflow_completed",
+            "current_workflow_step",
+            "current_approver",
+            "updated_at",
+        ]
+    )
 
-    report.receipts.all().update(
+    # --------------------------------------------------
+    # 7. Mark only approved receipts as PAID
+    # --------------------------------------------------
+    #
+    # IMPORTANT:
+    #
+    # APPROVED receipt  -> PAID
+    # REJECTED receipt  -> remains REJECTED
+    #
+    # We must NOT blindly update every receipt.
+    # --------------------------------------------------
+
+    report.receipts.filter(
+        status=ExpenseReceipt.STATUS_APPROVED
+    ).update(
         status=ExpenseReceipt.STATUS_PAID
     )
+
+    # --------------------------------------------------
+    # 8. Approval history
+    # --------------------------------------------------
 
     ApprovalHistory.objects.create(
         report=report,
@@ -1017,17 +1120,25 @@ def accounts_mark_paid(request, report_id):
         comments=notes,
     )
 
+    # --------------------------------------------------
+    # 9. Audit log
+    # --------------------------------------------------
+
     create_audit_log(
         company=profile.company,
         action="MARKED_PAID",
         action_by=profile,
-        message=f"{actor_role} marked expense report {report.id} as paid.",
+        message=(
+            f"{actor_role} marked expense report "
+            f"{report.id} as paid."
+        ),
         metadata={
             "report_id": str(report.id),
             "employee_email": report.employee.user.email,
             "department": (
                 report.department.name
-                if report.department else None
+                if report.department
+                else None
             ),
             "total_amount": str(report.total_amount),
             "previous_status": previous_status,
@@ -1038,12 +1149,16 @@ def accounts_mark_paid(request, report_id):
         }
     )
 
+    # --------------------------------------------------
+    # 10. Payment notification
+    # --------------------------------------------------
+
     send_workflow_status_email(
         report=report,
         subject="Reimbursement Payment Completed",
         message=(
-            "Your reimbursement report has been processed by Accounts "
-            "and marked as paid."
+            "Your reimbursement report has been processed "
+            "by Accounts and marked as paid."
         ),
         action="PAID",
         action_by=profile,
@@ -1051,6 +1166,10 @@ def accounts_mark_paid(request, report_id):
         notes=notes or "Payment completed successfully.",
         notify_previous_approvers=True,
     )
+
+    # --------------------------------------------------
+    # 11. Response
+    # --------------------------------------------------
 
     serializer = ExpenseReportSerializer(report)
 
@@ -1060,6 +1179,7 @@ def accounts_mark_paid(request, report_id):
             "previous_status": previous_status,
             "paid_by": actor_role,
             "is_company_admin_override": is_company_admin,
+            "final_total_amount": str(report.total_amount),
             "report": serializer.data,
         },
         status=status.HTTP_200_OK
@@ -2625,3 +2745,562 @@ def simulate_workflow_api(request):
     })
 
 from expenses.workflow_validator import validate_workflow
+
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def approval_remove_line_item(request, line_item_id):
+    profile = request.user.profile
+
+    notes = request.data.get("notes", "").strip()
+
+    if not notes:
+        return Response(
+            {"error": "Removal reason is required."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        line_item = ExpenseLineItem.objects.select_related(
+            "receipt",
+            "receipt__report",
+            "receipt__report__current_workflow_step",
+        ).get(
+            id=line_item_id,
+            receipt__company=profile.company,
+        )
+
+    except ExpenseLineItem.DoesNotExist:
+        return Response(
+            {"error": "Line item not found."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    receipt = line_item.receipt
+    report = receipt.report
+
+    if not report:
+        return Response(
+            {"error": "Receipt is not attached to a report."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if report.status != ExpenseReport.STATUS_SUBMITTED:
+        return Response(
+            {
+                "error": (
+                    "Line items can only be removed while "
+                    "the report is pending approval."
+                )
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if report.workflow_completed:
+        return Response(
+            {"error": "Workflow has already been completed."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if not profile.company_role:
+        return Response(
+            {"error": "Your company role is not assigned."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if not profile.company_role.can_approve_expense:
+        return Response(
+            {"error": "Your role is not allowed to modify expense reports."},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    if line_item.is_removed:
+        return Response(
+            {"error": "Line item is already removed."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    line_item.is_removed = True
+    line_item.removed_by = profile
+    line_item.removed_at = timezone.now()
+    line_item.removal_reason = notes
+
+    line_item.save(update_fields=[
+        "is_removed",
+        "removed_by",
+        "removed_at",
+        "removal_reason",
+    ])
+
+    # Recalculate receipt after removing the item
+    recalculate_receipt_from_line_items(receipt)
+
+    # Recalculate monthly report
+    sync_receipt_totals_for_report(report)
+    recalculate_report_total(report)
+
+    ApprovalHistory.objects.create(
+        report=report,
+        receipt=receipt,
+        action_by=profile,
+        action=ApprovalHistory.ACTION_LINE_ITEM_UPDATED,
+        comments=(
+            f"Line item removed: "
+            f"{line_item.description or line_item.category}. "
+            f"Reason: {notes}"
+        )
+    )
+
+    create_audit_log(
+        company=profile.company,
+        action="APPROVAL_LINE_ITEM_REMOVED",
+        action_by=profile,
+        message=(
+            f"Line item removed from receipt {receipt.id} "
+            f"during approval."
+        ),
+        metadata={
+            "report_id": str(report.id),
+            "receipt_id": str(receipt.id),
+            "line_item_id": str(line_item.id),
+            "description": line_item.description,
+            "category": line_item.category,
+            "subcategory": line_item.subcategory,
+            "amount": str(line_item.amount),
+            "reason": notes,
+            "removed_by": profile.user.email,
+        }
+    )
+
+    return Response(
+        {
+            "message": "Line item removed successfully.",
+            "line_item_id": str(line_item.id),
+            "receipt_id": str(receipt.id),
+            "removed": True,
+            "reason": notes,
+        },
+        status=status.HTTP_200_OK
+    )
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def approval_restore_line_item(request, line_item_id):
+    profile = request.user.profile
+
+    notes = request.data.get("notes", "").strip()
+
+    if not notes:
+        return Response(
+            {"error": "Restore reason is required."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        line_item = ExpenseLineItem.objects.select_related(
+            "receipt",
+            "receipt__report",
+        ).get(
+            id=line_item_id,
+            receipt__company=profile.company,
+        )
+
+    except ExpenseLineItem.DoesNotExist:
+        return Response(
+            {"error": "Line item not found."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    receipt = line_item.receipt
+    report = receipt.report
+
+    if not report:
+        return Response(
+            {"error": "Receipt is not attached to a report."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if report.status != ExpenseReport.STATUS_SUBMITTED:
+        return Response(
+            {
+                "error": (
+                    "Line items can only be restored while "
+                    "the report is pending approval."
+                )
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if report.workflow_completed:
+        return Response(
+            {"error": "Workflow has already been completed."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if not profile.company_role:
+        return Response(
+            {"error": "Your company role is not assigned."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if not profile.company_role.can_approve_expense:
+        return Response(
+            {"error": "Your role is not allowed to modify expense reports."},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    if not line_item.is_removed:
+        return Response(
+            {"error": "Line item is not currently removed."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    line_item.is_removed = False
+    line_item.removed_by = None
+    line_item.removed_at = None
+    line_item.removal_reason = ""
+
+    line_item.save(update_fields=[
+        "is_removed",
+        "removed_by",
+        "removed_at",
+        "removal_reason",
+    ])
+
+    recalculate_receipt_from_line_items(receipt)
+
+    sync_receipt_totals_for_report(report)
+    recalculate_report_total(report)
+
+    ApprovalHistory.objects.create(
+        report=report,
+        receipt=receipt,
+        action_by=profile,
+        action=ApprovalHistory.ACTION_LINE_ITEM_RESTORED,
+        comments=(
+            f"Line item restored: "
+            f"{line_item.description or line_item.category}. "
+            f"Reason: {notes}"
+        )
+    )
+
+    create_audit_log(
+        company=profile.company,
+        action="APPROVAL_LINE_ITEM_RESTORED",
+        action_by=profile,
+        message=(
+            f"Line item restored on receipt {receipt.id} "
+            f"during approval."
+        ),
+        metadata={
+            "report_id": str(report.id),
+            "receipt_id": str(receipt.id),
+            "line_item_id": str(line_item.id),
+            "description": line_item.description,
+            "category": line_item.category,
+            "subcategory": line_item.subcategory,
+            "amount": str(line_item.amount),
+            "reason": notes,
+            "restored_by": profile.user.email,
+        }
+    )
+
+    return Response(
+        {
+            "message": "Line item restored successfully.",
+            "line_item_id": str(line_item.id),
+            "receipt_id": str(receipt.id),
+            "removed": False,
+        },
+        status=status.HTTP_200_OK
+    )
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def approve_receipt_api(request, report_id, receipt_id):
+
+    profile = request.user.profile
+
+    try:
+        report = ExpenseReport.objects.select_related(
+            "employee",
+            "employee__user",
+            "department",
+            "current_workflow_step",
+            "current_workflow_step__workflow",
+            "current_workflow_step__approver_role",
+            "current_workflow_step__specific_user",
+            "current_workflow_step__specific_user__user",
+            "current_workflow_step__department",
+            "current_approver",
+            "current_approver__user",
+        ).get(
+            id=report_id,
+            company=profile.company,
+            workflow_completed=False,
+            status=ExpenseReport.STATUS_SUBMITTED,
+        )
+
+    except ExpenseReport.DoesNotExist:
+        return Response(
+            {"error": "Report not found or not pending approval."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    try:
+        receipt = ExpenseReceipt.objects.get(
+            id=receipt_id,
+            report=report,
+            company=profile.company,
+        )
+
+    except ExpenseReceipt.DoesNotExist:
+        return Response(
+            {"error": "Receipt not found in this report."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    notes = request.data.get("notes", "").strip()
+
+    success, result = approve_receipt(
+        report=report,
+        receipt=receipt,
+        approver_profile=profile,
+        notes=notes,
+    )
+
+    if not success:
+        return Response(
+            {"error": result},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    return Response(
+        {
+            "message": "Receipt approved successfully.",
+            "receipt_id": str(receipt.id),
+            "status": receipt.status,
+            "notes": notes,
+        },
+        status=status.HTTP_200_OK,
+    )
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def reject_receipt_api(request, report_id, receipt_id):
+
+    profile = request.user.profile
+
+    notes = request.data.get("notes", "").strip()
+
+    if not notes:
+        return Response(
+            {"error": "Rejection reason is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        report = ExpenseReport.objects.select_related(
+            "employee",
+            "employee__user",
+            "department",
+            "current_workflow_step",
+            "current_workflow_step__workflow",
+            "current_workflow_step__approver_role",
+            "current_workflow_step__specific_user",
+            "current_workflow_step__specific_user__user",
+            "current_workflow_step__department",
+            "current_approver",
+            "current_approver__user",
+        ).get(
+            id=report_id,
+            company=profile.company,
+            workflow_completed=False,
+            status=ExpenseReport.STATUS_SUBMITTED,
+        )
+
+    except ExpenseReport.DoesNotExist:
+        return Response(
+            {"error": "Report not found or not pending approval."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    try:
+        receipt = ExpenseReceipt.objects.get(
+            id=receipt_id,
+            report=report,
+            company=profile.company,
+        )
+
+    except ExpenseReceipt.DoesNotExist:
+        return Response(
+            {"error": "Receipt not found in this report."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    success, result = reject_receipt(
+        report=report,
+        receipt=receipt,
+        approver_profile=profile,
+        notes=notes,
+    )
+
+    if not success:
+        return Response(
+            {"error": result},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    return Response(
+        {
+            "message": "Receipt rejected successfully.",
+            "receipt_id": str(receipt.id),
+            "status": receipt.status,
+            "reason": notes,
+        },
+        status=status.HTTP_200_OK,
+    )
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def remove_receipt_line_item_api(request, report_id, line_item_id):
+
+    profile = request.user.profile
+
+    reason = request.data.get("reason", "").strip()
+
+    if not reason:
+        return Response(
+            {"error": "Removal reason is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        report = ExpenseReport.objects.select_related(
+            "current_workflow_step",
+            "current_workflow_step__workflow",
+        ).get(
+            id=report_id,
+            company=profile.company,
+            workflow_completed=False,
+            status=ExpenseReport.STATUS_SUBMITTED,
+        )
+
+    except ExpenseReport.DoesNotExist:
+        return Response(
+            {"error": "Report not found or not pending approval."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    try:
+        line_item = ExpenseLineItem.objects.select_related(
+            "receipt",
+            "receipt__report",
+        ).get(
+            id=line_item_id,
+            receipt__report=report,
+            receipt__company=profile.company,
+        )
+
+    except ExpenseLineItem.DoesNotExist:
+        return Response(
+            {"error": "Line item not found in this report."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    success, result = remove_receipt_line_item(
+        report=report,
+        line_item=line_item,
+        approver_profile=profile,
+        reason=reason,
+    )
+
+    if not success:
+        return Response(
+            {"error": result},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    return Response(
+        {
+            "message": "Line item removed successfully.",
+            "line_item_id": str(line_item.id),
+            "receipt_id": str(line_item.receipt_id),
+            "category": line_item.category,
+            "subcategory": line_item.subcategory,
+            "status": {
+                "is_removed": line_item.is_removed,
+                "is_deleted": line_item.is_deleted,
+            },
+            "reason": reason,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def restore_receipt_line_item_api(request, report_id, line_item_id):
+
+    profile = request.user.profile
+
+    notes = request.data.get("notes", "").strip()
+
+    try:
+        report = ExpenseReport.objects.select_related(
+            "current_workflow_step",
+            "current_workflow_step__workflow",
+        ).get(
+            id=report_id,
+            company=profile.company,
+            workflow_completed=False,
+            status=ExpenseReport.STATUS_SUBMITTED,
+        )
+
+    except ExpenseReport.DoesNotExist:
+        return Response(
+            {"error": "Report not found or not pending approval."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    try:
+        line_item = ExpenseLineItem.objects.select_related(
+            "receipt",
+            "receipt__report",
+        ).get(
+            id=line_item_id,
+            receipt__report=report,
+            receipt__company=profile.company,
+        )
+
+    except ExpenseLineItem.DoesNotExist:
+        return Response(
+            {"error": "Line item not found in this report."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    success, result = restore_receipt_line_item(
+        report=report,
+        line_item=line_item,
+        approver_profile=profile,
+        notes=notes,
+    )
+
+    if not success:
+        return Response(
+            {"error": result},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    return Response(
+        {
+            "message": "Line item restored successfully.",
+            "line_item_id": str(line_item.id),
+            "receipt_id": str(line_item.receipt_id),
+            "category": line_item.category,
+            "subcategory": line_item.subcategory,
+            "status": {
+                "is_removed": line_item.is_removed,
+                "is_deleted": line_item.is_deleted,
+            },
+            "notes": notes,
+        },
+        status=status.HTTP_200_OK,
+    )

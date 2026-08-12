@@ -930,26 +930,60 @@ def resync_draft_receipts_to_company_currency(company):
 
 
 def recalculate_receipt_from_line_items(receipt):
+    from decimal import Decimal
     from django.db.models import Sum
+    from django.utils import timezone
 
     from .currency_services import convert_currency
 
+    # --------------------------------------------------
+    # 1. Sanitize line items
+    # --------------------------------------------------
+
     sanitize_receipt_line_items(receipt)
 
-    line_total = receipt.line_items.aggregate(total=Sum("amount"))["total"] or Decimal(
-        "0.00"
+    # --------------------------------------------------
+    # 2. Get ONLY active line items
+    #
+    # Removed/deleted items must not contribute
+    # to the receipt amount.
+    # --------------------------------------------------
+
+    active_line_items = receipt.line_items.filter(
+        is_removed=False,
+        is_deleted=False,
     )
 
+    # --------------------------------------------------
+    # 3. Calculate total from active line items
+    # --------------------------------------------------
+
+    line_total = (
+        active_line_items.aggregate(
+            total=Sum("amount")
+        )["total"]
+        or Decimal("0.00")
+    )
+
+    # --------------------------------------------------
+    # 4. No active line items
+    # --------------------------------------------------
+
     if line_total <= Decimal("0.00"):
+
         receipt.original_amount = Decimal("0.00")
         receipt.company_amount = Decimal("0.00")
         receipt.total_amount = Decimal("0.00")
+
+        # No active expense remains in this receipt.
         receipt.has_duplicate_violation = False
         receipt.has_old_bill_violation = False
         receipt.has_amount_violation = False
         receipt.has_any_violation = False
         receipt.policy_violation_reason = ""
+
         receipt.status = ExpenseReceipt.STATUS_VALID
+
         receipt.save(
             update_fields=[
                 "original_amount",
@@ -964,17 +998,43 @@ def recalculate_receipt_from_line_items(receipt):
                 "updated_at",
             ]
         )
+
+    # --------------------------------------------------
+    # 5. Active line items exist
+    # --------------------------------------------------
+
     else:
+
         finance_settings = receipt.company.finance_settings
+
         company_currency = (
             finance_settings.base_currency.code
-            if finance_settings and finance_settings.base_currency
-            else receipt.company_currency or receipt.original_currency or "INR"
+            if (
+                finance_settings
+                and finance_settings.base_currency
+            )
+            else (
+                receipt.company_currency
+                or receipt.original_currency
+                or "INR"
+            )
         ).upper()
+
+        # --------------------------------------------------
+        # Original receipt amount
+        # --------------------------------------------------
 
         receipt.original_amount = line_total
 
-        if finance_settings and finance_settings.auto_currency_conversion:
+        # --------------------------------------------------
+        # Currency conversion
+        # --------------------------------------------------
+
+        if (
+            finance_settings
+            and finance_settings.auto_currency_conversion
+        ):
+
             conversion_result = convert_currency(
                 amount=receipt.original_amount,
                 from_currency=receipt.original_currency,
@@ -983,27 +1043,68 @@ def recalculate_receipt_from_line_items(receipt):
             )
 
             if conversion_result.get("success"):
-                receipt.company_amount = conversion_result["company_amount"]
-                receipt.company_currency = conversion_result["company_currency"]
-                receipt.exchange_rate = conversion_result["exchange_rate"]
-                receipt.exchange_rate_date = conversion_result["exchange_rate_date"]
-                receipt.exchange_rate_provider = conversion_result[
-                    "exchange_rate_provider"
-                ]
+
+                receipt.company_amount = (
+                    conversion_result["company_amount"]
+                )
+
+                receipt.company_currency = (
+                    conversion_result["company_currency"]
+                )
+
+                receipt.exchange_rate = (
+                    conversion_result["exchange_rate"]
+                )
+
+                receipt.exchange_rate_date = (
+                    conversion_result["exchange_rate_date"]
+                )
+
+                receipt.exchange_rate_provider = (
+                    conversion_result[
+                        "exchange_rate_provider"
+                    ]
+                )
+
             else:
-                receipt.company_amount = receipt.original_amount
-                receipt.company_currency = receipt.original_currency
+
+                # Fallback if conversion fails
+                receipt.company_amount = (
+                    receipt.original_amount
+                )
+
+                receipt.company_currency = (
+                    receipt.original_currency
+                )
+
                 receipt.exchange_rate = None
                 receipt.exchange_rate_date = None
                 receipt.exchange_rate_provider = None
+
         else:
-            receipt.company_amount = receipt.original_amount
-            receipt.company_currency = receipt.original_currency or company_currency
+
+            # Currency conversion disabled
+            receipt.company_amount = (
+                receipt.original_amount
+            )
+
+            receipt.company_currency = (
+                receipt.original_currency
+                or company_currency
+            )
+
             receipt.exchange_rate = Decimal("1")
             receipt.exchange_rate_date = timezone.now()
-            receipt.exchange_rate_provider = "Conversion Disabled"
+            receipt.exchange_rate_provider = (
+                "Conversion Disabled"
+            )
+
+        # --------------------------------------------------
+        # Final receipt amount
+        # --------------------------------------------------
 
         receipt.total_amount = receipt.company_amount
+
         receipt.save(
             update_fields=[
                 "original_amount",
@@ -1016,11 +1117,32 @@ def recalculate_receipt_from_line_items(receipt):
                 "updated_at",
             ]
         )
+
+        # --------------------------------------------------
+        # 6. Re-run policy validation
+        #
+        # This is IMPORTANT.
+        #
+        # Example:
+        #
+        # Receipt:
+        #   Food       ₹500
+        #   Beer       ₹200
+        #
+        # Approver removes Beer.
+        #
+        # We now validate the receipt again using
+        # only the remaining active line items.
+        # --------------------------------------------------
+
         check_policy_violations(receipt)
+
+    # --------------------------------------------------
+    # 7. Recalculate monthly report total
+    # --------------------------------------------------
 
     if receipt.report_id:
         recalculate_report_total(receipt.report)
-
 
 def sync_receipt_totals_for_report(report):
     from django.db.models import Sum

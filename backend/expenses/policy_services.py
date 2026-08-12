@@ -26,9 +26,11 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
         receipt.status = (
             ExpenseReceipt.STATUS_POLICY_VIOLATION
         )
+
         receipt.policy_violation_reason = (
             "No company policy configured."
         )
+
         receipt.has_any_violation = True
 
         receipt.save(
@@ -63,33 +65,62 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
         or receipt.original_currency
     )
 
-    # Load line items once
+    # =====================================================
+    # 3. Load ONLY ACTIVE Line Items
+    # =====================================================
+    #
+    # Removed line item:
+    #     is_removed = True
+    #
+    # Deleted line item:
+    #     is_deleted = True
+    #
+    # Both must NOT participate in policy validation.
+    # =====================================================
+
     line_items = list(
-        receipt.line_items.all()
+        receipt.line_items.filter(
+            is_removed=False,
+            is_deleted=False,
+        )
     )
 
     line_items_count = len(line_items)
 
     # =====================================================
-    # 3. Resolve Policy Rule for Every Line Item
+    # 4. No Active Line Items
     # =====================================================
 
-    # Structure:
-    #
-    # {
-    #     "Meals": {
-    #         "rule": PolicyCategoryRule,
-    #         "items": [...]
-    #     },
-    #     "Travel": {
-    #         "rule": PolicyCategoryRule,
-    #         "items": [...]
-    #     }
-    # }
+    if not line_items:
+
+        receipt.has_amount_violation = False
+        receipt.has_any_violation = False
+        receipt.policy_violation_reason = None
+        receipt.status = ExpenseReceipt.STATUS_VALID
+
+        receipt.save(
+            update_fields=[
+                "status",
+                "has_amount_violation",
+                "has_any_violation",
+                "policy_violation_reason",
+            ]
+        )
+
+        return {
+            "success": True,
+            "has_violations": False,
+            "violations": [],
+            "next_status": receipt.status,
+            "policy_currency": company_currency,
+        }
+
+    # =====================================================
+    # 5. Resolve Policy Rule for Every Active Line Item
+    # =====================================================
 
     grouped_rules = {}
 
-    # Items which don't have a policy
     items_without_policy = []
 
     for item in line_items:
@@ -104,12 +135,16 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
         )
 
         if not rule:
+
             items_without_policy.append(item)
+
             continue
 
-        # Use category_name because that is the
-        # actual field in PolicyCategoryRule.
-        cache_key = rule.category_name.strip().lower()
+        cache_key = (
+            rule.category_name
+            .strip()
+            .lower()
+        )
 
         if cache_key not in grouped_rules:
 
@@ -121,7 +156,7 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
         grouped_rules[cache_key]["items"].append(item)
 
     # =====================================================
-    # 4. Handle Items Without Policy
+    # 6. Handle Items Without Policy
     # =====================================================
 
     for item in items_without_policy:
@@ -149,7 +184,6 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
 
         violations.append(reason)
 
-        # Make sure the object still exists before saving.
         if item.__class__.objects.filter(
             pk=item.pk
         ).exists():
@@ -162,9 +196,7 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
             )
 
     # =====================================================
-    # 5. Gemini Validation
-    #
-    # One Gemini request per policy category.
+    # 7. AI Policy Validation
     # =====================================================
 
     ai_results = {}
@@ -185,9 +217,6 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
 
         except Exception as exc:
 
-            # Do not silently approve expenses if
-            # Gemini validation fails.
-
             reason = (
                 f"{rule.category_name}: "
                 f"AI policy validation failed: {str(exc)}"
@@ -199,6 +228,7 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
                 item.violation_reason = reason
 
                 receipt.has_amount_violation = True
+
                 violations.append(reason)
 
                 if item.__class__.objects.filter(
@@ -215,7 +245,7 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
             continue
 
     # =====================================================
-    # 6. Process AI Results + Amount Rules
+    # 8. Process AI Results + Amount Rules
     # =====================================================
 
     for category_key, group in grouped_rules.items():
@@ -223,8 +253,6 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
         rule = group["rule"]
         items = group["items"]
 
-        # If Gemini failed for this category,
-        # it was already marked above.
         if category_key not in ai_results:
             continue
 
@@ -394,7 +422,7 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
                 )
 
     # =====================================================
-    # 7. Final Receipt Status
+    # 9. Final Receipt Status
     # =====================================================
 
     if violations:
@@ -419,7 +447,7 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
         receipt.has_any_violation = False
 
     # =====================================================
-    # 8. Save Receipt
+    # 10. Save Receipt
     # =====================================================
 
     receipt.save(
@@ -432,7 +460,7 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
     )
 
     # =====================================================
-    # 9. Audit Log
+    # 11. Audit Log
     # =====================================================
 
     create_audit_log(
@@ -455,7 +483,7 @@ def validate_receipt_policy(receipt: ExpenseReceipt):
     )
 
     # =====================================================
-    # 10. Result
+    # 12. Result
     # =====================================================
 
     return {

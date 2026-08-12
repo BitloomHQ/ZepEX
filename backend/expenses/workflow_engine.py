@@ -1,5 +1,7 @@
+from django.db import transaction
 from django.utils import timezone
 
+from .services import recalculate_receipt_from_line_items, recalculate_report_total
 from tenants.models import UserProfile
 from expenses.models import (
     ApprovalWorkflow,
@@ -355,29 +357,76 @@ def approve_current_step(report, approver_profile, notes=""):
     }
 
 
+from django.db import transaction
+
+
+@transaction.atomic
 def complete_workflow(report, approver_profile):
+    # --------------------------------------------------
+    # 1. Recalculate all receipt totals
+    # --------------------------------------------------
+    #
+    # This ensures removed/restored line items are reflected
+    # in the final reimbursement amount.
+    #
+    for receipt in report.receipts.all():
+        recalculate_receipt_from_line_items(receipt)
+
+    # --------------------------------------------------
+    # 2. Recalculate final monthly report total
+    # --------------------------------------------------
+
+    recalculate_report_total(report)
+    report.refresh_from_db()
+
+    # --------------------------------------------------
+    # 3. Complete workflow
+    # --------------------------------------------------
+
     report.workflow_completed = True
     report.status = ExpenseReport.STATUS_APPROVED
     report.current_workflow_step = None
     report.current_approver = None
 
-    report.save(update_fields=[
-        "workflow_completed",
-        "status",
-        "current_workflow_step",
-        "current_approver",
-        "updated_at",
-    ])
+    report.save(
+        update_fields=[
+            "workflow_completed",
+            "status",
+            "current_workflow_step",
+            "current_approver",
+            "updated_at",
+        ]
+    )
 
-    report.receipts.all().update(
+    # --------------------------------------------------
+    # 4. Approve only receipts that were not rejected
+    # --------------------------------------------------
+    #
+    # IMPORTANT:
+    # A receipt that the approver explicitly rejected
+    # must remain REJECTED.
+    #
+    report.receipts.exclude(
+        status=ExpenseReceipt.STATUS_REJECTED
+    ).update(
         status=ExpenseReceipt.STATUS_APPROVED
+    )
+
+    # --------------------------------------------------
+    # 5. Record workflow completion in ApprovalHistory
+    # --------------------------------------------------
+
+    ApprovalHistory.objects.create(
+        report=report,
+        action_by=approver_profile,
+        action=ApprovalHistory.ACTION_STEP_APPROVED,
+        comments="Final approval workflow step completed.",
     )
 
     return True, {
         "completed": True,
         "approved_by": approver_profile,
     }
-
 
 def reject_current_step(report, approver_profile, notes):
     current_step = report.current_workflow_step
@@ -534,3 +583,249 @@ def reorder_workflow_steps(workflow):
         step.save(update_fields=["step_order"])
 
     return active_steps    
+
+
+from django.db import transaction
+from django.utils import timezone
+
+
+@transaction.atomic
+def approve_receipt(
+    *,
+    report,
+    receipt,
+    approver_profile,
+    notes="",
+):
+    current_step = report.current_workflow_step
+
+    if not current_step:
+        return False, "Current workflow step not found."
+
+    if receipt.report_id != report.id:
+        return False, "Receipt does not belong to this report."
+
+    allowed, error = can_user_approve_step(
+        approver_profile,
+        report,
+        current_step,
+    )
+
+    if not allowed:
+        return False, error
+
+    if receipt.status == ExpenseReceipt.STATUS_REJECTED:
+        return False, "This receipt has already been rejected."
+
+    receipt.status = ExpenseReceipt.STATUS_APPROVED
+
+    receipt.save(
+        update_fields=[
+            "status",
+            "updated_at",
+        ]
+    )
+
+    ApprovalHistory.objects.create(
+        report=report,
+        receipt=receipt,
+        action_by=approver_profile,
+        action=ApprovalHistory.ACTION_RECEIPT_APPROVED,
+        comments=notes.strip() if notes else "",
+    )
+
+    return True, {
+        "receipt": receipt,
+        "approved": True,
+    }
+
+
+@transaction.atomic
+def reject_receipt(
+    *,
+    report,
+    receipt,
+    approver_profile,
+    notes,
+):
+    current_step = report.current_workflow_step
+
+    if not current_step:
+        return False, "Current workflow step not found."
+
+    if receipt.report_id != report.id:
+        return False, "Receipt does not belong to this report."
+
+    allowed, error = can_user_approve_step(
+        approver_profile,
+        report,
+        current_step,
+    )
+
+    if not allowed:
+        return False, error
+
+    if not notes or not notes.strip():
+        return False, "Rejection reason is required."
+
+    receipt.status = ExpenseReceipt.STATUS_REJECTED
+
+    receipt.save(
+        update_fields=[
+            "status",
+            "updated_at",
+        ]
+    )
+
+    ApprovalHistory.objects.create(
+        report=report,
+        receipt=receipt,
+        action_by=approver_profile,
+        action=ApprovalHistory.ACTION_RECEIPT_REJECTED,
+        comments=notes.strip(),
+    )
+
+    return True, {
+        "receipt": receipt,
+        "rejected": True,
+        "reason": notes.strip(),
+    }
+
+
+@transaction.atomic
+def remove_receipt_line_item(
+    *,
+    report,
+    line_item,
+    approver_profile,
+    reason,
+):
+    current_step = report.current_workflow_step
+
+    if not current_step:
+        return False, "Current workflow step not found."
+
+    if line_item.receipt.report_id != report.id:
+        return False, "Line item does not belong to this report."
+
+    allowed, error = can_user_approve_step(
+        approver_profile,
+        report,
+        current_step,
+    )
+
+    if not allowed:
+        return False, error
+
+    if not reason or not reason.strip():
+        return False, "Removal reason is required."
+
+    if line_item.is_removed:
+        return False, "This line item has already been removed."
+
+    if line_item.is_deleted:
+        return False, "This line item has been deleted and cannot be removed."
+
+    line_item.is_removed = True
+    line_item.removed_by = approver_profile
+    line_item.removed_at = timezone.now()
+    line_item.removal_reason = reason.strip()
+
+    line_item.save(
+        update_fields=[
+            "is_removed",
+            "removed_by",
+            "removed_at",
+            "removal_reason",
+        ]
+    )
+
+    receipt = line_item.receipt
+
+    recalculate_receipt_from_line_items(receipt)
+
+    if report:
+        recalculate_report_total(report)
+
+    ApprovalHistory.objects.create(
+        report=report,
+        receipt=receipt,
+        line_item=line_item,
+        action_by=approver_profile,
+        action=ApprovalHistory.ACTION_LINE_ITEM_REMOVED,
+        comments=reason.strip(),
+    )
+
+    return True, {
+        "line_item": line_item,
+        "receipt": receipt,
+        "removed": True,
+    }
+
+
+@transaction.atomic
+def restore_receipt_line_item(
+    *,
+    report,
+    line_item,
+    approver_profile,
+    notes="",
+):
+    current_step = report.current_workflow_step
+
+    if not current_step:
+        return False, "Current workflow step not found."
+
+    if line_item.receipt.report_id != report.id:
+        return False, "Line item does not belong to this report."
+
+    allowed, error = can_user_approve_step(
+        approver_profile,
+        report,
+        current_step,
+    )
+
+    if not allowed:
+        return False, error
+
+    if line_item.is_deleted:
+        return False, "Deleted line items cannot be restored."
+
+    if not line_item.is_removed:
+        return False, "This line item is not removed."
+
+    line_item.is_removed = False
+    line_item.removed_by = None
+    line_item.removed_at = None
+    line_item.removal_reason = ""
+
+    line_item.save(
+        update_fields=[
+            "is_removed",
+            "removed_by",
+            "removed_at",
+            "removal_reason",
+        ]
+    )
+
+    receipt = line_item.receipt
+
+    recalculate_receipt_from_line_items(receipt)
+
+    if report:
+        recalculate_report_total(report)
+
+    ApprovalHistory.objects.create(
+        report=report,
+        receipt=receipt,
+        line_item=line_item,
+        action_by=approver_profile,
+        action=ApprovalHistory.ACTION_LINE_ITEM_RESTORED,
+        comments=notes.strip() if notes else "",
+    )
+
+    return True, {
+        "line_item": line_item,
+        "receipt": receipt,
+        "restored": True,
+    }
