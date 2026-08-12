@@ -1,10 +1,11 @@
 import { StatusBadge } from '@/components/StatusBadge'
 import { Badge } from '@/components/ui/badge'
+import { ApprovalHistoryPanel } from '@/components/reports/ApprovalHistoryPanel'
 import { CompanyAdminOverrideBadge } from '@/components/reports/CompanyAdminOverrideBadge'
 import { ReceiptExpenseCard } from '@/components/reports/ReceiptExpenseCard'
 import { WorkflowTimeline } from '@/components/reports/WorkflowTimeline'
 import { UserAvatar } from '@/components/ui/user-avatar'
-import type { ExpenseReport } from '@/types'
+import type { ExpenseReport, ReportApprovalContext } from '@/types'
 import { formatDate, formatDateTime } from '@/lib/utils'
 import { formatReportTotal } from '@/lib/receiptDisplay'
 
@@ -12,6 +13,7 @@ interface ReportDetailProps {
   report: ExpenseReport
   showEmployee?: boolean
   showAdminOverride?: boolean
+  approvalContext?: ReportApprovalContext
 }
 
 function approvalTypeLabel(approvalType: string | null | undefined): string | null {
@@ -30,6 +32,7 @@ export function ReportDetail({
   report,
   showEmployee = true,
   showAdminOverride = false,
+  approvalContext,
 }: ReportDetailProps) {
   const approvalLabel = approvalTypeLabel(report.approval_type)
 
@@ -62,10 +65,17 @@ export function ReportDetail({
         <span className="text-sm text-muted-foreground">
           {report.department_name} · {formatDate(report.month)}
         </span>
+        <span className="w-full text-2xl font-semibold tabular-nums tracking-tight text-slate-900 sm:ml-auto sm:w-auto sm:text-xl">
+          {formatReportTotal(report)}
+        </span>
       </div>
 
       {report.workflow_timeline && report.workflow_timeline.length > 0 && (
         <WorkflowTimeline timeline={report.workflow_timeline} />
+      )}
+
+      {report.approval_history && report.approval_history.length > 0 && (
+        <ApprovalHistoryPanel history={report.approval_history} />
       )}
 
       <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
@@ -114,7 +124,11 @@ export function ReportDetail({
             Receipts ({report.receipts.length})
           </p>
           {report.receipts.map((receipt) => (
-            <ReceiptExpenseCard key={receipt.id} receipt={receipt} />
+            <ReceiptExpenseCard
+              key={receipt.id}
+              receipt={receipt}
+              approvalContext={approvalContext}
+            />
           ))}
         </div>
       )}

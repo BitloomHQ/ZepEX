@@ -4,6 +4,7 @@ import { ReportDetail } from '@/components/ReportDetail'
 import { ExpenseReportTable } from '@/components/reports/ExpenseReportTable'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
+import { createReportApprovalContext } from '@/lib/reportApprovalHandlers'
 import type { QueuedReport } from '@/lib/reportQueue'
 
 interface ReportQueueTableProps {
@@ -14,6 +15,7 @@ interface ReportQueueTableProps {
   onApprove?: (reportId: string) => void
   onReject?: (reportId: string) => void
   onMarkPaid?: (reportId: string) => void
+  onRefresh?: () => Promise<void>
   showAdminOverride?: boolean
 }
 
@@ -25,6 +27,7 @@ export function ReportQueueTable({
   onApprove,
   onReject,
   onMarkPaid,
+  onRefresh,
   showAdminOverride,
 }: ReportQueueTableProps) {
   return (
@@ -93,6 +96,7 @@ export function ReportQueueTable({
             onApprove={onApprove}
             onReject={onReject}
             onMarkPaid={onMarkPaid}
+            onRefresh={onRefresh}
             showAdminOverride={showAdminOverride}
           />
         )
@@ -112,6 +116,7 @@ function ExpandedReportPanel({
   onApprove,
   onReject,
   onMarkPaid,
+  onRefresh,
   showAdminOverride,
 }: {
   report: QueuedReport['report']
@@ -124,14 +129,26 @@ function ExpandedReportPanel({
   onApprove?: (reportId: string) => void
   onReject?: (reportId: string) => void
   onMarkPaid?: (reportId: string) => void
+  onRefresh?: () => Promise<void>
   showAdminOverride?: boolean
 }) {
+  const approvalContext =
+    showApprovalActions && onRefresh
+      ? createReportApprovalContext(report.id, {
+          enabled: true,
+          busy: actionId === report.id,
+          onRefresh,
+        })
+      : undefined
+
   let actions: ReactNode = null
 
   if (showApprovalActions) {
     actions = (
       <div className="space-y-3 rounded-lg border border-[#e2e8f0] bg-white px-4 py-3">
-        <p className="text-sm font-medium text-gray-900">{employeeLabel}</p>
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <p className="text-sm font-medium text-gray-900">{employeeLabel}</p>
+        </div>
         <Textarea
           placeholder="Notes (required for rejection)"
           value={notes}
@@ -167,7 +184,9 @@ function ExpandedReportPanel({
   } else if (showPaymentActions) {
     actions = (
       <div className="space-y-3 rounded-lg border border-[#e2e8f0] bg-white px-4 py-3">
-        <p className="text-sm font-medium text-gray-900">{employeeLabel}</p>
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <p className="text-sm font-medium text-gray-900">{employeeLabel}</p>
+        </div>
         <Textarea
           placeholder="Payment notes (optional)"
           value={notes}
@@ -191,7 +210,12 @@ function ExpandedReportPanel({
   return (
     <div className="space-y-4">
       {actions}
-      <ReportDetail report={report} showEmployee={false} showAdminOverride={showAdminOverride} />
+      <ReportDetail
+        report={report}
+        showEmployee={false}
+        showAdminOverride={showAdminOverride}
+        approvalContext={approvalContext}
+      />
     </div>
   )
 }

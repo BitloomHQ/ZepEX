@@ -58,8 +58,26 @@ export function reportDisplayCurrency(report: ExpenseReport): string {
   return 'USD'
 }
 
+export function reportTotalAmount(report: ExpenseReport): number {
+  const stored = Number(report.total_amount)
+  if (Number.isFinite(stored) && stored > 0) {
+    return stored
+  }
+
+  let sum = 0
+  for (const receipt of report.receipts ?? []) {
+    const amount = Number(receipt.company_amount ?? receipt.total_amount ?? 0)
+    if (Number.isFinite(amount) && amount > 0) {
+      sum += amount
+    }
+  }
+  return sum
+}
+
 export function formatReportTotal(report: ExpenseReport): string {
-  return formatCurrency(report.total_amount, reportDisplayCurrency(report))
+  const total = reportTotalAmount(report)
+  const displayAmount = total > 0 ? total : Number(report.total_amount) || 0
+  return formatCurrency(displayAmount, reportDisplayCurrency(report))
 }
 
 /** Line items are stored in the receipt's original currency; convert for display when totals were converted. */

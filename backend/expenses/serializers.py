@@ -36,11 +36,6 @@ class ExpenseLineItemSerializer(serializers.ModelSerializer):
             "removed_at",
             "removal_reason",
 
-            # Deleted fields
-            "is_deleted",
-            "deleted_at",
-            "deleted_by",
-
             "created_at",
         ]
         read_only_fields = [
@@ -50,9 +45,6 @@ class ExpenseLineItemSerializer(serializers.ModelSerializer):
             "removed_by",
             "removed_at",
             "removal_reason",
-            "is_deleted",
-            "deleted_at",
-            "deleted_by",
             "created_at",
         ]
 

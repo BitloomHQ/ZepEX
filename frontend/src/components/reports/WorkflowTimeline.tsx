@@ -98,8 +98,20 @@ interface WorkflowProgressProps {
   variant?: 'compact' | 'detailed'
 }
 
+const auditTimelineStatuses = new Set([
+  'LINE_ITEM_REMOVED',
+  'LINE_ITEM_RESTORED',
+  'LINE_ITEM_UPDATED',
+])
+
+function workflowStepsOnly(timeline: WorkflowTimelineEntry[]) {
+  return timeline.filter((entry) => !auditTimelineStatuses.has(entry.status))
+}
+
 export function WorkflowProgress({ timeline, variant = 'detailed' }: WorkflowProgressProps) {
-  if (!timeline.length) {
+  const displayTimeline = variant === 'compact' ? workflowStepsOnly(timeline) : timeline
+
+  if (!displayTimeline.length) {
     return variant === 'compact' ? (
       <span className="text-xs text-muted-foreground">—</span>
     ) : null
@@ -108,12 +120,12 @@ export function WorkflowProgress({ timeline, variant = 'detailed' }: WorkflowPro
   if (variant === 'compact') {
     return (
       <div className="flex items-center" aria-label="Workflow progress">
-        {timeline.map((entry, index) => {
+        {displayTimeline.map((entry, index) => {
           const completed = isCompletedStatus(entry.status)
-          const isLast = index === timeline.length - 1
+          const isLast = index === displayTimeline.length - 1
 
           return (
-            <div key={`${entry.step_order}-${entry.step_name}`} className="flex items-center">
+            <div key={`${entry.step_order}-${entry.step_name}-${index}`} className="flex items-center">
               <StepNode status={entry.status} size="sm" />
               {!isLast && (
                 <div
@@ -131,14 +143,14 @@ export function WorkflowProgress({ timeline, variant = 'detailed' }: WorkflowPro
     <div className="rounded-lg border bg-muted/20 p-4">
       <p className="mb-4 text-sm font-semibold text-foreground">Workflow progress</p>
       <div className="flex w-full items-start">
-        {timeline.map((entry, index) => {
+        {displayTimeline.map((entry, index) => {
           const completed = isCompletedStatus(entry.status)
-          const isLast = index === timeline.length - 1
-          const nextCompleted = isCompletedStatus(timeline[index + 1]?.status ?? '')
+          const isLast = index === displayTimeline.length - 1
+          const nextCompleted = isCompletedStatus(displayTimeline[index + 1]?.status ?? '')
 
           return (
             <div
-              key={`${entry.step_order}-${entry.step_name}`}
+              key={`${entry.step_order}-${entry.step_name}-${index}`}
               className="flex min-w-0 flex-1 flex-col items-center"
             >
               <div className="flex w-full items-center">

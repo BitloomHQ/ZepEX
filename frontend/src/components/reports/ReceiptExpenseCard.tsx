@@ -1,12 +1,15 @@
 import { useMemo, useState } from 'react'
 import {
   AlertTriangle,
+  Check,
   ChevronDown,
   ExternalLink,
   Eye,
   FileText,
   RefreshCw,
+  RotateCcw,
   Trash2,
+  X,
 } from 'lucide-react'
 import { StatusBadge } from '@/components/StatusBadge'
 import { Badge } from '@/components/ui/badge'
@@ -15,10 +18,13 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import type { LineItem, Receipt } from '@/types'
+import { Textarea } from '@/components/ui/textarea'
+import type { LineItem, Receipt, ReportApprovalContext } from '@/types'
+import { getActiveLineItems, getRemovedLineItems } from '@/lib/claimLines'
 import { cn, formatCurrency, formatDate } from '@/lib/utils'
 import {
   formatLineItemAmount,
@@ -143,6 +149,7 @@ function sumDisplayAmounts(items: LineItem[], receipt: Receipt): number {
 interface ReceiptExpenseCardProps {
   receipt: Receipt
   canEdit?: boolean
+  approvalContext?: ReportApprovalContext
   onDeleteLineItem?: (lineItemId: string) => void
   onDeleteReceipt?: (receiptId: string) => void
   onRetryReceipt?: (receiptId: string) => void
@@ -151,9 +158,15 @@ interface ReceiptExpenseCardProps {
   defaultOpen?: boolean
 }
 
+type PendingApprovalAction =
+  | { kind: 'reject-receipt' }
+  | { kind: 'remove-line'; lineItemId: string; lineLabel: string }
+  | { kind: 'restore-line'; lineItemId: string; lineLabel: string }
+
 export function ReceiptExpenseCard({
   receipt,
   canEdit = false,
+  approvalContext,
   onDeleteLineItem,
   onDeleteReceipt,
   onRetryReceipt,
@@ -163,8 +176,21 @@ export function ReceiptExpenseCard({
 }: ReceiptExpenseCardProps) {
   const [viewerOpen, setViewerOpen] = useState(false)
   const [open, setOpen] = useState(defaultOpen)
+  const [pendingAction, setPendingAction] = useState<PendingApprovalAction | null>(null)
+  const [reasonText, setReasonText] = useState('')
+  const [submittingAction, setSubmittingAction] = useState(false)
 
-  const hasLineItems = receipt.line_items.length > 0
+  const activeLineItems = useMemo(() => getActiveLineItems(receipt), [receipt])
+  const removedLineItems = useMemo(() => getRemovedLineItems(receipt), [receipt])
+  const canApproveReceipt =
+    Boolean(approvalContext?.enabled) &&
+    receipt.status !== 'APPROVED' &&
+    receipt.status !== 'REJECTED' &&
+    receipt.status !== 'PAID'
+  const showLineActions = canEdit || Boolean(approvalContext?.enabled)
+  const approvalBusy = Boolean(approvalContext?.busy) || submittingAction
+
+  const hasLineItems = activeLineItems.length > 0
   const tags = violationTags(receipt)
   const violations = violationLines(receipt)
   const rateHint = receiptExchangeRateHint(receipt)
@@ -182,8 +208,8 @@ export function ReceiptExpenseCard({
   )
 
   const { charges, taxes } = useMemo(
-    () => organizeLineItems(receipt.line_items),
-    [receipt.line_items],
+    () => organizeLineItems(activeLineItems),
+    [activeLineItems],
   )
   const ledgerRows = useMemo(
     () => [
@@ -205,6 +231,63 @@ export function ReceiptExpenseCard({
       : true
 
   const panelId = `receipt-panel-${receipt.id}`
+
+  const openReasonDialog = (action: PendingApprovalAction) => {
+    setReasonText('')
+    setPendingAction(action)
+  }
+
+  const closeReasonDialog = () => {
+    setPendingAction(null)
+    setReasonText('')
+  }
+
+  const submitPendingAction = async () => {
+    if (!pendingAction || !approvalContext?.enabled) return
+
+    const trimmed = reasonText.trim()
+    if (
+      (pendingAction.kind === 'reject-receipt' || pendingAction.kind === 'remove-line') &&
+      !trimmed
+    ) {
+      return
+    }
+
+    setSubmittingAction(true)
+    try {
+      if (pendingAction.kind === 'reject-receipt') {
+        await approvalContext.onRejectReceipt(receipt.id, trimmed)
+      } else if (pendingAction.kind === 'remove-line') {
+        await approvalContext.onRemoveLineItem(pendingAction.lineItemId, trimmed)
+      } else {
+        await approvalContext.onRestoreLineItem(pendingAction.lineItemId, trimmed || undefined)
+      }
+      closeReasonDialog()
+    } finally {
+      setSubmittingAction(false)
+    }
+  }
+
+  const reasonDialogTitle =
+    pendingAction?.kind === 'reject-receipt'
+      ? 'Reject receipt'
+      : pendingAction?.kind === 'remove-line'
+        ? 'Remove line item'
+        : pendingAction?.kind === 'restore-line'
+          ? 'Restore line item'
+          : ''
+
+  const reasonDialogDescription =
+    pendingAction?.kind === 'reject-receipt'
+      ? 'Provide a reason for rejecting this receipt. The employee will see this in the audit trail.'
+      : pendingAction?.kind === 'remove-line'
+        ? `Explain why "${pendingAction.lineLabel}" should be excluded from reimbursement.`
+        : pendingAction?.kind === 'restore-line'
+          ? `Optionally add a note while restoring "${pendingAction.lineLabel}".`
+          : ''
+
+  const reasonRequired =
+    pendingAction?.kind === 'reject-receipt' || pendingAction?.kind === 'remove-line'
 
   return (
     <article
@@ -296,6 +379,36 @@ export function ReceiptExpenseCard({
             </Button>
           )}
           <StatusBadge status={receipt.status} />
+          {canApproveReceipt && approvalContext && (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant="success"
+                disabled={approvalBusy}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  void approvalContext.onApproveReceipt(receipt.id)
+                }}
+              >
+                <Check className="h-3.5 w-3.5" />
+                Approve
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="destructive"
+                disabled={approvalBusy}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  openReasonDialog({ kind: 'reject-receipt' })
+                }}
+              >
+                <X className="h-3.5 w-3.5" />
+                Reject
+              </Button>
+            </>
+          )}
           {canEdit && canRetryReceiptAi(receipt) && onRetryReceipt && (
             <Button
               size="sm"
@@ -412,7 +525,7 @@ export function ReceiptExpenseCard({
                         <th className="px-3 py-2.5 font-medium">Type</th>
                         <th className="px-3 py-2.5 font-medium">Date</th>
                         <th className="px-4 py-2.5 text-right font-medium">Amount</th>
-                        {canEdit && <th className="w-12 px-2 py-2.5" aria-label="Actions" />}
+                        {showLineActions && <th className="w-12 px-2 py-2.5" aria-label="Actions" />}
                       </tr>
                     </thead>
                     <tbody>
@@ -479,9 +592,9 @@ export function ReceiptExpenseCard({
                           <td className="px-4 py-3 text-right align-top font-semibold tabular-nums text-slate-900">
                             {formatLineItemAmount(item, receipt)}
                           </td>
-                          {canEdit && (
+                          {showLineActions && (
                             <td className="px-2 py-3 align-top">
-                              {onDeleteLineItem && (
+                              {canEdit && onDeleteLineItem && (
                                 <Button
                                   type="button"
                                   size="icon"
@@ -489,6 +602,27 @@ export function ReceiptExpenseCard({
                                   className="h-8 w-8 text-slate-400 hover:bg-red-50 hover:text-red-600"
                                   onClick={() => onDeleteLineItem(item.id)}
                                   aria-label="Remove line item"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              )}
+                              {approvalContext?.enabled && (
+                                <Button
+                                  type="button"
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-8 w-8 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                                  disabled={approvalBusy}
+                                  onClick={() =>
+                                    openReasonDialog({
+                                      kind: 'remove-line',
+                                      lineItemId: item.id,
+                                      lineLabel: descriptionPreview(
+                                        item.subcategory || item.description || item.category,
+                                      ),
+                                    })
+                                  }
+                                  aria-label="Remove line item from claim"
                                 >
                                   <Trash2 className="h-4 w-4" />
                                 </Button>
@@ -541,6 +675,57 @@ export function ReceiptExpenseCard({
             ) : (
               <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/50 px-4 py-8 text-center text-sm text-slate-500">
                 No reimbursable lines on this receipt yet.
+              </div>
+            )}
+
+            {removedLineItems.length > 0 && (
+              <div className="mt-4 overflow-hidden rounded-xl border border-amber-200/80 bg-amber-50/30">
+                <div className="border-b border-amber-200/60 px-4 py-2.5">
+                  <p className="text-xs font-semibold uppercase tracking-[0.08em] text-amber-800">
+                    Removed from claim ({removedLineItems.length})
+                  </p>
+                </div>
+                <ul className="divide-y divide-amber-100/80">
+                  {removedLineItems.map((item) => (
+                    <li
+                      key={item.id}
+                      className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div className="min-w-0">
+                        <p className="font-medium text-slate-900">
+                          {descriptionPreview(
+                            item.subcategory || item.description || item.category,
+                          )}
+                        </p>
+                        <p className="mt-0.5 text-sm text-slate-600">
+                          {formatLineItemAmount(item, receipt)}
+                          {item.removal_reason ? ` · ${item.removal_reason}` : ''}
+                        </p>
+                      </div>
+                      {approvalContext?.enabled && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="shrink-0 border-amber-300 bg-white"
+                          disabled={approvalBusy}
+                          onClick={() =>
+                            openReasonDialog({
+                              kind: 'restore-line',
+                              lineItemId: item.id,
+                              lineLabel: descriptionPreview(
+                                item.subcategory || item.description || item.category,
+                              ),
+                            })
+                          }
+                        >
+                          <RotateCcw className="h-3.5 w-3.5" />
+                          Restore
+                        </Button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
           </div>
@@ -596,6 +781,34 @@ export function ReceiptExpenseCard({
           </DialogContent>
         </Dialog>
       )}
+
+      <Dialog open={pendingAction !== null} onOpenChange={(open) => !open && closeReasonDialog()}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{reasonDialogTitle}</DialogTitle>
+            <DialogDescription>{reasonDialogDescription}</DialogDescription>
+          </DialogHeader>
+          <Textarea
+            placeholder={reasonRequired ? 'Reason (required)' : 'Notes (optional)'}
+            value={reasonText}
+            onChange={(event) => setReasonText(event.target.value)}
+            rows={4}
+          />
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button type="button" variant="outline" disabled={submittingAction} onClick={closeReasonDialog}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant={pendingAction?.kind === 'reject-receipt' ? 'destructive' : 'default'}
+              disabled={submittingAction || (reasonRequired && !reasonText.trim())}
+              onClick={() => void submitPendingAction()}
+            >
+              {submittingAction ? 'Saving…' : 'Confirm'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </article>
   )
 }

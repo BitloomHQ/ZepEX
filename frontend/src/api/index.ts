@@ -665,6 +665,30 @@ export const approveReport = (reportId: string, notes?: string) =>
 export const rejectReport = (reportId: string, notes: string) =>
   api.post<RejectReportResponse>(`/expenses/reports/${reportId}/reject/`, { notes })
 
+export const approveReceipt = (reportId: string, receiptId: string, notes?: string) =>
+  api.post<import('@/types').ApproveReceiptResponse>(
+    `/expenses/reports/${reportId}/receipts/${receiptId}/approve/`,
+    { notes },
+  )
+
+export const rejectReceipt = (reportId: string, receiptId: string, notes: string) =>
+  api.post<import('@/types').RejectReceiptResponse>(
+    `/expenses/reports/${reportId}/receipts/${receiptId}/reject/`,
+    { notes },
+  )
+
+export const removeReportLineItem = (reportId: string, lineItemId: string, reason: string) =>
+  api.post<import('@/types').RemoveLineItemResponse>(
+    `/expenses/reports/${reportId}/line-items/${lineItemId}/remove/`,
+    { reason },
+  )
+
+export const restoreReportLineItem = (reportId: string, lineItemId: string, notes?: string) =>
+  api.post<import('@/types').RestoreLineItemResponse>(
+    `/expenses/reports/${reportId}/line-items/${lineItemId}/restore/`,
+    { notes },
+  )
+
 export const accountsMarkPaid = (reportId: string, notes = '') =>
   api.post<MarkPaidReportResponse>(`/expenses/accounts/reports/${reportId}/paid/`, { notes })
 

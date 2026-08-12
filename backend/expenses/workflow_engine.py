@@ -723,9 +723,6 @@ def remove_receipt_line_item(
     if line_item.is_removed:
         return False, "This line item has already been removed."
 
-    if line_item.is_deleted:
-        return False, "This line item has been deleted and cannot be removed."
-
     line_item.is_removed = True
     line_item.removed_by = approver_profile
     line_item.removed_at = timezone.now()
@@ -787,9 +784,6 @@ def restore_receipt_line_item(
 
     if not allowed:
         return False, error
-
-    if line_item.is_deleted:
-        return False, "Deleted line items cannot be restored."
 
     if not line_item.is_removed:
         return False, "This line item is not removed."
