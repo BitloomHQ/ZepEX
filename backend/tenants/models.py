@@ -336,6 +336,11 @@ class CompanyPolicy(models.Model):
         related_name="policy"
     )
 
+    old_bill_limit_days = models.PositiveIntegerField(
+    default=90,
+    help_text="Maximum number of days old a receipt can be for reimbursement."
+)
+
     updated_at = models.DateTimeField(
         auto_now=True
     )

@@ -630,68 +630,99 @@ def check_policy_violations(receipt):
         receipt.has_duplicate_violation = True
 
         violation_reasons.append(
-            f"Duplicate receipt detected. Original Receipt ID: {duplicate.id}"
+            f"Duplicate receipt detected. "
+            f"Original Receipt ID: {duplicate.id}"
         )
 
         DuplicateReceiptLog.objects.get_or_create(
             original_receipt=duplicate,
             duplicate_receipt=receipt,
             defaults={
-                "duplicate_type": DuplicateReceiptLog.DUPLICATE_SAME_EMPLOYEE,
+                "duplicate_type": (
+                    DuplicateReceiptLog.DUPLICATE_SAME_EMPLOYEE
+                ),
             },
         )
-        create_audit_log(
-    receipt=receipt,
-    action=ExpenseAuditTrail.ACTION_DUPLICATE_CHECK,
-    remarks=(
-        "Duplicate receipt found."
-        if duplicate
-        else "No duplicate receipt found."
-    ),
-    metadata={
-        "duplicate_found": bool(duplicate),
-        "original_receipt_id": (
-            str(duplicate.id)
+
+    create_audit_log(
+        receipt=receipt,
+        action=ExpenseAuditTrail.ACTION_DUPLICATE_CHECK,
+        remarks=(
+            "Duplicate receipt found."
             if duplicate
-            else None
+            else "No duplicate receipt found."
         ),
-    },
-)
+        metadata={
+            "duplicate_found": bool(duplicate),
+            "original_receipt_id": (
+                str(duplicate.id)
+                if duplicate
+                else None
+            ),
+        },
+    )
 
     # =====================================================
-    # 2. Old Bill Validation
+    # 2. Dynamic Company-Specific Old Bill Validation
     # =====================================================
+
+    company_policy = (
+        CompanyPolicy.objects
+        .filter(company=receipt.company)
+        .first()
+    )
 
     if receipt.invoice_date:
 
-        limit_date = (
-            timezone.now().date()
-            - timedelta(days=OLD_BILL_LIMIT_DAYS)
-        )
+        if company_policy:
 
-        if receipt.invoice_date < limit_date:
-
-            receipt.has_old_bill_violation = True
-
-            violation_reasons.append(
-                f"Receipt is older than {OLD_BILL_LIMIT_DAYS} days."
+            old_bill_limit_days = (
+                company_policy.old_bill_limit_days
             )
+
+            limit_date = (
+                timezone.now().date()
+                - timedelta(days=old_bill_limit_days)
+            )
+
+            if receipt.invoice_date < limit_date:
+
+                receipt.has_old_bill_violation = True
+
+                violation_reasons.append(
+                    f"Receipt is older than "
+                    f"{old_bill_limit_days} days."
+                )
+
+        # -------------------------------------------------
+        # No CompanyPolicy
+        # -------------------------------------------------
+        # Do NOT add an old-bill violation here.
+        #
+        # validate_receipt_policy() is responsible for
+        # handling the missing company policy.
+        # -------------------------------------------------
 
     # =====================================================
     # 3. Company Policy Validation
     # =====================================================
 
-    policy_result = validate_receipt_policy(receipt)
+    policy_result = validate_receipt_policy(
+        receipt
+    )
 
-    receipt.has_amount_violation = policy_result["has_violations"]
+    receipt.has_amount_violation = (
+        policy_result["has_violations"]
+    )
 
-    if policy_result["violations"]:
+    if policy_result.get("violations"):
+
         violation_reasons.extend(
             policy_result["violations"]
         )
 
     # =====================================================
-    # Final Result
+    # 4. Final Violation Status
     # =====================================================
 
     receipt.has_any_violation = any([
@@ -700,24 +731,37 @@ def check_policy_violations(receipt):
         receipt.has_amount_violation,
     ])
 
-    receipt.policy_violation_reason = "\n".join(
-        violation_reasons
+    receipt.policy_violation_reason = (
+        "\n".join(violation_reasons)
     )
 
     if receipt.has_any_violation:
-        receipt.status = ExpenseReceipt.STATUS_POLICY_VIOLATION
-    else:
-        receipt.status = ExpenseReceipt.STATUS_VALID
 
-    receipt.save(update_fields=[
-        "has_duplicate_violation",
-        "has_old_bill_violation",
-        "has_amount_violation",
-        "has_any_violation",
-        "policy_violation_reason",
-        "status",
-        "updated_at",
-    ])
+        receipt.status = (
+            ExpenseReceipt.STATUS_POLICY_VIOLATION
+        )
+
+    else:
+
+        receipt.status = (
+            ExpenseReceipt.STATUS_VALID
+        )
+
+    # =====================================================
+    # 5. Save Final Receipt State
+    # =====================================================
+
+    receipt.save(
+        update_fields=[
+            "has_duplicate_violation",
+            "has_old_bill_violation",
+            "has_amount_violation",
+            "has_any_violation",
+            "policy_violation_reason",
+            "status",
+            "updated_at",
+        ]
+    )
 
 from .currency_services import convert_currency
 

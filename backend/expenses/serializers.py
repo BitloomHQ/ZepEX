@@ -1427,3 +1427,36 @@ class DuplicateReceiptLogSerializer(serializers.ModelSerializer):
             "duplicate_vendor",
             "created_at",
         ]
+from tenants.models import CompanyPolicy
+class CompanyPolicySerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = CompanyPolicy
+
+        fields = [
+            "id",
+            "company",
+            "old_bill_limit_days",
+            "auto_approve_if_no_violation",
+            "updated_at",
+        ]
+
+        read_only_fields = [
+            "id",
+            "company",
+            "updated_at",
+        ]
+
+    def validate_old_bill_limit_days(self, value):
+
+        if value < 1:
+            raise serializers.ValidationError(
+                "Old bill limit must be at least 1 day."
+            )
+
+        if value > 3650:
+            raise serializers.ValidationError(
+                "Old bill limit cannot exceed 3650 days."
+            )
+
+        return value

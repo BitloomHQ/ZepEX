@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .views import (
+    company_policy_settings,
     upload_receipt,
     retry_receipt_ai,
     email_ingest_receipt,
@@ -134,5 +135,10 @@ path(
     "reports/<uuid:report_id>/line-items/<uuid:line_item_id>/restore/",
     restore_receipt_line_item_api,
     name="restore-receipt-line-item",
+),
+path(
+    "company/policy/settings/",
+    company_policy_settings,
+    name="company-policy-settings",
 ),
 ]

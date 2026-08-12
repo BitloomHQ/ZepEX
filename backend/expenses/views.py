@@ -3304,3 +3304,87 @@ def restore_receipt_line_item_api(request, report_id, line_item_id):
         },
         status=status.HTTP_200_OK,
     )
+from tenants.models import CompanyPolicy
+from .serializers import CompanyPolicySerializer
+@api_view(["GET", "PATCH"])
+@permission_classes([IsAuthenticated])
+def company_policy_settings(request):
+
+    profile = request.user.profile
+
+    # =====================================================
+    # 1. Company Admin Permission
+    # =====================================================
+
+    if profile.role != "COMPANY_ADMIN":
+
+        return Response(
+            {
+                "error": (
+                    "Only Company Admin can manage "
+                    "company policy settings."
+                )
+            },
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    # =====================================================
+    # 2. Get or Create Company Policy
+    # =====================================================
+
+    policy, created = CompanyPolicy.objects.get_or_create(
+        company=profile.company
+    )
+
+    # =====================================================
+    # 3. GET
+    # =====================================================
+
+    if request.method == "GET":
+
+        serializer = CompanyPolicySerializer(
+            policy
+        )
+
+        return Response(
+            {
+                "message": "Company policy settings retrieved successfully.",
+                "policy": serializer.data,
+            },
+            status=status.HTTP_200_OK
+        )
+
+    # =====================================================
+    # 4. PATCH
+    # =====================================================
+
+    serializer = CompanyPolicySerializer(
+        policy,
+        data=request.data,
+        partial=True,
+    )
+
+    if not serializer.is_valid():
+
+        return Response(
+            {
+                "error": "Invalid policy settings.",
+                "details": serializer.errors,
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    serializer.save()
+
+    # Refresh from database
+    policy.refresh_from_db()
+
+    return Response(
+        {
+            "message": "Company policy settings updated successfully.",
+            "policy": CompanyPolicySerializer(
+                policy
+            ).data,
+        },
+        status=status.HTTP_200_OK
+    )
