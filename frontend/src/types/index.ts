@@ -741,6 +741,92 @@ export interface ReimbursementEmailConfigResponse {
   data: ReimbursementEmailConfigData
 }
 
+export interface CompanyPolicySettings {
+  id: string
+  company: string
+  old_bill_limit_days: number
+  auto_approve_if_no_violation: boolean
+  updated_at: string
+}
+
+export interface CompanyPolicySettingsResponse {
+  message: string
+  policy: CompanyPolicySettings
+}
+
+export type NotificationType =
+  | 'WORKFLOW'
+  | 'APPROVAL'
+  | 'REJECTION'
+  | 'PAYMENT'
+  | 'POLICY'
+  | 'RECEIPT'
+  | 'SYSTEM'
+
+export interface ExpenseNotification {
+  id: string
+  notification_type: NotificationType
+  notification_type_name?: string
+  title: string
+  message: string
+  recipient: string
+  recipient_email: string
+  company: string
+  report_id: string | null
+  receipt_id: string | null
+  is_read: boolean
+  read_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface NotificationsListResponse {
+  count: number
+  unread_count: number
+  results: ExpenseNotification[]
+}
+
+export interface MarkNotificationReadResponse {
+  message: string
+  notification: ExpenseNotification
+}
+
+export interface MarkAllNotificationsReadResponse {
+  message: string
+  updated_count: number
+}
+
+export interface CompanyImapConfig {
+  reimbursement_email: string | null
+  imap_host: string | null
+  imap_port: number | null
+  imap_username: string | null
+  imap_configured: boolean
+}
+
+export interface CompanyImapConfigResponse {
+  success: boolean
+  imap_config: CompanyImapConfig
+  message?: string
+  imap_verified?: boolean
+  error?: string
+}
+
+export interface TestImapConnectionPayload {
+  imap_host: string
+  imap_port: number
+  imap_username: string
+  imap_password: string
+}
+
+export interface SaveImapConfigPayload {
+  reimbursement_email?: string
+  imap_host?: string
+  imap_port?: number
+  imap_username?: string
+  imap_password?: string
+}
+
 export interface PlatformEmailServiceStatus {
   smtp_source?: string
   company_smtp_required?: boolean

@@ -1,8 +1,7 @@
-import { FileUp, Shield } from 'lucide-react'
+import { Shield } from 'lucide-react'
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import {
   activatePolicyRule,
-  createCompanyPolicy,
   createPolicyRule,
   deactivatePolicyRule,
   downloadPolicyRulesTemplate,
@@ -17,7 +16,6 @@ import {
   updatePolicyRule,
 } from '@/api'
 import { getApiErrorMessage } from '@/api/client'
-import { AdminBulkActions } from '@/components/admin/AdminBulkActions'
 import { CsvImportDialog } from '@/components/admin/CsvImportDialog'
 import { AdminConfirmDialog } from '@/components/admin/AdminConfirmDialog'
 import { AdminListSearchBar } from '@/components/admin/AdminListSearchBar'
@@ -25,6 +23,7 @@ import { AdminListPanel } from '@/components/admin/AdminListPanel'
 import { AdminModalFooter } from '@/components/admin/AdminModalFooter'
 import { AdminPolicyRuleCard } from '@/components/admin/AdminPolicyRuleCard'
 import { PolicyDocumentImportDialog } from '@/components/admin/PolicyDocumentImportDialog'
+import { PolicyImportMenu } from '@/components/admin/PolicyImportMenu'
 import { PolicyToolsPanel } from '@/components/admin/PolicyToolsPanel'
 import { DashboardLayout } from '@/components/layout/DashboardLayout'
 import { useAdminNav } from '@/hooks/useAdminNav'
@@ -46,7 +45,6 @@ import { PaginationControls } from '@/components/ui/pagination-controls'
 import { toast } from '@/lib/toast'
 import { financeCurrencyCode } from '@/lib/financeSettings'
 import type { CompanyRole, PolicyRule, PolicyVersion } from '@/types'
-import AssignIcon from '@/assets/assign.png'
 import UploadIcon from '@/assets/upload.png'
 
 const selectClassName =
@@ -149,19 +147,6 @@ export function PolicyPage() {
   useEffect(() => {
     load()
   }, [load])
-
-  const initPolicy = async () => {
-    setSaving(true)
-    setError('')
-    try {
-      await createCompanyPolicy()
-      toast.success('Company policy created. You can now add rules.')
-    } catch (err) {
-      setError(getApiErrorMessage(err))
-    } finally {
-      setSaving(false)
-    }
-  }
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault()
@@ -315,13 +300,10 @@ export function PolicyPage() {
       icon={Shield}
       navItems={navItems}
       headerAction={
-        <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" onClick={initPolicy} disabled={saving}>
-            Initialize Company Policy
-            <img src={AssignIcon} alt="Assign" className="w-6 h-6" />
-          </Button>
-          <AdminBulkActions
-            onImport={() => setImportOpen(true)}
+        <div className="flex flex-wrap items-center gap-2">
+          <PolicyImportMenu
+            onImportCsv={() => setImportOpen(true)}
+            onImportDocument={() => setPolicyDocOpen(true)}
             onDownloadTemplate={downloadPolicyRulesTemplate}
             disabled={saving}
           />
@@ -329,16 +311,7 @@ export function PolicyPage() {
             Add Policy Rules
             <img src={UploadIcon} alt="Upload" className="w-6 h-6" />
           </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={saving}
-            onClick={() => setPolicyDocOpen(true)}
-          >
-            <FileUp className="h-4 w-4" />
-            Import Policy Document
-          </Button>
-          <PolicyToolsPanel roles={roles} currency={policyCurrency} disabled={saving} onCopied={load} />
+          <PolicyToolsPanel roles={roles} disabled={saving} onCopied={load} />
         </div>
       }
     >
@@ -459,82 +432,103 @@ export function PolicyPage() {
         />
       </AdminListPanel>
 
-      <AdminListPanel
-        title="Policy Versions"
-        count={policyVersions.length}
-        description="Drafts and active policy versions created from policy document imports."
-      >
-        {policyVersions.length === 0 ? (
-          <p className="px-5 py-6 text-sm text-gray-400 sm:px-6">No policy versions yet.</p>
-        ) : (
-          <div className="divide-y divide-gray-100">
-            {policyVersions.map((version) => {
-              const status = String(version.status ?? '').toUpperCase()
-              const isDraft = status === 'DRAFT'
-              const isArchived = status === 'ARCHIVED'
-              return (
-                <div
-                  key={version.id}
-                  className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 sm:px-6"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-gray-900">
-                      {version.title} <span className="text-gray-500">· v{version.version_number}</span>
-                    </p>
-                    <p className="mt-0.5 text-xs text-gray-500">
-                      {status}
-                      {version.is_active ? ' · Active' : ''}
-                      {version.activated_at ? ` · ${new Date(version.activated_at).toLocaleDateString('en-US')}` : ''}
-                    </p>
-                  </div>
+      <div className="mt-6">
+        <AdminListPanel
+          title="Policy Versions"
+          count={policyVersions.length}
+          description="Drafts and active policy versions created from policy document imports."
+        >
+          {policyVersions.length === 0 ? (
+            <p className="px-5 py-4 text-sm text-gray-400 sm:px-6">No policy versions yet.</p>
+          ) : (
+            <div className="divide-y divide-[#e2e8f0]">
+              {policyVersions.map((version) => {
+                const status = String(version.status ?? '').toUpperCase()
+                const isDraft = status === 'DRAFT'
+                const isArchived = status === 'ARCHIVED'
+                const canActivate = !version.is_active
+                const canArchive = !isArchived && !version.is_active
+                const canDelete = isDraft
+                const hasActions = canActivate || canArchive || canDelete
 
-                  <div className="flex flex-wrap items-center gap-2">
-                    {!version.is_active && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        disabled={saving}
-                        onClick={() =>
-                          setConfirmPolicyVersionAction({ mode: 'activate', versionId: version.id })
-                        }
-                      >
-                        Activate
-                      </Button>
-                    )}
-                    {!isArchived && !version.is_active && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        disabled={saving}
-                        onClick={() =>
-                          setConfirmPolicyVersionAction({ mode: 'archive', versionId: version.id })
-                        }
-                      >
-                        Archive
-                      </Button>
-                    )}
-                    {isDraft && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="destructive"
-                        disabled={saving}
-                        onClick={() =>
-                          setConfirmPolicyVersionAction({ mode: 'delete', versionId: version.id })
-                        }
-                      >
-                        Delete
-                      </Button>
+                return (
+                  <div
+                    key={version.id}
+                    className="flex flex-wrap items-center gap-3 px-5 py-3 sm:px-6"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-gray-900">
+                        {version.title}{' '}
+                        <span className="text-gray-500">· v{version.version_number}</span>
+                      </p>
+                      <p className="mt-0.5 text-xs text-gray-500">
+                        {status}
+                        {version.is_active ? ' · Active' : ''}
+                        {version.activated_at
+                          ? ` · ${new Date(version.activated_at).toLocaleDateString('en-US')}`
+                          : ''}
+                      </p>
+                    </div>
+
+                    {hasActions && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        {canActivate && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={saving}
+                            onClick={() =>
+                              setConfirmPolicyVersionAction({
+                                mode: 'activate',
+                                versionId: version.id,
+                              })
+                            }
+                          >
+                            Activate
+                          </Button>
+                        )}
+                        {canArchive && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={saving}
+                            onClick={() =>
+                              setConfirmPolicyVersionAction({
+                                mode: 'archive',
+                                versionId: version.id,
+                              })
+                            }
+                          >
+                            Archive
+                          </Button>
+                        )}
+                        {canDelete && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="destructive"
+                            disabled={saving}
+                            onClick={() =>
+                              setConfirmPolicyVersionAction({
+                                mode: 'delete',
+                                versionId: version.id,
+                              })
+                            }
+                          >
+                            Delete
+                          </Button>
+                        )}
+                      </div>
                     )}
                   </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </AdminListPanel>
+                )
+              })}
+            </div>
+          )}
+        </AdminListPanel>
+      </div>
 
       {inactiveRules.length > 0 && (
         <div className="mt-6">

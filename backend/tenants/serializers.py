@@ -632,7 +632,9 @@ class CompanySerializer(serializers.ModelSerializer):
             "is_verified",
             "created_at",
             "reimbursement_email",
-            "inbound_forwarding_email",
+            "imap_host",
+            "imap_port",
+            "imap_username",
         ]
 
 

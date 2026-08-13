@@ -376,6 +376,50 @@ export const getReimbursementEmailConfig = () =>
 export const saveReimbursementEmailConfig = (data: { reimbursement_email: string }) =>
   api.post<ReimbursementEmailConfigResponse>('/tenants/reimbursement-email/save/', data)
 
+export const getCompanyPolicySettings = () =>
+  api.get<import('@/types').CompanyPolicySettingsResponse>(
+    '/expenses/company/policy/settings/',
+  )
+
+export const updateCompanyPolicySettings = (data: {
+  old_bill_limit_days?: number
+  auto_approve_if_no_violation?: boolean
+}) =>
+  api.patch<import('@/types').CompanyPolicySettingsResponse>(
+    '/expenses/company/policy/settings/',
+    data,
+  )
+
+export const getNotifications = () =>
+  api.get<import('@/types').NotificationsListResponse>('/expenses/notifications/')
+
+export const markNotificationRead = (notificationId: string) =>
+  api.post<import('@/types').MarkNotificationReadResponse>(
+    `/expenses/notifications/${notificationId}/read/`,
+  )
+
+export const markAllNotificationsRead = () =>
+  api.post<import('@/types').MarkAllNotificationsReadResponse>(
+    '/expenses/notifications/read-all/',
+  )
+
+export const getCompanyImapConfig = () =>
+  api.get<import('@/types').CompanyImapConfigResponse>('/tenants/company/imap-config/')
+
+export const testCompanyImapConnection = (
+  data: import('@/types').TestImapConnectionPayload,
+) =>
+  api.post<import('@/types').CompanyImapConfigResponse>(
+    '/tenants/company/imap-config/test/',
+    data,
+  )
+
+export const saveCompanyImapConfig = (data: import('@/types').SaveImapConfigPayload) =>
+  api.put<import('@/types').CompanyImapConfigResponse>('/tenants/company/imap-config/', data)
+
+export const patchCompanyImapConfig = (data: import('@/types').SaveImapConfigPayload) =>
+  api.patch<import('@/types').CompanyImapConfigResponse>('/tenants/company/imap-config/', data)
+
 export const getEmailServiceStatus = () =>
   api.get<PlatformEmailServiceResponse>('/tenants/smtp-config/')
 

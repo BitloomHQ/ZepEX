@@ -23,7 +23,7 @@ from .models import (
 )
 from tenants.models import CompanyRole
 from expenses.workflow_engine import reorder_workflow_steps
-from .notification_services import notify_report_paid
+from .notification_services import notify_next_approver, notify_report_paid
 from .workflow_engine import resolve_step_approver
 from expenses.workflow_engine import start_workflow
 from .serializers import ExpenseReceiptSerializer,ExpenseReportSerializer, ApprovalHistorySerializer
@@ -531,6 +531,16 @@ def submit_current_month_report(request):
             ),
         }
     )
+
+    if approver:
+        notify_next_approver(
+            recipient=approver,
+            report=report,
+            employee_name=(
+                profile.user.get_full_name()
+                or profile.user.email
+            ),
+        )
 
     serializer = ExpenseReportSerializer(report)
 
@@ -2168,24 +2178,10 @@ def approve_report_step(request, report_id):
     next_approver = result["next_approver"]
 
     # ----------------------------------------------------------
-    # Notification → Employee
-    # ----------------------------------------------------------
-
-    notify_report_approved(
-        recipient=report.employee,
-        report=report,
-        approver_name=(
-            profile.user.get_full_name()
-            or profile.user.email
-        ),
-    )
-
-    # ----------------------------------------------------------
     # Notification → Next Approver
     # ----------------------------------------------------------
 
     if next_approver:
-
         notify_next_approver(
             recipient=next_approver,
             report=report,

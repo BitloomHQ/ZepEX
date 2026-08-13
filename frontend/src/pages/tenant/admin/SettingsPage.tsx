@@ -1,19 +1,22 @@
-import { ChevronRight, Mail, Settings, Trash2, Wallet } from 'lucide-react'
+import { ChevronRight, Mail, Settings, Shield, Trash2, Wallet } from 'lucide-react'
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   createCompanyExchangeRate,
   deleteCompanyExchangeRate,
   getCompanyExchangeRates,
-  getEmailServiceStatus,
+  getCompanyImapConfig,
+  getCompanyPolicySettings,
   getFinanceSettings,
-  getReimbursementEmailConfig,
-  saveReimbursementEmailConfig,
+  patchCompanyImapConfig,
+  saveCompanyImapConfig,
+  testCompanyImapConnection,
   updateCompanyExchangeRate,
   updateFinanceSettings,
 } from '@/api'
 import { getApiErrorMessage } from '@/api/client'
 import { AdminListPanel } from '@/components/admin/AdminListPanel'
 import { AdminModalFooter } from '@/components/admin/AdminModalFooter'
+import { CompanyPolicySettingsPanel } from '@/components/admin/CompanyPolicySettingsPanel'
 import { CurrencySelect } from '@/components/admin/CurrencySelect'
 import { StatusBadge } from '@/components/StatusBadge'
 import { DashboardLayout } from '@/components/layout/DashboardLayout'
@@ -31,12 +34,12 @@ import { AdminListPanelShimmer } from '@/components/ui/shimmer'
 import { formatDateTime } from '@/lib/utils'
 import { toast } from '@/lib/toast'
 import { financeCurrencyLabel as formatFinanceCurrencyLabel } from '@/lib/financeSettings'
-import { unwrapEmailServiceStatus, unwrapReimbursementEmailConfig } from '@/lib/emailSettings'
 import type {
   CompanyExchangeRate,
+  CompanyImapConfig,
+  CompanyPolicySettings,
   ExchangeRateSource,
   FinanceSettings,
-  PlatformEmailServiceStatus,
 } from '@/types'
 
 const DATE_FORMAT_OPTIONS = ['DD/MM/YYYY', 'MM/DD/YYYY', 'YYYY-MM-DD'] as const
@@ -58,14 +61,20 @@ export function SettingsPage() {
   const [error, setError] = useState('')
   const [financeOpen, setFinanceOpen] = useState(false)
   const [emailOpen, setEmailOpen] = useState(false)
-  const [emailForm, setEmailForm] = useState({ reimbursement_email: '' })
+  const [policyOpen, setPolicyOpen] = useState(false)
+  const [policyLoaded, setPolicyLoaded] = useState(false)
+  const [policySummary, setPolicySummary] = useState('Not configured')
+  const [emailForm, setEmailForm] = useState({
+    reimbursement_email: '',
+    imap_host: '',
+    imap_username: '',
+    imap_password: '',
+  })
   const [emailLoaded, setEmailLoaded] = useState(false)
   const [emailSummary, setEmailSummary] = useState('Not configured')
-  const [platformReceiptEmail, setPlatformReceiptEmail] = useState('receipts@zepex.ai')
-  const [forwardingInstruction, setForwardingInstruction] = useState('')
-  const [emailServiceStatus, setEmailServiceStatus] = useState<PlatformEmailServiceStatus | null>(
-    null,
-  )
+  const [imapConfigured, setImapConfigured] = useState(false)
+  const [testingImap, setTestingImap] = useState(false)
+  const [imapVerified, setImapVerified] = useState(false)
   const [financeForm, setFinanceForm] = useState({
     base_currency: '' as number | '',
     auto_currency_conversion: true,
@@ -128,18 +137,31 @@ export function SettingsPage() {
     setFinanceLoaded(true)
   }
 
-  const applyReimbursementEmail = (data: {
-    reimbursement_email: string | null
-    platform_receipt_email: string
-    forwarding_instruction: string
-  }) => {
-    setEmailForm({
-      reimbursement_email: data.reimbursement_email ?? '',
-    })
-    setEmailSummary(data.reimbursement_email || 'Not configured')
-    setPlatformReceiptEmail(data.platform_receipt_email)
-    setForwardingInstruction(data.forwarding_instruction)
-    setEmailLoaded(Boolean(data.reimbursement_email))
+  const applyPolicySettings = (policy: CompanyPolicySettings) => {
+    setPolicySummary(
+      `${policy.old_bill_limit_days}-day bill limit · Auto-approve ${
+        policy.auto_approve_if_no_violation ? 'on' : 'off'
+      }`,
+    )
+    setPolicyLoaded(true)
+  }
+
+  const applyImapConfig = (config: CompanyImapConfig) => {
+    setEmailForm((current) => ({
+      ...current,
+      reimbursement_email: config.reimbursement_email ?? '',
+      imap_host: config.imap_host ?? '',
+      imap_username: config.imap_username ?? '',
+      imap_password: '',
+    }))
+    setEmailSummary(
+      config.reimbursement_email
+        ? `${config.reimbursement_email}${config.imap_configured ? ' · IMAP connected' : ' · IMAP pending'}`
+        : 'Not configured',
+    )
+    setEmailLoaded(Boolean(config.imap_configured))
+    setImapConfigured(Boolean(config.imap_configured))
+    setImapVerified(Boolean(config.imap_configured))
   }
 
   const loadExchangeRates = async () => {
@@ -158,10 +180,10 @@ export function SettingsPage() {
     async function loadSettings() {
       setLoading(true)
       try {
-        const [financeRes, emailRes, emailStatusRes] = await Promise.all([
+        const [financeRes, imapRes, policyRes] = await Promise.all([
           getFinanceSettings(),
-          getReimbursementEmailConfig().catch(() => null),
-          getEmailServiceStatus().catch(() => null),
+          getCompanyImapConfig().catch(() => null),
+          getCompanyPolicySettings().catch(() => null),
         ])
 
         if (financeRes.data.settings) {
@@ -171,12 +193,12 @@ export function SettingsPage() {
           }
         }
 
-        if (emailRes?.data) {
-          applyReimbursementEmail(unwrapReimbursementEmailConfig(emailRes.data))
+        if (imapRes?.data.success) {
+          applyImapConfig(imapRes.data.imap_config)
         }
 
-        if (emailStatusRes?.data) {
-          setEmailServiceStatus(unwrapEmailServiceStatus(emailStatusRes.data))
+        if (policyRes?.data.policy) {
+          applyPolicySettings(policyRes.data.policy)
         }
       } finally {
         setLoading(false)
@@ -208,11 +230,19 @@ export function SettingsPage() {
       },
       {
         id: 'email' as const,
-        title: 'Reimbursement email',
-        description: 'Company inbox for forwarded expense receipts.',
+        title: 'Email ingestion (IMAP)',
+        description: 'Reimbursement mailbox credentials for automatic receipt ingestion.',
         summary: emailSummary,
         configured: emailLoaded,
         icon: Mail,
+      },
+      {
+        id: 'policy' as const,
+        title: 'Policy settings',
+        description: 'Old bill limit and auto-approve rules for expense validation.',
+        summary: policySummary,
+        configured: policyLoaded,
+        icon: Shield,
       },
     ],
     [
@@ -221,6 +251,8 @@ export function SettingsPage() {
       financeForm.exchange_rate_source,
       emailSummary,
       emailLoaded,
+      policySummary,
+      policyLoaded,
     ],
   )
 
@@ -231,8 +263,8 @@ export function SettingsPage() {
     setEditingRateValue('')
   }
 
-  const closeEmailModal = () => {
-    setEmailOpen(false)
+  const closePolicyModal = () => {
+    setPolicyOpen(false)
     setError('')
   }
 
@@ -359,22 +391,96 @@ export function SettingsPage() {
     }
   }
 
-  const saveReimbursementEmail = async (e: FormEvent) => {
-    e.preventDefault()
-    if (!emailForm.reimbursement_email.trim()) {
+  const closeEmailModal = () => {
+    setEmailOpen(false)
+    setError('')
+    setEmailForm((current) => ({ ...current, imap_password: '' }))
+  }
+
+  const IMAP_PORT = 993
+
+  const buildImapPayload = () => ({
+    reimbursement_email: emailForm.reimbursement_email.trim().toLowerCase(),
+    imap_host: emailForm.imap_host.trim(),
+    imap_port: IMAP_PORT,
+    imap_username: emailForm.imap_username.trim(),
+    imap_password: emailForm.imap_password.trim(),
+  })
+
+  const testImapConnection = async () => {
+    const payload = buildImapPayload()
+    if (!payload.imap_host || !payload.imap_username || !payload.imap_password) {
+      setError('IMAP host, username, and app password are required to test the connection.')
+      return
+    }
+
+    setTestingImap(true)
+    setError('')
+    try {
+      const { data } = await testCompanyImapConnection({
+        imap_host: payload.imap_host,
+        imap_port: payload.imap_port,
+        imap_username: payload.imap_username,
+        imap_password: payload.imap_password,
+      })
+      if (!data.success || !data.imap_verified) {
+        setError(data.error || 'IMAP connection failed.')
+        setImapVerified(false)
+        return
+      }
+      setImapVerified(true)
+      toast.success(data.message || 'IMAP connection successful.')
+    } catch (err) {
+      setImapVerified(false)
+      setError(getApiErrorMessage(err))
+    } finally {
+      setTestingImap(false)
+    }
+  }
+
+  const saveImapConfiguration = async (event: FormEvent) => {
+    event.preventDefault()
+
+    const payload = buildImapPayload()
+    if (!payload.reimbursement_email) {
       setError('Enter your company reimbursement email.')
+      return
+    }
+    if (!payload.imap_host || !payload.imap_username) {
+      setError('IMAP host and username are required.')
+      return
+    }
+    if (!imapConfigured && !payload.imap_password) {
+      setError('IMAP app password is required for initial configuration.')
       return
     }
 
     setSaving(true)
     setError('')
     try {
-      const { data } = await saveReimbursementEmailConfig({
-        reimbursement_email: emailForm.reimbursement_email.trim().toLowerCase(),
-      })
-      applyReimbursementEmail(unwrapReimbursementEmailConfig(data))
+      const requestPayload = {
+        reimbursement_email: payload.reimbursement_email,
+        imap_host: payload.imap_host,
+        imap_port: payload.imap_port,
+        imap_username: payload.imap_username,
+        ...(payload.imap_password ? { imap_password: payload.imap_password } : {}),
+      }
+
+      const { data } = imapConfigured
+        ? await patchCompanyImapConfig(requestPayload)
+        : await saveCompanyImapConfig({
+            ...requestPayload,
+            imap_password: payload.imap_password,
+          })
+
+      if (!data.success) {
+        setError(data.error || 'Failed to save IMAP configuration.')
+        return
+      }
+
+      applyImapConfig(data.imap_config)
       invalidateAdminSetupCache()
-      toast.success(data.message || 'Reimbursement email saved.')
+      toast.success(data.message || 'IMAP configuration saved.')
       closeEmailModal()
     } catch (err) {
       setError(getApiErrorMessage(err))
@@ -387,12 +493,12 @@ export function SettingsPage() {
     return (
       <DashboardLayout
         title="Settings"
-        subtitle="Finance, reimbursement email, and display preferences"
+        subtitle="Finance, policy, and email ingestion preferences"
         breadcrumb="Settings"
         icon={Settings}
         navItems={navItems}
       >
-        <AdminListPanelShimmer rows={2} />
+        <AdminListPanelShimmer rows={3} />
       </DashboardLayout>
     )
   }
@@ -400,12 +506,12 @@ export function SettingsPage() {
   return (
     <DashboardLayout
       title="Settings"
-      subtitle="Finance, reimbursement email, and display preferences"
+      subtitle="Finance, policy, and email ingestion preferences"
       breadcrumb="Settings"
       icon={Settings}
       navItems={navItems}
     >
-      {error && !financeOpen && (
+      {error && !financeOpen && !emailOpen && !policyOpen && (
         <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
       )}
 
@@ -425,6 +531,8 @@ export function SettingsPage() {
                   setError('')
                   if (row.id === 'finance') {
                     setFinanceOpen(true)
+                  } else if (row.id === 'policy') {
+                    setPolicyOpen(true)
                   } else {
                     setEmailOpen(true)
                   }
@@ -754,69 +862,143 @@ export function SettingsPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={emailOpen} onOpenChange={(open) => !open && closeEmailModal()}>
+      <Dialog open={policyOpen} onOpenChange={(open) => !open && closePolicyModal()}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Reimbursement email</DialogTitle>
+            <DialogTitle>Policy settings</DialogTitle>
             <DialogDescription>
-              Set the company inbox employees forward receipts to. ZepEx ingests mail sent to the
-              platform receipt address below.
+              Control receipt age limits and auto-approval when there are no violations.
             </DialogDescription>
           </DialogHeader>
-          <form onSubmit={saveReimbursementEmail} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="reimbursement-email">Company reimbursement email</Label>
+          <CompanyPolicySettingsPanel
+            onCancel={closePolicyModal}
+            onSaved={(policy) => {
+              applyPolicySettings(policy)
+              closePolicyModal()
+            }}
+          />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={emailOpen} onOpenChange={(open) => !open && closeEmailModal()}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Email ingestion (IMAP)</DialogTitle>
+            <DialogDescription>
+              Connect your company reimbursement mailbox. Employees send receipts to this inbox and
+              ZepEx polls it in the background.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={saveImapConfiguration} className="space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="reimbursement-email">Reimbursement email</Label>
               <Input
                 id="reimbursement-email"
                 type="email"
-                placeholder="expenses@company.com"
+                placeholder="reimbursement@company.com"
                 value={emailForm.reimbursement_email}
                 onChange={(e) =>
-                  setEmailForm({ reimbursement_email: e.target.value })
+                  setEmailForm((current) => ({
+                    ...current,
+                    reimbursement_email: e.target.value,
+                  }))
                 }
-                disabled={saving}
+                disabled={saving || testingImap}
               />
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="platform-receipt-email">Forward all emails to</Label>
+            <div className="space-y-1.5">
+              <Label htmlFor="imap-host">IMAP host</Label>
               <Input
-                id="platform-receipt-email"
-                value={platformReceiptEmail}
-                readOnly
-                className="bg-muted/40"
+                id="imap-host"
+                placeholder="imap.zoho.in"
+                value={emailForm.imap_host}
+                onChange={(e) =>
+                  setEmailForm((current) => ({ ...current, imap_host: e.target.value }))
+                }
+                disabled={saving || testingImap}
+              />
+              <p className="text-xs text-muted-foreground">Uses secure IMAP port 993.</p>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="imap-username">IMAP username</Label>
+              <Input
+                id="imap-username"
+                placeholder="reimbursement@company.com"
+                value={emailForm.imap_username}
+                onChange={(e) =>
+                  setEmailForm((current) => ({ ...current, imap_username: e.target.value }))
+                }
+                disabled={saving || testingImap}
               />
             </div>
 
-            {forwardingInstruction && (
-              <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
-                {forwardingInstruction}
+            <div className="space-y-1.5">
+              <Label htmlFor="imap-password">IMAP app password</Label>
+              <Input
+                id="imap-password"
+                type="password"
+                placeholder={imapConfigured ? 'Leave blank to keep existing password' : 'App password'}
+                value={emailForm.imap_password}
+                onChange={(e) =>
+                  setEmailForm((current) => ({ ...current, imap_password: e.target.value }))
+                }
+                disabled={saving || testingImap}
+                autoComplete="new-password"
+              />
+              <p className="text-xs text-muted-foreground">
+                Verified before saving and never returned by the API.
+              </p>
+            </div>
+
+            {imapConfigured && (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+                IMAP is configured. Enter a new app password only when changing mailbox credentials.
               </div>
             )}
 
-            {emailServiceStatus && (
-              <div className="rounded-lg border border-[#e2e8f0] bg-gray-50 px-4 py-3 text-sm text-gray-700">
-                <p className="font-medium text-gray-900">Platform email delivery</p>
-                <p className="mt-1">
-                  Provider: {emailServiceStatus.provider ?? 'Platform SMTP (.env)'}
-                </p>
-                {emailServiceStatus.outgoing_email && (
-                  <p className="mt-1">Outgoing: {emailServiceStatus.outgoing_email}</p>
-                )}
-                <p className="mt-2 text-xs text-muted-foreground">
-                  SMTP is configured once by the platform via environment variables. Companies do not
-                  enter SMTP or IMAP credentials here.
-                </p>
+            {imapVerified && !imapConfigured && (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+                Connection verified. Save to store the configuration.
               </div>
             )}
 
             {error && emailOpen && <p className="text-sm text-red-600">{error}</p>}
-            <AdminModalFooter
-              onCancel={closeEmailModal}
-              submitLabel={emailLoaded ? 'Save reimbursement email' : 'Set reimbursement email'}
-              submitDisabled={!emailForm.reimbursement_email.trim()}
-              submitting={saving}
-            />
+
+            <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-between">
+              <button
+                type="button"
+                onClick={closeEmailModal}
+                disabled={saving || testingImap}
+                className="inline-flex h-10 items-center justify-center rounded-md border border-gray-300 bg-white px-4 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <button
+                  type="button"
+                  onClick={() => void testImapConnection()}
+                  disabled={saving || testingImap}
+                  className="inline-flex h-10 items-center justify-center rounded-md border border-primary px-4 text-sm font-medium text-primary hover:bg-primary/5 disabled:opacity-50"
+                >
+                  {testingImap ? 'Testing…' : 'Test connection'}
+                </button>
+                <button
+                  type="submit"
+                  disabled={
+                    saving ||
+                    testingImap ||
+                    !emailForm.reimbursement_email.trim() ||
+                    !emailForm.imap_host.trim() ||
+                    !emailForm.imap_username.trim()
+                  }
+                  className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {saving ? 'Saving…' : 'Save configuration'}
+                </button>
+              </div>
+            </div>
           </form>
         </DialogContent>
       </Dialog>

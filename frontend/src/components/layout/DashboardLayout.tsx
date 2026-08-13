@@ -16,6 +16,7 @@ import {
 import { useState, type ReactNode } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { SidebarUserSummary } from '@/components/layout/SidebarUserSummary'
+import { NotificationBell } from '@/components/layout/NotificationBell'
 import { useAuth } from '@/context/AuthContext'
 import { cn } from '@/lib/utils'
 import logo from '@/assets/logo.png'
@@ -134,7 +135,7 @@ export function DashboardLayout({
             </p>
           )}
 
-          <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+          <div className="mb-6 flex flex-wrap items-start justify-between gap-4 overflow-visible">
             <div className="flex min-w-0 items-start gap-4">
               {headerLeading}
               {!headerLeading && PageIcon && (
@@ -147,8 +148,11 @@ export function DashboardLayout({
                 {subtitle && <p className="mt-1 text-sm text-gray-500">{subtitle}</p>}
               </div>
             </div>
-            {headerAction && (
-              <div className="flex flex-wrap items-center gap-2">{headerAction}</div>
+            {(headerAction || portal === 'tenant') && (
+              <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2 overflow-visible">
+                {headerAction}
+                {portal === 'tenant' && <NotificationBell />}
+              </div>
             )}
           </div>
 

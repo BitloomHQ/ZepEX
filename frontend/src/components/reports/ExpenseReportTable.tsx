@@ -11,7 +11,7 @@ import {
 import { formatDate } from '@/lib/utils'
 import { formatReportTotal } from '@/lib/receiptDisplay'
 import type { ExpenseReport } from '@/types'
-import { cn } from '@/lib/utils'
+import { cn } from '@/lib/utils' 
 
 interface ExpenseReportTableProps {
   reports: ExpenseReport[]
