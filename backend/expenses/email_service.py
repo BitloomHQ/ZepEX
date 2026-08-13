@@ -1,4 +1,6 @@
-from tenants.models import Company, UserProfile
+from tenants.models import UserProfile
+
+from audit_logs.utils import create_audit_log
 
 from .models import (
     ExpenseReport,
@@ -6,7 +8,6 @@ from .models import (
     ExpenseReceipt,
 )
 from .report_utils import get_or_create_current_month_report
-from .audit_services import create_audit_log
 
 
 ALLOWED_EXTENSIONS = [
@@ -28,7 +29,7 @@ def ingest_receipt_email(
     Process a receipt received directly in a company's
     reimbursement mailbox.
 
-    New email architecture:
+    Flow:
 
         Company IMAP mailbox
                 ↓
@@ -38,20 +39,15 @@ def ingest_receipt_email(
                 ↓
         ingest_receipt_email()
                 ↓
-        Validate employee belongs to company
+        Validate sender belongs to company
                 ↓
         Create ExpenseSubmission
                 ↓
         Create ExpenseReceipt
                 ↓
-        Queue AI processing
+        email_processor.py queues AI processing
 
-    The company is determined by the IMAP mailbox that
-    fetched the email.
-
-    IMPORTANT:
-    An employee can only submit a receipt through the
-    reimbursement mailbox belonging to their own company.
+    The company is determined from the mailbox being polled.
     """
 
     # =========================================================
@@ -76,9 +72,15 @@ def ingest_receipt_email(
             "error": "Receipt attachment is required.",
         }
 
-    sender_email = sender_email.strip().lower()
+    sender_email = (
+        sender_email
+        .strip()
+        .lower()
+    )
 
-    subject = (subject or "").strip()
+    subject = (
+        subject or ""
+    ).strip()
 
     # =========================================================
     # 2. COMPANY VALIDATION
@@ -99,30 +101,41 @@ def ingest_receipt_email(
     if not company.reimbursement_email:
         return {
             "success": False,
-            "error": "Company reimbursement email is not configured.",
+            "error": (
+                "Company reimbursement email "
+                "is not configured."
+            ),
         }
 
     # =========================================================
     # 3. VALIDATE ATTACHMENT
     # =========================================================
 
-    filename = uploaded_file.name or ""
+    filename = (
+        uploaded_file.name or ""
+    ).strip()
 
     if "." not in filename:
         return {
             "success": False,
             "error": (
-                "Receipt file must have a valid extension."
+                "Receipt file must have "
+                "a valid extension."
             ),
         }
 
-    extension = filename.rsplit(".", 1)[-1].lower()
+    extension = (
+        filename
+        .rsplit(".", 1)[-1]
+        .lower()
+    )
 
     if extension not in ALLOWED_EXTENSIONS:
         return {
             "success": False,
             "error": (
-                "Only PDF, JPG, JPEG and PNG files are allowed."
+                "Only PDF, JPG, JPEG and PNG "
+                "files are allowed."
             ),
         }
 
@@ -130,31 +143,17 @@ def ingest_receipt_email(
     # 4. FIND EMPLOYEE INSIDE THIS COMPANY
     # =========================================================
     #
-    # This is the most important company-isolation check.
+    # This is the multi-tenant security check.
     #
-    # Example:
+    # Company A mailbox:
     #
-    # Company A mailbox
-    # reimbursement@companyA.com
+    #   Company A employee -> accepted
+    #   Company B employee -> rejected
     #
-    # Employee A
-    # employeeA@companyA.com
-    #
-    # → ACCEPT
-    #
-    # Company A mailbox
-    # reimbursement@companyA.com
-    #
-    # Employee B
-    # employeeB@companyB.com
-    #
-    # → REJECT
-    #
-    # The employee must belong to the exact company whose
-    # IMAP mailbox fetched the email.
     # =========================================================
 
     try:
+
         employee = (
             UserProfile.objects
             .select_related(
@@ -171,11 +170,12 @@ def ingest_receipt_email(
         )
 
     except UserProfile.DoesNotExist:
+
         return {
             "success": False,
             "error": (
-                "Sender is not a registered active employee "
-                "of this company."
+                "Sender is not a registered "
+                "active employee of this company."
             ),
         }
 
@@ -193,7 +193,7 @@ def ingest_receipt_email(
         }
 
     # =========================================================
-    # 6. EMPLOYEE PERMISSION CHECK
+    # 6. EMPLOYEE ROLE CHECK
     # =========================================================
 
     if not employee.company_role:
@@ -202,16 +202,21 @@ def ingest_receipt_email(
             "error": "Company role is not assigned.",
         }
 
+    # =========================================================
+    # 7. UPLOAD PERMISSION CHECK
+    # =========================================================
+
     if not employee.company_role.can_upload_receipt:
         return {
             "success": False,
             "error": (
-                "Employee is not allowed to upload receipts."
+                "Employee is not allowed "
+                "to upload receipts."
             ),
         }
 
     # =========================================================
-    # 7. DEPARTMENT CHECK
+    # 8. DEPARTMENT CHECK
     # =========================================================
 
     if not employee.department:
@@ -221,21 +226,24 @@ def ingest_receipt_email(
         }
 
     # =========================================================
-    # 8. GET CURRENT MONTH REPORT
+    # 9. GET CURRENT MONTH REPORT
     # =========================================================
 
-    report = get_or_create_current_month_report(employee)
+    report = get_or_create_current_month_report(
+        employee
+    )
 
     if report.status != ExpenseReport.STATUS_DRAFT:
         return {
             "success": False,
             "error": (
-                "Current month's report has already been submitted."
+                "Current month's report "
+                "has already been submitted."
             ),
         }
 
     # =========================================================
-    # 9. CREATE EXPENSE SUBMISSION
+    # 10. CREATE EXPENSE SUBMISSION
     # =========================================================
 
     submission = ExpenseSubmission.objects.create(
@@ -247,7 +255,7 @@ def ingest_receipt_email(
     )
 
     # =========================================================
-    # 10. CREATE EXPENSE RECEIPT
+    # 11. CREATE EXPENSE RECEIPT
     # =========================================================
 
     receipt = ExpenseReceipt.objects.create(
@@ -257,14 +265,21 @@ def ingest_receipt_email(
         employee=employee,
         department=employee.department,
         receipt_file=uploaded_file,
-        status=ExpenseReceipt.STATUS_AI_PROCESSING,
-        ai_status=ExpenseReceipt.AI_PROCESSING,
+
+        status=(
+            ExpenseReceipt.STATUS_AI_PROCESSING
+        ),
+
+        ai_status=(
+            ExpenseReceipt.AI_PROCESSING
+        ),
+
         ai_error_message=None,
         ai_retry_count=0,
     )
 
     # =========================================================
-    # 11. AUDIT LOG — RECEIPT RECEIVED
+    # 12. AUDIT — EMAIL RECEIPT CREATED
     # =========================================================
 
     create_audit_log(
@@ -272,18 +287,31 @@ def ingest_receipt_email(
         action="RECEIPT_UPLOADED",
         action_by=employee,
         message=(
-            "Receipt received via company reimbursement email."
+            "Receipt received via company "
+            "reimbursement email."
         ),
         metadata={
             "receipt_id": str(receipt.id),
             "report_id": str(report.id),
             "submission_id": str(submission.id),
-            "filename": receipt.receipt_file.name,
-            "source": ExpenseSubmission.SOURCE_EMAIL,
+
+            "filename": (
+                receipt.receipt_file.name
+            ),
+
+            "source": (
+                ExpenseSubmission.SOURCE_EMAIL
+            ),
+
             "sender_email": sender_email,
-            "reimbursement_email": company.reimbursement_email,
+
+            "reimbursement_email": (
+                company.reimbursement_email
+            ),
+
             "company_id": str(company.id),
             "company_name": company.name,
+
             "department": (
                 employee.department.name
                 if employee.department
@@ -293,37 +321,15 @@ def ingest_receipt_email(
     )
 
     # =========================================================
-    # 12. AUDIT LOG — AI PROCESSING
+    # 13. DO NOT START AI HERE
     # =========================================================
     #
-    # AI is queued by email_processor.py.
+    # AI processing is queued AFTER this function returns
+    # successfully inside email_processor.py:
     #
-    # We do NOT call process_receipt() directly here.
-    # This prevents synchronous AI processing and avoids
-    # processing the same receipt twice.
-    # =========================================================
-
-    create_audit_log(
-        company=company,
-        action="AI_PROCESSING_STARTED",
-        action_by=employee,
-        message=(
-            "AI extraction started for emailed receipt."
-        ),
-        metadata={
-            "receipt_id": str(receipt.id),
-            "report_id": str(report.id),
-            "submission_id": str(submission.id),
-            "source": ExpenseSubmission.SOURCE_EMAIL,
-        },
-    )
-
-    # =========================================================
-    # 13. RETURN RESULT
-    # =========================================================
+    # queue_receipt_ai_processing(...)
     #
-    # email_processor.py will queue the AI task after this
-    # function successfully returns.
+    # This prevents duplicate AI execution.
     # =========================================================
 
     return {
