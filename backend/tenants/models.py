@@ -9,6 +9,7 @@ from django.db import models
 from django.db.models import Q
 
 class Company(models.Model):
+
     id = models.UUIDField(
         primary_key=True,
         default=uuid.uuid4,
@@ -30,7 +31,10 @@ class Company(models.Model):
         unique=True
     )
 
-    # Old field kept for backward compatibility
+    # --------------------------------------------------
+    # Reimbursement Email
+    # --------------------------------------------------
+
     reimbursement_email_prefix = models.SlugField(
         max_length=100,
         unique=True,
@@ -38,7 +42,6 @@ class Company(models.Model):
         blank=True
     )
 
-    # Company real reimbursement email
     reimbursement_email = models.EmailField(
         unique=True,
         null=True,
@@ -46,19 +49,34 @@ class Company(models.Model):
         default=None,
     )
 
-    # ZepEx forwarding email setup
-    inbound_email_code = models.CharField(
-        max_length=100,
-        unique=True,
+    # --------------------------------------------------
+    # COMPANY-SPECIFIC IMAP CONFIGURATION
+    # --------------------------------------------------
+
+    imap_host = models.CharField(
+        max_length=255,
+        blank=True,
         null=True,
-        blank=True
     )
 
-    inbound_forwarding_email = models.EmailField(
-        unique=True,
-        null=True,
-        blank=True
+    imap_port = models.PositiveIntegerField(
+        default=993,
     )
+
+    imap_username = models.EmailField(
+        blank=True,
+        null=True,
+    )
+
+    imap_password = models.CharField(
+        max_length=500,
+        blank=True,
+        null=True,
+    )
+
+    # --------------------------------------------------
+    # Company Status
+    # --------------------------------------------------
 
     is_verified = models.BooleanField(
         default=False
@@ -96,23 +114,25 @@ class Company(models.Model):
         else:
             self.reimbursement_email = None
 
-        # Normalize forwarding email
-        if self.inbound_forwarding_email:
-            self.inbound_forwarding_email = (
-                self.inbound_forwarding_email
+        # Normalize IMAP host
+        if self.imap_host:
+            self.imap_host = (
+                self.imap_host
                 .strip()
                 .lower()
             )
         else:
-            self.inbound_forwarding_email = None
+            self.imap_host = None
 
-        # Normalize forwarding code
-        if self.inbound_email_code:
-            self.inbound_email_code = (
-                self.inbound_email_code
+        # Normalize IMAP username
+        if self.imap_username:
+            self.imap_username = (
+                self.imap_username
                 .strip()
                 .lower()
             )
+        else:
+            self.imap_username = None
 
         super().save(*args, **kwargs)
 
@@ -1535,4 +1555,60 @@ class PolicyVersionComparison(models.Model):
             f"v{self.new_version.version_number}"
         )
 
+class CompanyEmailIntegration(models.Model):
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+
+    company = models.OneToOneField(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="email_integration",
+    )
+
+    reimbursement_email = models.EmailField()
+
+    imap_host = models.CharField(
+        max_length=255
+    )
+
+    imap_port = models.PositiveIntegerField(
+        default=993
+    )
+
+    imap_username = models.EmailField()
+
+    imap_password = models.CharField(
+        max_length=500
+    )
+
+    use_ssl = models.BooleanField(
+        default=True
+    )
+
+    is_active = models.BooleanField(
+        default=True
+    )
+
+    last_sync_at = models.DateTimeField(
+        null=True,
+        blank=True
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True
+    )
+
+    def __str__(self):
+        return (
+            f"{self.company.name} - "
+            f"{self.reimbursement_email}"
+        )
 

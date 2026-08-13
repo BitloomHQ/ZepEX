@@ -18,10 +18,12 @@ from .models import (
     ExpenseReport,
     ExpenseSubmission,
     ExpenseReceipt,
-    Department
+    Department,
+    
 )
 from tenants.models import CompanyRole
 from expenses.workflow_engine import reorder_workflow_steps
+from .notification_services import notify_report_paid
 from .workflow_engine import resolve_step_approver
 from expenses.workflow_engine import start_workflow
 from .serializers import ExpenseReceiptSerializer,ExpenseReportSerializer, ApprovalHistorySerializer
@@ -289,125 +291,8 @@ def retry_receipt_ai(request, receipt_id):
         },
         status=status.HTTP_200_OK,
     )
-from .email_service import ingest_forwarded_receipt_email
 
-@api_view(["POST"])
-@authentication_classes([])
-@permission_classes([AllowAny])
-@parser_classes([MultiPartParser, FormParser])
-def email_ingest_receipt(request):
-    """
-    HTTP ingest for receipt attachments (e.g. inbound parse webhook).
 
-    Expected multipart fields:
-    - sender_email
-    - original_recipient (or recipient_email) — company reimbursement address when known
-    - subject (optional)
-    - receipt_file
-    - X-Email-Ingest-Secret header when EMAIL_INGEST_SECRET is set
-    """
-    ingest_secret = getattr(settings, "EMAIL_INGEST_SECRET", "") or ""
-    if ingest_secret:
-        provided = (
-            request.headers.get("X-Email-Ingest-Secret")
-            or request.data.get("ingest_secret")
-            or ""
-        )
-        if provided != ingest_secret:
-            return Response(
-                {"success": False, "error": "Unauthorized ingest request."},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
-
-    sender_email = str(request.data.get("sender_email", "")).lower().strip()
-    email_subject = str(request.data.get("subject", "")).strip()
-    original_recipient = str(
-        request.data.get("original_recipient")
-        or request.data.get("recipient_email")
-        or ""
-    ).lower().strip()
-    receipt_file = request.FILES.get("receipt_file")
-
-    result = ingest_forwarded_receipt_email(
-        sender_email=sender_email,
-        original_recipient=original_recipient,
-        subject=email_subject,
-        uploaded_file=receipt_file,
-    )
-
-    if not result.get("success"):
-        return Response(
-            {
-                "success": False,
-                "error": result.get("error"),
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    report = result["report"]
-    submission = result["submission"]
-    receipt = result["receipt"]
-    employee = result["employee"]
-    company = result["company"]
-
-    queue_receipt_ai_processing(
-        receipt_id=str(receipt.id),
-        company=company,
-        action_by=employee,
-        report_id=str(report.id),
-    )
-
-    create_audit_log(
-        company=company,
-        action="EMAIL_RECEIPT_RECEIVED",
-        action_by=employee,
-        message=f"Receipt email received from {sender_email}",
-        metadata={
-            "receipt_id": str(receipt.id),
-            "report_id": str(report.id),
-            "submission_id": str(submission.id),
-            "email_subject": email_subject,
-            "source": ExpenseSubmission.SOURCE_EMAIL,
-            "sender_email": sender_email,
-            "original_recipient": original_recipient,
-            "company": company.name,
-            "company_role": (
-                employee.company_role.name
-                if employee.company_role else None
-            ),
-            "ai_status": receipt.ai_status,
-        },
-    )
-
-    create_audit_log(
-        company=company,
-        action="AI_PROCESSING_QUEUED",
-        action_by=employee,
-        message="AI extraction queued for email receipt.",
-        metadata={
-            "receipt_id": str(receipt.id),
-            "report_id": str(report.id),
-            "ai_status": receipt.ai_status,
-        },
-    )
-
-    serializer = ExpenseReceiptSerializer(receipt)
-
-    return Response(
-        {
-            "success": True,
-            "message": "Receipt received successfully. AI extraction has been queued.",
-            "company": company.name,
-            "employee": employee.user.email,
-            "report_id": str(report.id),
-            "receipt": serializer.data,
-            "ai": {
-                "status": receipt.ai_status,
-                "message": "Receipt has been queued for AI processing.",
-            },
-        },
-        status=status.HTTP_201_CREATED,
-    )
 
 from .services import (
     sync_receipt_totals_for_report,
@@ -1153,20 +1038,30 @@ def accounts_mark_paid(request, report_id):
     # 10. Payment notification
     # --------------------------------------------------
 
-    send_workflow_status_email(
-        report=report,
-        subject="Reimbursement Payment Completed",
-        message=(
-            "Your reimbursement report has been processed "
-            "by Accounts and marked as paid."
-        ),
-        action="PAID",
-        action_by=profile,
-        current_step=None,
-        notes=notes or "Payment completed successfully.",
-        notify_previous_approvers=True,
-    )
+   # --------------------------------------------------
+# 10. Payment Notifications
+# --------------------------------------------------
 
+# In-app notification → Employee
+    notify_report_paid(
+    recipient=report.employee,
+    report=report,
+)
+
+# Existing email notification
+    send_workflow_status_email(
+    report=report,
+    subject="Reimbursement Payment Completed",
+    message=(
+        "Your reimbursement report has been processed "
+        "by Accounts and marked as paid."
+    ),
+    action="PAID",
+    action_by=profile,
+    current_step=None,
+    notes=notes or "Payment completed successfully.",
+    notify_previous_approvers=True,
+)
     # --------------------------------------------------
     # 11. Response
     # --------------------------------------------------
@@ -2111,7 +2006,11 @@ def delete_workflow(request, workflow_id):
         {"message": f"Workflow '{workflow_name}' deleted successfully."}
     )
 
-
+from .notification_services import (
+    notify_report_approved,
+    notify_next_approver,
+    notify_report_rejected,
+)
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def approve_report_step(request, report_id):
@@ -2176,6 +2075,10 @@ def approve_report_step(request, report_id):
 
     steps_skipped = result.get("steps_skipped", 0)
 
+    # ==========================================================
+    # AUDIT LOG
+    # ==========================================================
+
     create_audit_log(
         company=profile.company,
         action="STEP_APPROVED",
@@ -2190,11 +2093,13 @@ def approve_report_step(request, report_id):
             "approver_type": current_step.approver_type,
             "approver_role": (
                 current_step.approver_role.name
-                if current_step.approver_role else None
+                if current_step.approver_role
+                else None
             ),
             "specific_user": (
                 current_step.specific_user.user.email
-                if current_step.specific_user else None
+                if current_step.specific_user
+                else None
             ),
             "notes": notes,
             "steps_skipped": steps_skipped,
@@ -2203,12 +2108,36 @@ def approve_report_step(request, report_id):
         },
     )
 
+    # ==========================================================
+    # WORKFLOW COMPLETED
+    # ==========================================================
+
     if result.get("completed"):
+
+        # ------------------------------------------------------
+        # Notification → Employee
+        # ------------------------------------------------------
+
+        notify_report_approved(
+            recipient=report.employee,
+            report=report,
+            approver_name=(
+                profile.user.get_full_name()
+                or profile.user.email
+            ),
+        )
+
+        # ------------------------------------------------------
+        # Existing Email
+        # ------------------------------------------------------
 
         send_workflow_status_email(
             report=report,
             subject="Reimbursement Report Fully Approved",
-            message="Your reimbursement report has completed all approval steps.",
+            message=(
+                "Your reimbursement report has completed "
+                "all approval steps."
+            ),
             action="APPROVED",
             action_by=profile,
             current_step=current_step,
@@ -2231,13 +2160,52 @@ def approve_report_step(request, report_id):
             status=status.HTTP_200_OK
         )
 
+    # ==========================================================
+    # NEXT APPROVAL STEP
+    # ==========================================================
+
     next_step = result["next_step"]
     next_approver = result["next_approver"]
+
+    # ----------------------------------------------------------
+    # Notification → Employee
+    # ----------------------------------------------------------
+
+    notify_report_approved(
+        recipient=report.employee,
+        report=report,
+        approver_name=(
+            profile.user.get_full_name()
+            or profile.user.email
+        ),
+    )
+
+    # ----------------------------------------------------------
+    # Notification → Next Approver
+    # ----------------------------------------------------------
+
+    if next_approver:
+
+        notify_next_approver(
+            recipient=next_approver,
+            report=report,
+            employee_name=(
+                report.employee.user.get_full_name()
+                or report.employee.user.email
+            ),
+        )
+
+    # ----------------------------------------------------------
+    # Existing Email
+    # ----------------------------------------------------------
 
     send_workflow_status_email(
         report=report,
         subject="Reimbursement Report Moved to Next Approval Step",
-        message="Your reimbursement report has moved to the next approval step.",
+        message=(
+            "Your reimbursement report has moved "
+            "to the next approval step."
+        ),
         action="STEP_APPROVED",
         action_by=profile,
         current_step=current_step,
@@ -2256,23 +2224,29 @@ def approve_report_step(request, report_id):
             "workflow_completed": False,
             "steps_skipped": steps_skipped,
             "approved_by": actor_role,
+
             "next_step": {
                 "id": str(next_step.id),
                 "step_order": next_step.step_order,
                 "approver_type": next_step.approver_type,
-                "approver_type_name": next_step.get_approver_type_display(),
+                "approver_type_name": (
+                    next_step.get_approver_type_display()
+                ),
                 "approver_role": (
                     next_step.approver_role.name
-                    if next_step.approver_role else None
+                    if next_step.approver_role
+                    else None
                 ),
                 "specific_user": (
                     next_step.specific_user.user.email
-                    if next_step.specific_user else None
+                    if next_step.specific_user
+                    else None
                 ),
                 "routing_type": next_step.routing_type,
                 "department": (
                     next_step.department.name
-                    if next_step.department else None
+                    if next_step.department
+                    else None
                 ),
                 "next_approver": {
                     "id": str(next_approver.id),
@@ -2283,6 +2257,7 @@ def approve_report_step(request, report_id):
                     "email": next_approver.user.email,
                 },
             },
+
             "report": serializer.data,
         },
         status=status.HTTP_200_OK
@@ -2355,32 +2330,56 @@ def reject_report_step(request, report_id):
         else profile.company_role.name
     )
 
+    # ==========================================================
+    # AUDIT LOG
+    # ==========================================================
+
     create_audit_log(
         company=profile.company,
         action="STEP_REJECTED",
         action_by=profile,
         message=f"{actor_role} rejected expense report {report.id}.",
         metadata={
-    "report_id": str(report.id),
-    "employee_email": report.employee.user.email,
-    "rejected_by": profile.user.email,
-    "actor_role": actor_role,
-    "step_order": current_step.step_order,
-    "approver_type": current_step.approver_type,
-    "approver_role": (
-        current_step.approver_role.name
-        if current_step.approver_role
-        else None
-    ),
-    "specific_user": (
-        current_step.specific_user.user.email
-        if current_step.specific_user
-        else None
-    ),
-    "reason": notes,
-    "workflow_completed": True,
-    "report_status": report.status,
-})
+            "report_id": str(report.id),
+            "employee_email": report.employee.user.email,
+            "rejected_by": profile.user.email,
+            "actor_role": actor_role,
+            "step_order": current_step.step_order,
+            "approver_type": current_step.approver_type,
+            "approver_role": (
+                current_step.approver_role.name
+                if current_step.approver_role
+                else None
+            ),
+            "specific_user": (
+                current_step.specific_user.user.email
+                if current_step.specific_user
+                else None
+            ),
+            "reason": notes,
+            "workflow_completed": True,
+            "report_status": report.status,
+        },
+    )
+
+    # ==========================================================
+    # NOTIFICATION → EMPLOYEE
+    # ==========================================================
+
+    notify_report_rejected(
+        recipient=report.employee,
+        report=report,
+        approver_name=(
+            profile.user.get_full_name()
+            or profile.user.email
+        ),
+        reason=notes,
+    )
+
+    # ==========================================================
+    # EXISTING EMAIL
+    # ==========================================================
+
     send_workflow_status_email(
         report=report,
         subject="Reimbursement Report Rejected",
@@ -2391,6 +2390,10 @@ def reject_report_step(request, report_id):
         notes=notes,
         notify_previous_approvers=True,
     )
+
+    # ==========================================================
+    # RESPONSE
+    # ==========================================================
 
     serializer = ExpenseReportSerializer(report)
 
@@ -3385,4 +3388,163 @@ def company_policy_settings(request):
             ).data,
         },
         status=status.HTTP_200_OK
+    )
+from django.utils import timezone
+
+from rest_framework.decorators import (
+    api_view,
+    permission_classes,
+)
+
+from rest_framework.permissions import IsAuthenticated
+
+from rest_framework.response import Response
+
+from rest_framework import status
+
+from .models import Notification
+
+from .serializers import NotificationSerializer
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_notifications(request):
+
+    profile = request.user.profile
+
+    notifications = (
+        Notification.objects
+        .filter(
+            recipient=profile,
+            company=profile.company,
+        )
+        .select_related(
+            "recipient__user",
+            "company",
+            "report",
+            "receipt",
+        )
+        .order_by("-created_at")
+    )
+
+    unread_count = notifications.filter(
+        is_read=False
+    ).count()
+
+    serializer = NotificationSerializer(
+        notifications,
+        many=True,
+        context={
+            "request": request,
+        },
+    )
+
+    return Response(
+        {
+            "count": notifications.count(),
+            "unread_count": unread_count,
+            "results": serializer.data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def mark_notification_read(
+    request,
+    notification_id,
+):
+
+    profile = request.user.profile
+
+    try:
+
+        notification = Notification.objects.get(
+            id=notification_id,
+            recipient=profile,
+            company=profile.company,
+        )
+
+    except Notification.DoesNotExist:
+
+        return Response(
+            {
+                "error": "Notification not found."
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    if not notification.is_read:
+
+        notification.is_read = True
+        notification.read_at = timezone.now()
+
+        notification.save(
+            update_fields=[
+                "is_read",
+                "read_at",
+                "updated_at",
+            ]
+        )
+
+    serializer = NotificationSerializer(
+        notification,
+        context={
+            "request": request,
+        },
+    )
+
+    return Response(
+        {
+            "message": "Notification marked as read.",
+            "notification": serializer.data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def mark_all_notifications_read(request):
+
+    profile = request.user.profile
+
+    updated_count = (
+        Notification.objects
+        .filter(
+            recipient=profile,
+            company=profile.company,
+            is_read=False,
+        )
+        .update(
+            is_read=True,
+            read_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+    )
+
+    return Response(
+        {
+            "message": "All notifications marked as read.",
+            "updated_count": updated_count,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_unread_notification_count(request):
+
+    profile = request.user.profile
+
+    unread_count = Notification.objects.filter(
+        recipient=profile,
+        company=profile.company,
+        is_read=False,
+    ).count()
+
+    return Response(
+        {
+            "unread_count": unread_count,
+        },
+        status=status.HTTP_200_OK,
     )

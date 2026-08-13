@@ -884,3 +884,82 @@ class CompanyExchangeRateSerializer(serializers.ModelSerializer):
             )
 
         return attrs
+
+
+from rest_framework import serializers
+
+from .models import Company
+from .encryption_services import (
+    encrypt_imap_password,
+)
+
+class CompanyImapConfigSerializer(serializers.ModelSerializer):
+
+    imap_configured = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Company
+
+        fields = [
+            "reimbursement_email",
+            "imap_host",
+            "imap_port",
+            "imap_username",
+            "imap_password",
+            "imap_configured",
+        ]
+
+        extra_kwargs = {
+            "imap_password": {
+                "write_only": True,
+                "required": False,
+            },
+        }
+
+    def get_imap_configured(self, obj):
+
+        return bool(
+            obj.reimbursement_email
+            and obj.imap_host
+            and obj.imap_port
+            and obj.imap_username
+            and obj.imap_password
+        )
+
+    def validate_imap_port(self, value):
+
+        if value < 1 or value > 65535:
+            raise serializers.ValidationError(
+                "IMAP port must be between 1 and 65535."
+            )
+
+        return value
+
+    def update(self, instance, validated_data):
+
+        # Plain app password coming from frontend
+        password = validated_data.pop(
+            "imap_password",
+            None,
+        )
+
+        # Update normal fields
+        for field, value in validated_data.items():
+            setattr(
+                instance,
+                field,
+                value,
+            )
+
+        # Encrypt app password before database storage
+        if password:
+
+            instance.imap_password = (
+                encrypt_imap_password(
+                    password
+                )
+            )
+
+        instance.save()
+
+        return instance

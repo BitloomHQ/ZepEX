@@ -22,3 +22,4 @@ python-docx
 email-validator
 django-storages[s3]
 boto3
+cryptography

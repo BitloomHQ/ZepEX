@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .views import (
+    company_imap_config,
     create_department,
     list_departments,
     create_employee,
@@ -19,6 +20,7 @@ from .views import (
     edit_company_user,
     deactivate_company_user,
     activate_company_user,
+    test_company_imap_connection,
     update_department,
     deactivate_department,
     activate_department,
@@ -306,5 +308,20 @@ path(
     "company/exchange-rates/<int:rate_id>/delete/",
     delete_company_exchange_rate,
     name="delete-company-exchange-rate",
+),
+path(
+    "company/imap-config/",
+    company_imap_config,
+    name="company-imap-config",
+),
+path(
+    "company/imap-config/test/",
+    test_company_imap_connection,
+    name="test-company-imap-connection",
+),
+path(
+    "company/imap-config/",
+    company_imap_config,
+    name="company-imap-config",
 ),
 ]

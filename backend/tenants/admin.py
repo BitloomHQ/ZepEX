@@ -13,7 +13,7 @@ from .models import (
     CompanyFinanceSettings,
 )
 
-
+from .models import CompanyEmailIntegration
 @admin.register(Company)
 class CompanyAdmin(admin.ModelAdmin):
 
@@ -146,4 +146,26 @@ class CompanyFinanceSettingsAdmin(admin.ModelAdmin):
 
     search_fields = (
         "company__name",
+    )
+
+@admin.register(CompanyEmailIntegration)
+class CompanyEmailIntegrationAdmin(admin.ModelAdmin):
+
+    list_display = (
+        "company",
+        "reimbursement_email",
+        "imap_host",
+        "imap_port",
+        "is_active",
+        "last_sync_at",
+    )
+
+    list_filter = (
+        "is_active",
+    )
+
+    search_fields = (
+        "company__name",
+        "reimbursement_email",
+        "imap_username",
     )

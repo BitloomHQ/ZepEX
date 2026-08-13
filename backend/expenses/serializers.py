@@ -7,7 +7,8 @@ from .models import (
     ExpenseLineItem,
     ApprovalHistory,
     ApprovalWorkflow,
-    ApprovalWorkflowStep
+    ApprovalWorkflowStep,
+    Notification
 )
 from .report_utils import is_payment_queue_role
 from tenants.media_utils import profile_picture_url
@@ -1452,3 +1453,82 @@ class CompanyPolicySerializer(serializers.ModelSerializer):
             )
 
         return value
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+
+    recipient_email = serializers.EmailField(
+        source="recipient.user.email",
+        read_only=True,
+    )
+
+    notification_type_name = serializers.CharField(
+        source="get_notification_type_display",
+        read_only=True,
+    )
+
+    report_id = serializers.SerializerMethodField()
+    receipt_id = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Notification
+
+        fields = [
+            "id",
+
+            # Notification information
+            "notification_type",
+            "notification_type_name",
+            "title",
+            "message",
+
+            # Recipient
+            "recipient",
+            "recipient_email",
+
+            # Company
+            "company",
+
+            # Related objects
+            "report_id",
+            "receipt_id",
+
+            # Read status
+            "is_read",
+            "read_at",
+
+            # Timestamps
+            "created_at",
+            "updated_at",
+        ]
+
+        read_only_fields = [
+            "id",
+            "recipient",
+            "recipient_email",
+            "company",
+            "report_id",
+            "receipt_id",
+            "notification_type",
+            "notification_type_name",
+            "title",
+            "message",
+            "is_read",
+            "read_at",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_report_id(self, obj):
+        return (
+            str(obj.report.id)
+            if obj.report
+            else None
+        )
+
+    def get_receipt_id(self, obj):
+        return (
+            str(obj.receipt.id)
+            if obj.receipt
+            else None
+        )

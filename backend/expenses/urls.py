@@ -2,9 +2,11 @@ from django.urls import path
 
 from .views import (
     company_policy_settings,
+    mark_all_notifications_read,
+    mark_notification_read,
     upload_receipt,
     retry_receipt_ai,
-    email_ingest_receipt,
+  
     submit_current_month_report,
     
     current_month_report,
@@ -35,6 +37,10 @@ from .views import (
     reject_receipt_api,
     remove_receipt_line_item_api,
     restore_receipt_line_item_api,
+    get_notifications,
+    mark_notification_read,
+    mark_all_notifications_read,
+    get_unread_notification_count,
 
 )
 
@@ -46,7 +52,7 @@ urlpatterns = [
         retry_receipt_ai,
         name="retry-receipt-ai",
     ),
-    path("email-ingest/", email_ingest_receipt, name="email-ingest-receipt"),
+    
     path("reports/submit/", submit_current_month_report, name="submit-current-month-report"),
     
     path("reports/current/",current_month_report,name="current-month-report"),
@@ -140,5 +146,27 @@ path(
     "company/policy/settings/",
     company_policy_settings,
     name="company-policy-settings",
+),
+path(
+    "notifications/",
+    get_notifications,
+    name="get-notifications",
+),
+
+path(
+    "notifications/<uuid:notification_id>/read/",
+    mark_notification_read,
+    name="mark-notification-read",
+),
+
+path(
+    "notifications/read-all/",
+    mark_all_notifications_read,
+    name="mark-all-notifications-read",
+),
+path(
+    "notifications/unread-count/",
+    get_unread_notification_count,
+    name="get-unread-notification-count",
 ),
 ]

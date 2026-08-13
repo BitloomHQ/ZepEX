@@ -959,3 +959,104 @@ class ExpenseAuditTrail(models.Model):
 
     def __str__(self):
         return f"{self.receipt.id} - {self.action}"
+
+class Notification(models.Model):
+
+    TYPE_WORKFLOW = "WORKFLOW"
+    TYPE_APPROVAL = "APPROVAL"
+    TYPE_REJECTION = "REJECTION"
+    TYPE_PAYMENT = "PAYMENT"
+    TYPE_POLICY = "POLICY"
+    TYPE_RECEIPT = "RECEIPT"
+    TYPE_SYSTEM = "SYSTEM"
+
+    NOTIFICATION_TYPES = [
+        (TYPE_WORKFLOW, "Workflow"),
+        (TYPE_APPROVAL, "Approval"),
+        (TYPE_REJECTION, "Rejection"),
+        (TYPE_PAYMENT, "Payment"),
+        (TYPE_POLICY, "Policy"),
+        (TYPE_RECEIPT, "Receipt"),
+        (TYPE_SYSTEM, "System"),
+    ]
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+
+    recipient = models.ForeignKey(
+        "tenants.UserProfile",
+        on_delete=models.CASCADE,
+        related_name="notifications",
+    )
+
+    company = models.ForeignKey(
+        "tenants.Company",
+        on_delete=models.CASCADE,
+        related_name="notifications",
+    )
+
+    report = models.ForeignKey(
+        "ExpenseReport",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="notifications",
+    )
+
+    receipt = models.ForeignKey(
+        "ExpenseReceipt",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="notifications",
+    )
+
+    notification_type = models.CharField(
+        max_length=30,
+        choices=NOTIFICATION_TYPES,
+    )
+
+    title = models.CharField(
+        max_length=255,
+    )
+
+    message = models.TextField()
+
+    is_read = models.BooleanField(
+        default=False,
+    )
+
+    read_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+
+        indexes = [
+            models.Index(
+                fields=["recipient", "is_read"]
+            ),
+            models.Index(
+                fields=["company", "created_at"]
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.recipient.user.email} - "
+            f"{self.title}"
+        )
+

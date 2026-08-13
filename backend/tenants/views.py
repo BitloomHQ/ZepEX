@@ -6284,3 +6284,419 @@ def delete_company_exchange_rate(request, rate_id):
         },
         status=status.HTTP_200_OK,
     )
+
+from rest_framework.decorators import (
+    api_view,
+    permission_classes,
+)
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework import status
+
+from .serializers import CompanyImapConfigSerializer
+
+
+@api_view(["GET", "PUT", "PATCH"])
+@permission_classes([IsAuthenticated])
+def company_imap_config(request):
+
+    profile = request.user.profile
+
+    # ---------------------------------------------
+    # Company Admin only
+    # ---------------------------------------------
+
+    if profile.role != "COMPANY_ADMIN":
+        return Response(
+            {
+                "success": False,
+                "error": "Only Company Admin can configure IMAP."
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    company = profile.company
+
+    # ---------------------------------------------
+    # GET
+    # ---------------------------------------------
+
+    if request.method == "GET":
+
+        serializer = CompanyImapConfigSerializer(
+            company
+        )
+
+        return Response(
+            {
+                "success": True,
+                "imap_config": serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    # ---------------------------------------------
+    # UPDATE
+    # ---------------------------------------------
+
+    serializer = CompanyImapConfigSerializer(
+        company,
+        data=request.data,
+        partial=True,
+    )
+
+    if not serializer.is_valid():
+
+        return Response(
+            {
+                "success": False,
+                "errors": serializer.errors,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    serializer.save()
+
+    return Response(
+        {
+            "success": True,
+            "message": "Company IMAP configuration updated successfully.",
+            "imap_config": serializer.data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+from expenses.email_fetcher import (
+    test_imap_connection,
+    ImapAuthError,
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def test_company_imap_connection(request):
+
+    profile = request.user.profile
+
+    if profile.role != "COMPANY_ADMIN":
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Only Company Admin can test IMAP configuration."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    host = str(
+        request.data.get("imap_host", "")
+    ).strip()
+
+    username = str(
+        request.data.get("imap_username", "")
+    ).strip()
+
+    password = str(
+        request.data.get("imap_password", "")
+    ).strip()
+
+    port = request.data.get(
+        "imap_port",
+        993,
+    )
+
+    if not host:
+        return Response(
+            {
+                "success": False,
+                "error": "imap_host is required.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not username:
+        return Response(
+            {
+                "success": False,
+                "error": "imap_username is required.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not password:
+        return Response(
+            {
+                "success": False,
+                "error": "imap_password is required.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        port = int(port)
+
+    except (TypeError, ValueError):
+        return Response(
+            {
+                "success": False,
+                "error": "imap_port must be a valid number.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if port < 1 or port > 65535:
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "imap_port must be between 1 and 65535."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+
+        result = test_imap_connection(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+        )
+
+    except ImapAuthError as exc:
+
+        return Response(
+            {
+                "success": False,
+                "imap_verified": False,
+                "error": str(exc),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    except Exception as exc:
+
+        return Response(
+            {
+                "success": False,
+                "imap_verified": False,
+                "error": str(exc),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    return Response(
+        {
+            "success": True,
+            "imap_verified": True,
+            "message": result["message"],
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["GET", "PUT", "PATCH"])
+@permission_classes([IsAuthenticated])
+def company_imap_config(request):
+
+    profile = request.user.profile
+
+    # --------------------------------------------------
+    # Company Admin only
+    # --------------------------------------------------
+
+    if profile.role != "COMPANY_ADMIN":
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Only Company Admin can configure IMAP."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    company = profile.company
+
+    if not company:
+        return Response(
+            {
+                "success": False,
+                "error": "Company is not assigned.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==================================================
+    # GET CURRENT CONFIGURATION
+    # ==================================================
+
+    if request.method == "GET":
+
+        serializer = CompanyImapConfigSerializer(
+            company
+        )
+
+        return Response(
+            {
+                "success": True,
+                "imap_config": serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    # ==================================================
+    # UPDATE CONFIGURATION
+    # ==================================================
+
+    serializer = CompanyImapConfigSerializer(
+        company,
+        data=request.data,
+        partial=True,
+    )
+
+    if not serializer.is_valid():
+
+        return Response(
+            {
+                "success": False,
+                "errors": serializer.errors,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    validated_data = serializer.validated_data
+
+    # --------------------------------------------------
+    # Resolve values
+    # --------------------------------------------------
+
+    imap_host = validated_data.get(
+        "imap_host",
+        company.imap_host,
+    )
+
+    imap_port = validated_data.get(
+        "imap_port",
+        company.imap_port or 993,
+    )
+
+    imap_username = validated_data.get(
+        "imap_username",
+        company.imap_username,
+    )
+
+    reimbursement_email = validated_data.get(
+        "reimbursement_email",
+        company.reimbursement_email,
+    )
+
+    imap_password = validated_data.get(
+        "imap_password"
+    )
+
+    # --------------------------------------------------
+    # Validate required configuration
+    # --------------------------------------------------
+
+    if not reimbursement_email:
+        return Response(
+            {
+                "success": False,
+                "error": "Reimbursement email is required.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not imap_host:
+        return Response(
+            {
+                "success": False,
+                "error": "IMAP host is required.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not imap_username:
+        return Response(
+            {
+                "success": False,
+                "error": "IMAP username is required.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # --------------------------------------------------
+    # If password is being changed, verify connection
+    # --------------------------------------------------
+
+    if imap_password:
+
+        try:
+
+            test_imap_connection(
+                host=imap_host,
+                port=imap_port,
+                username=imap_username,
+                password=imap_password,
+            )
+
+        except ImapAuthError as exc:
+
+            return Response(
+                {
+                    "success": False,
+                    "imap_verified": False,
+                    "error": str(exc),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        except Exception as exc:
+
+            return Response(
+                {
+                    "success": False,
+                    "imap_verified": False,
+                    "error": str(exc),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    # --------------------------------------------------
+    # If first-time configuration, password required
+    # --------------------------------------------------
+
+    elif not company.imap_password:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "IMAP app password is required "
+                    "for initial configuration."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # --------------------------------------------------
+    # Save
+    # --------------------------------------------------
+
+    company = serializer.save()
+
+    return Response(
+        {
+            "success": True,
+            "message": (
+                "Company IMAP configuration saved successfully."
+            ),
+            "imap_verified": True,
+            "imap_config": (
+                CompanyImapConfigSerializer(
+                    company
+                ).data
+            ),
+        },
+        status=status.HTTP_200_OK,
+    )
