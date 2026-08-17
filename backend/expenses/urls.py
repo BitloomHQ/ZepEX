@@ -41,6 +41,14 @@ from .views import (
     mark_notification_read,
     mark_all_notifications_read,
     get_unread_notification_count,
+    payment_monthly_expense_history,
+    payment_monthly_expense_detail,
+    payment_employee_summary,
+    payment_employee_history,
+    payment_monthly_summary,
+    payment_department_summary,
+    payment_category_summary,
+    
 
 )
 
@@ -168,5 +176,52 @@ path(
     "notifications/unread-count/",
     get_unread_notification_count,
     name="get-unread-notification-count",
+),
+
+path(
+    "payments/monthly-expenses/",
+    payment_monthly_expense_history,
+    name="payment-monthly-expense-history",
+),
+path(
+    "payments/monthly-expenses/",
+    payment_monthly_expense_history,
+    name="payment-monthly-expense-history",
+),
+
+path(
+    "payments/monthly-expenses/<uuid:report_id>/",
+    payment_monthly_expense_detail,
+    name="payment-monthly-expense-detail",
+),
+
+path(
+    "payments/employees/",
+    payment_employee_summary,
+    name="payment-employee-summary",
+),
+
+path(
+    "payments/employees/<uuid:employee_id>/history/",
+    payment_employee_history,
+    name="payment-employee-history",
+),
+
+path(
+    "payments/summary/",
+    payment_monthly_summary,
+    name="payment-monthly-summary",
+),
+
+path(
+    "payments/department-summary/",
+    payment_department_summary,
+    name="payment-department-summary",
+),
+
+path(
+    "payments/category-summary/",
+    payment_category_summary,
+    name="payment-category-summary",
 ),
 ]

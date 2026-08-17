@@ -16,8 +16,11 @@ from .models import (
 )
 
 from .serializers import (
+    CompanyPolicyUpdateSerializer,
+    CompanyRoleUpdateSerializer,
     DepartmentSerializer,
     EmployeeCreateSerializer,
+    EmployeeUpdateSerializer,
     UserProfileSerializer,
     PolicyCategoryRuleSerializer,
     CompanyPolicySerializer,
@@ -6696,6 +6699,815 @@ def company_imap_config(request):
                 CompanyImapConfigSerializer(
                     company
                 ).data
+            ),
+        },
+        status=status.HTTP_200_OK,
+    )
+from .serializers import CompanySettingsSerializer
+from .permission_utils import has_company_permission
+@api_view(["GET", "PATCH"])
+@permission_classes([IsAuthenticated])
+def company_settings(request):
+
+    profile = request.user.profile
+
+    if not profile.company:
+        return Response(
+            {
+                "success": False,
+                "error": "Company is not assigned.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    company = profile.company
+
+    if request.method == "GET":
+
+        serializer = CompanySettingsSerializer(
+            company
+        )
+
+        return Response(
+            {
+                "success": True,
+                "company": serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    if not has_company_permission(
+        profile,
+        "can_manage_company",
+    ):
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "You are not allowed to edit "
+                    "company details."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    serializer = CompanySettingsSerializer(
+        company,
+        data=request.data,
+        partial=True,
+    )
+
+    if not serializer.is_valid():
+        return Response(
+            {
+                "success": False,
+                "errors": serializer.errors,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    serializer.save()
+
+    return Response(
+        {
+            "success": True,
+            "message": (
+                "Company details updated successfully."
+            ),
+            "company": serializer.data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def update_company_role(request, role_id):
+
+    profile = request.user.profile
+
+    # Permission check
+    if not has_company_permission(
+        profile,
+        "can_manage_roles",
+    ):
+        return Response(
+            {
+                "success": False,
+                "error": "You are not allowed to manage company roles.",
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # Tenant-safe lookup
+    try:
+        company_role = CompanyRole.objects.get(
+            id=role_id,
+            company=profile.company,
+        )
+
+    except CompanyRole.DoesNotExist:
+        return Response(
+            {
+                "success": False,
+                "error": "Company role not found.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    serializer = CompanyRoleUpdateSerializer(
+        company_role,
+        data=request.data,
+        partial=True,
+    )
+
+    if not serializer.is_valid():
+        return Response(
+            {
+                "success": False,
+                "errors": serializer.errors,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    serializer.save()
+
+    return Response(
+        {
+            "success": True,
+            "message": "Company role updated successfully.",
+            "role": serializer.data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def update_employee(request, employee_id):
+
+    profile = request.user.profile
+
+    if not has_company_permission(
+        profile,
+        "can_manage_employees",
+    ):
+        return Response(
+            {
+                "success": False,
+                "error": "You are not allowed to manage employees.",
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+        employee = (
+            UserProfile.objects
+            .select_related(
+                "user",
+                "company",
+                "department",
+                "company_role",
+            )
+            .get(
+                id=employee_id,
+                company=profile.company,
+            )
+        )
+
+    except UserProfile.DoesNotExist:
+
+        return Response(
+            {
+                "success": False,
+                "error": "Employee not found.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    serializer = EmployeeUpdateSerializer(
+        employee,
+        data=request.data,
+        partial=True,
+        context={
+            "request": request,
+        },
+    )
+
+    if not serializer.is_valid():
+
+        return Response(
+            {
+                "success": False,
+                "errors": serializer.errors,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    serializer.save()
+
+    return Response(
+        {
+            "success": True,
+            "message": "Employee updated successfully.",
+            "employee": serializer.data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def update_department(request, department_id):
+
+    profile = request.user.profile
+
+    if not has_company_permission(
+        profile,
+        "can_manage_departments",
+    ):
+        return Response(
+            {
+                "success": False,
+                "error": "You are not allowed to manage departments.",
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+        department = Department.objects.get(
+            id=department_id,
+            company=profile.company,
+        )
+
+    except Department.DoesNotExist:
+
+        return Response(
+            {
+                "success": False,
+                "error": "Department not found.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    serializer = DepartmentUpdateSerializer(
+        department,
+        data=request.data,
+        partial=True,
+    )
+
+    if not serializer.is_valid():
+
+        return Response(
+            {
+                "success": False,
+                "errors": serializer.errors,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    serializer.save()
+
+    return Response(
+        {
+            "success": True,
+            "message": "Department updated successfully.",
+            "department": serializer.data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["GET", "PATCH"])
+@permission_classes([IsAuthenticated])
+def company_policy_settings(request):
+
+    profile = request.user.profile
+
+    if not profile.company:
+
+        return Response(
+            {
+                "success": False,
+                "error": "Company is not assigned.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        policy = CompanyPolicy.objects.get(
+            company=profile.company,
+        )
+
+    except CompanyPolicy.DoesNotExist:
+
+        return Response(
+            {
+                "success": False,
+                "error": "Company policy is not configured.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    # GET
+    if request.method == "GET":
+
+        serializer = CompanyPolicyUpdateSerializer(
+            policy
+        )
+
+        return Response(
+            {
+                "success": True,
+                "policy": serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    # PATCH permission
+    if not has_company_permission(
+        profile,
+        "can_manage_policy",
+    ):
+
+        return Response(
+            {
+                "success": False,
+                "error": "You are not allowed to manage company policy.",
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    serializer = CompanyPolicyUpdateSerializer(
+        policy,
+        data=request.data,
+        partial=True,
+    )
+
+    if not serializer.is_valid():
+
+        return Response(
+            {
+                "success": False,
+                "errors": serializer.errors,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    serializer.save()
+
+    return Response(
+        {
+            "success": True,
+            "message": "Company policy updated successfully.",
+            "policy": serializer.data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+from django.db import IntegrityError, transaction
+
+from expenses.models import (
+    ApprovalWorkflow,
+    ApprovalWorkflowStep,
+)
+
+from .serializers import (
+    ApprovalWorkflowSerializer,
+    ApprovalWorkflowUpdateSerializer,
+    ApprovalWorkflowStepSerializer,
+    ApprovalWorkflowStepWriteSerializer,
+)
+
+from .permission_utils import has_company_permission
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_company_workflows(request):
+
+    profile = request.user.profile
+
+    if not profile.company:
+        return Response(
+            {
+                "success": False,
+                "error": "Company is not assigned.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    workflows = (
+        ApprovalWorkflow.objects
+        .filter(
+            company=profile.company,
+        )
+        .select_related(
+            "start_role",
+        )
+        .prefetch_related(
+            "steps",
+            "steps__approver_role",
+            "steps__specific_user__user",
+            "steps__department",
+        )
+        .order_by("name")
+    )
+
+    serializer = ApprovalWorkflowSerializer(
+        workflows,
+        many=True,
+    )
+
+    return Response(
+        {
+            "success": True,
+            "count": workflows.count(),
+            "results": serializer.data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def update_company_workflow(
+    request,
+    workflow_id,
+):
+
+    profile = request.user.profile
+
+    if not has_company_permission(
+        profile,
+        "can_manage_workflow",
+    ):
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "You are not allowed to manage workflows."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+
+        workflow = ApprovalWorkflow.objects.get(
+            id=workflow_id,
+            company=profile.company,
+        )
+
+    except ApprovalWorkflow.DoesNotExist:
+
+        return Response(
+            {
+                "success": False,
+                "error": "Workflow not found.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    serializer = ApprovalWorkflowUpdateSerializer(
+        workflow,
+        data=request.data,
+        partial=True,
+        context={
+            "request": request,
+        },
+    )
+
+    if not serializer.is_valid():
+
+        return Response(
+            {
+                "success": False,
+                "errors": serializer.errors,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        serializer.save()
+
+    except IntegrityError:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "A workflow already exists for "
+                    "this start role."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    response_serializer = ApprovalWorkflowSerializer(
+        workflow
+    )
+
+    return Response(
+        {
+            "success": True,
+            "message": "Workflow updated successfully.",
+            "workflow": response_serializer.data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@transaction.atomic
+def create_workflow_step(
+    request,
+    workflow_id,
+):
+
+    profile = request.user.profile
+
+    if not has_company_permission(
+        profile,
+        "can_manage_workflow",
+    ):
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "You are not allowed to manage workflows."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+
+        workflow = (
+            ApprovalWorkflow.objects
+            .select_for_update()
+            .get(
+                id=workflow_id,
+                company=profile.company,
+            )
+        )
+
+    except ApprovalWorkflow.DoesNotExist:
+
+        return Response(
+            {
+                "success": False,
+                "error": "Workflow not found.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    serializer = ApprovalWorkflowStepWriteSerializer(
+        data=request.data,
+        context={
+            "request": request,
+        },
+    )
+
+    if not serializer.is_valid():
+
+        return Response(
+            {
+                "success": False,
+                "errors": serializer.errors,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    step_order = serializer.validated_data[
+        "step_order"
+    ]
+
+    if workflow.steps.filter(
+        step_order=step_order
+    ).exists():
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    f"Step order {step_order} already "
+                    "exists in this workflow."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    step = serializer.save(
+        workflow=workflow
+    )
+
+    response_serializer = (
+        ApprovalWorkflowStepSerializer(
+            step
+        )
+    )
+
+    return Response(
+        {
+            "success": True,
+            "message": (
+                "Workflow step created successfully."
+            ),
+            "step": response_serializer.data,
+        },
+        status=status.HTTP_201_CREATED,
+    )
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+@transaction.atomic
+def update_workflow_step(
+    request,
+    step_id,
+):
+
+    profile = request.user.profile
+
+    if not has_company_permission(
+        profile,
+        "can_manage_workflow",
+    ):
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "You are not allowed to manage workflows."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+
+        step = (
+            ApprovalWorkflowStep.objects
+            .select_for_update()
+            .select_related(
+                "workflow",
+            )
+            .get(
+                id=step_id,
+                workflow__company=profile.company,
+            )
+        )
+
+    except ApprovalWorkflowStep.DoesNotExist:
+
+        return Response(
+            {
+                "success": False,
+                "error": "Workflow step not found.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    serializer = ApprovalWorkflowStepWriteSerializer(
+        step,
+        data=request.data,
+        partial=True,
+        context={
+            "request": request,
+        },
+    )
+
+    if not serializer.is_valid():
+
+        return Response(
+            {
+                "success": False,
+                "errors": serializer.errors,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    new_order = serializer.validated_data.get(
+        "step_order",
+        step.step_order,
+    )
+
+    duplicate = (
+        ApprovalWorkflowStep.objects
+        .filter(
+            workflow=step.workflow,
+            step_order=new_order,
+        )
+        .exclude(
+            id=step.id,
+        )
+        .exists()
+    )
+
+    if duplicate:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    f"Step order {new_order} already "
+                    "exists in this workflow."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    serializer.save()
+
+    response_serializer = (
+        ApprovalWorkflowStepSerializer(
+            step
+        )
+    )
+
+    return Response(
+        {
+            "success": True,
+            "message": (
+                "Workflow step updated successfully."
+            ),
+            "step": response_serializer.data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+@transaction.atomic
+def delete_workflow_step(
+    request,
+    step_id,
+):
+
+    profile = request.user.profile
+
+    if not has_company_permission(
+        profile,
+        "can_manage_workflow",
+    ):
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "You are not allowed to manage workflows."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+
+        step = (
+            ApprovalWorkflowStep.objects
+            .select_for_update()
+            .select_related(
+                "workflow",
+            )
+            .get(
+                id=step_id,
+                workflow__company=profile.company,
+            )
+        )
+
+    except ApprovalWorkflowStep.DoesNotExist:
+
+        return Response(
+            {
+                "success": False,
+                "error": "Workflow step not found.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    deleted_order = step.step_order
+    workflow = step.workflow
+
+    step.delete()
+
+    # Re-number later steps.
+    later_steps = (
+        ApprovalWorkflowStep.objects
+        .filter(
+            workflow=workflow,
+            step_order__gt=deleted_order,
+        )
+        .order_by("step_order")
+    )
+
+    for workflow_step in later_steps:
+
+        workflow_step.step_order -= 1
+
+        workflow_step.save(
+            update_fields=[
+                "step_order",
+            ]
+        )
+
+    return Response(
+        {
+            "success": True,
+            "message": (
+                "Workflow step deleted successfully."
             ),
         },
         status=status.HTTP_200_OK,

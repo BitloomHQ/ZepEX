@@ -189,6 +189,33 @@ class CompanyRole(models.Model):
     is_active = models.BooleanField(default=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
+    can_manage_company = models.BooleanField(
+    default=False
+)
+
+    can_manage_roles = models.BooleanField(
+    default=False
+)
+
+    can_manage_employees = models.BooleanField(
+    default=False
+)
+
+    can_manage_departments = models.BooleanField(
+    default=False
+)
+
+    can_manage_policy = models.BooleanField(
+    default=False
+)
+
+    can_manage_workflow = models.BooleanField(
+    default=False
+)
+
+    can_view_company_reports = models.BooleanField(
+    default=False
+)
 
     class Meta:
         unique_together = ("company", "name")

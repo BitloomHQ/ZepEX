@@ -3544,3 +3544,923 @@ def get_unread_notification_count(request):
         },
         status=status.HTTP_200_OK,
     )
+
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework import status
+
+from django.db.models import Sum
+
+from .models import ExpenseReport
+from .serializers import ExpenseReportSerializer
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def payment_monthly_expense_history(request):
+    """
+    Monthly expense history for users who are allowed
+    to mark reimbursement reports as paid.
+
+    Access:
+    - COMPANY_ADMIN
+    - Any dynamic company role with can_mark_paid=True
+
+    Returns monthly reports for employees belonging
+    only to the logged-in user's company.
+    """
+
+    profile = request.user.profile
+
+    # ==========================================================
+    # 1. PERMISSION CHECK
+    # ==========================================================
+
+    is_company_admin = (
+        profile.role == "COMPANY_ADMIN"
+    )
+
+    if not is_company_admin:
+
+        if not profile.company_role:
+            return Response(
+                {
+                    "success": False,
+                    "error": (
+                        "Your company role is not assigned."
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not profile.company_role.can_mark_paid:
+            return Response(
+                {
+                    "success": False,
+                    "error": (
+                        "Your role is not allowed to access "
+                        "payment expense history."
+                    ),
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+    # ==========================================================
+    # 2. COMPANY CHECK
+    # ==========================================================
+
+    if not profile.company:
+        return Response(
+            {
+                "success": False,
+                "error": "Company is not assigned.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 3. OPTIONAL FILTERS
+    # ==========================================================
+
+    employee_id = request.query_params.get(
+        "employee_id"
+    )
+
+    report_status = request.query_params.get(
+        "status"
+    )
+
+    # ==========================================================
+    # 4. BASE QUERYSET
+    # ==========================================================
+
+    reports = (
+        ExpenseReport.objects
+        .filter(
+            company=profile.company,
+        )
+        .select_related(
+            "employee",
+            "employee__user",
+            "employee__company_role",
+            "department",
+        )
+        .prefetch_related(
+            "receipts",
+            "receipts__line_items",
+        )
+        .order_by(
+            "-month",
+            "employee__user__first_name",
+            "employee__user__email",
+        )
+    )
+
+    # ==========================================================
+    # 5. EMPLOYEE FILTER
+    # ==========================================================
+
+    if employee_id:
+        reports = reports.filter(
+            employee_id=employee_id
+        )
+
+    # ==========================================================
+    # 6. STATUS FILTER
+    # ==========================================================
+
+    if report_status:
+        reports = reports.filter(
+            status__iexact=report_status
+        )
+
+    # ==========================================================
+    # 7. BUILD MONTHLY HISTORY
+    # ==========================================================
+
+    results = []
+
+    for report in reports:
+
+        employee_name = (
+            report.employee.user.get_full_name()
+            or report.employee.user.email
+        )
+
+        results.append(
+            {
+                "report_id": str(report.id),
+
+                "employee": {
+                    "id": str(report.employee.id),
+                    "name": employee_name,
+                    "email": (
+                        report.employee.user.email
+                    ),
+                    "department": (
+                        report.department.name
+                        if report.department
+                        else None
+                    ),
+                },
+
+                "month": report.month,
+
+                "status": report.status,
+
+                "total_amount": str(
+                    report.total_amount or 0
+                ),
+
+                "currency": (
+                    getattr(
+                        report,
+                        "company_currency",
+                        None,
+                    )
+                    or (
+                        report.receipts.first().company_currency
+                        if report.receipts.exists()
+                        else None
+                    )
+                    or "INR"
+                ),
+
+                "submitted_at": (
+                    report.submitted_at
+                ),
+
+                "paid_at": (
+                    report.paid_at
+                ),
+
+                "paid_notes": (
+                    report.paid_notes
+                ),
+
+                "can_mark_paid": (
+                    report.status
+                    == ExpenseReport.STATUS_APPROVED
+                    and report.workflow_completed
+                ),
+            }
+        )
+
+    # ==========================================================
+    # 8. COMPANY TOTAL
+    # ==========================================================
+
+    total_company_expense = (
+        reports.aggregate(
+            total=Sum("total_amount")
+        )["total"]
+        or 0
+    )
+
+    # ==========================================================
+    # 9. RESPONSE
+    # ==========================================================
+
+    return Response(
+        {
+            "success": True,
+
+            "company": {
+                "id": str(profile.company.id),
+                "name": profile.company.name,
+            },
+
+            "count": len(results),
+
+            "total_company_expense": str(
+                total_company_expense
+            ),
+
+            "results": results,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+def _can_access_payments(profile):
+    if profile.role == "COMPANY_ADMIN":
+        return True
+
+    if (
+        profile.company_role
+        and profile.company_role.can_mark_paid
+    ):
+        return True
+
+    return False
+
+from datetime import datetime
+
+
+def _parse_month(month_value):
+    """
+    Accepts:
+        2026-07
+
+    Returns:
+        date(2026, 7, 1)
+    """
+    if not month_value:
+        return None
+
+    try:
+        return datetime.strptime(
+            month_value,
+            "%Y-%m"
+        ).date().replace(day=1)
+
+    except ValueError:
+        return None
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def payment_monthly_expense_history(request):
+
+    profile = request.user.profile
+
+    if not _can_access_payments(profile):
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Your role is not allowed to access "
+                    "payment expense history."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    reports = (
+        ExpenseReport.objects
+        .filter(
+            company=profile.company,
+        )
+        .select_related(
+            "employee",
+            "employee__user",
+            "department",
+        )
+        .order_by("-month")
+    )
+
+    employee_id = request.query_params.get(
+        "employee_id"
+    )
+
+    report_status = request.query_params.get(
+        "status"
+    )
+
+    if employee_id:
+        reports = reports.filter(
+            employee_id=employee_id
+        )
+
+    if report_status:
+        reports = reports.filter(
+            status__iexact=report_status
+        )
+
+    results = []
+
+    for report in reports:
+
+        results.append(
+            {
+                "report_id": str(report.id),
+
+                "employee": {
+                    "id": str(report.employee.id),
+                    "name": (
+                        report.employee.user.get_full_name()
+                        or report.employee.user.email
+                    ),
+                    "email": (
+                        report.employee.user.email
+                    ),
+                    "department": (
+                        report.department.name
+                        if report.department
+                        else None
+                    ),
+                },
+
+                "month": report.month,
+
+                "status": report.status,
+
+                "total_amount": str(
+                    report.total_amount or 0
+                ),
+
+                "submitted_at": (
+                    report.submitted_at
+                ),
+
+                "paid_at": report.paid_at,
+
+                "paid_notes": report.paid_notes,
+
+                "can_mark_paid": (
+                    report.status
+                    == ExpenseReport.STATUS_APPROVED
+                    and report.workflow_completed
+                ),
+            }
+        )
+
+    return Response(
+        {
+            "success": True,
+            "count": len(results),
+            "results": results,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def payment_monthly_expense_detail(
+    request,
+    report_id,
+):
+
+    profile = request.user.profile
+
+    if not _can_access_payments(profile):
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Your role is not allowed to access "
+                    "payment report details."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+        report = (
+            ExpenseReport.objects
+            .select_related(
+                "employee",
+                "employee__user",
+                "department",
+            )
+            .prefetch_related(
+                "receipts",
+                "receipts__line_items",
+                "approval_history",
+            )
+            .get(
+                id=report_id,
+                company=profile.company,
+            )
+        )
+
+    except ExpenseReport.DoesNotExist:
+        return Response(
+            {
+                "success": False,
+                "error": "Expense report not found.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    serializer = ExpenseReportSerializer(
+        report,
+        context={
+            "request": request,
+        },
+    )
+
+    return Response(
+        {
+            "success": True,
+            "can_mark_paid": (
+                report.status
+                == ExpenseReport.STATUS_APPROVED
+                and report.workflow_completed
+            ),
+            "report": serializer.data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+from django.db.models import Sum, Count, Q
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def payment_employee_summary(request):
+
+    profile = request.user.profile
+
+    if not _can_access_payments(profile):
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Your role is not allowed to access "
+                    "employee reimbursement summaries."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    employees = (
+        UserProfile.objects
+        .filter(
+            company=profile.company,
+            user__is_active=True,
+        )
+        .select_related(
+            "user",
+            "department",
+        )
+        .annotate(
+            total_reimbursed=Sum(
+                "expense_reports__total_amount",
+                filter=Q(
+                    expense_reports__status=(
+                        ExpenseReport.STATUS_PAID
+                    )
+                ),
+            ),
+            total_reports=Count(
+                "expense_reports",
+                distinct=True,
+            ),
+            paid_reports=Count(
+                "expense_reports",
+                filter=Q(
+                    expense_reports__status=(
+                        ExpenseReport.STATUS_PAID
+                    )
+                ),
+                distinct=True,
+            ),
+        )
+    )
+
+    results = []
+
+    for employee in employees:
+
+        results.append(
+            {
+                "employee_id": str(employee.id),
+
+                "name": (
+                    employee.user.get_full_name()
+                    or employee.user.email
+                ),
+
+                "email": employee.user.email,
+
+                "department": (
+                    employee.department.name
+                    if employee.department
+                    else None
+                ),
+
+                "total_reports": (
+                    employee.total_reports
+                ),
+
+                "paid_reports": (
+                    employee.paid_reports
+                ),
+
+                "total_reimbursed": str(
+                    employee.total_reimbursed or 0
+                ),
+            }
+        )
+
+    return Response(
+        {
+            "success": True,
+            "count": len(results),
+            "results": results,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def payment_employee_history(
+    request,
+    employee_id,
+):
+
+    profile = request.user.profile
+
+    if not _can_access_payments(profile):
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Your role is not allowed to access "
+                    "employee payment history."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+        employee = (
+            UserProfile.objects
+            .select_related(
+                "user",
+                "department",
+            )
+            .get(
+                id=employee_id,
+                company=profile.company,
+            )
+        )
+
+    except UserProfile.DoesNotExist:
+        return Response(
+            {
+                "success": False,
+                "error": "Employee not found.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    reports = (
+        ExpenseReport.objects
+        .filter(
+            company=profile.company,
+            employee=employee,
+        )
+        .order_by("-month")
+    )
+
+    history = []
+
+    for report in reports:
+
+        history.append(
+            {
+                "report_id": str(report.id),
+                "month": report.month,
+                "status": report.status,
+                "total_amount": str(
+                    report.total_amount or 0
+                ),
+                "submitted_at": (
+                    report.submitted_at
+                ),
+                "paid_at": report.paid_at,
+                "paid_notes": report.paid_notes,
+                "can_mark_paid": (
+                    report.status
+                    == ExpenseReport.STATUS_APPROVED
+                    and report.workflow_completed
+                ),
+            }
+        )
+
+    total_paid = (
+        reports
+        .filter(
+            status=ExpenseReport.STATUS_PAID
+        )
+        .aggregate(
+            total=Sum("total_amount")
+        )["total"]
+        or 0
+    )
+
+    return Response(
+        {
+            "success": True,
+
+            "employee": {
+                "id": str(employee.id),
+                "name": (
+                    employee.user.get_full_name()
+                    or employee.user.email
+                ),
+                "email": employee.user.email,
+                "department": (
+                    employee.department.name
+                    if employee.department
+                    else None
+                ),
+            },
+
+            "total_reimbursed": str(total_paid),
+
+            "count": len(history),
+
+            "history": history,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def payment_monthly_summary(request):
+
+    profile = request.user.profile
+
+    if not _can_access_payments(profile):
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Your role is not allowed to access "
+                    "payment summaries."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    month_param = request.query_params.get(
+        "month"
+    )
+
+    month = _parse_month(
+        month_param
+    )
+
+    if month_param and not month:
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "month must use YYYY-MM format."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    reports = ExpenseReport.objects.filter(
+        company=profile.company
+    )
+
+    if month:
+        reports = reports.filter(
+            month=month
+        )
+
+    total_claimed = (
+        reports.aggregate(
+            total=Sum("total_amount")
+        )["total"]
+        or 0
+    )
+
+    approved_amount = (
+        reports
+        .filter(
+            status=ExpenseReport.STATUS_APPROVED
+        )
+        .aggregate(
+            total=Sum("total_amount")
+        )["total"]
+        or 0
+    )
+
+    paid_amount = (
+        reports
+        .filter(
+            status=ExpenseReport.STATUS_PAID
+        )
+        .aggregate(
+            total=Sum("total_amount")
+        )["total"]
+        or 0
+    )
+
+    rejected_amount = (
+        reports
+        .filter(
+            status=ExpenseReport.STATUS_REJECTED
+        )
+        .aggregate(
+            total=Sum("total_amount")
+        )["total"]
+        or 0
+    )
+
+    return Response(
+        {
+            "success": True,
+            "month": (
+                month.strftime("%Y-%m")
+                if month
+                else None
+            ),
+
+            "total_claimed": str(
+                total_claimed
+            ),
+
+            "awaiting_payment": str(
+                approved_amount
+            ),
+
+            "paid_amount": str(
+                paid_amount
+            ),
+
+            "rejected_amount": str(
+                rejected_amount
+            ),
+
+            "report_count": reports.count(),
+
+            "employee_count": (
+                reports
+                .values("employee_id")
+                .distinct()
+                .count()
+            ),
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def payment_department_summary(request):
+
+    profile = request.user.profile
+
+    if not _can_access_payments(profile):
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Your role is not allowed to access "
+                    "department expense summaries."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    month_param = request.query_params.get(
+        "month"
+    )
+
+    month = _parse_month(
+        month_param
+    )
+
+    reports = ExpenseReport.objects.filter(
+        company=profile.company
+    )
+
+    if month:
+        reports = reports.filter(
+            month=month
+        )
+
+    results = (
+        reports
+        .values(
+            "department_id",
+            "department__name",
+        )
+        .annotate(
+            total_amount=Sum(
+                "total_amount"
+            ),
+            report_count=Count(
+                "id"
+            ),
+        )
+        .order_by(
+            "-total_amount"
+        )
+    )
+
+    return Response(
+        {
+            "success": True,
+            "month": month_param,
+            "results": list(results),
+        },
+        status=status.HTTP_200_OK,
+    )
+
+from .models import ExpenseLineItem
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def payment_category_summary(request):
+
+    profile = request.user.profile
+
+    if not _can_access_payments(profile):
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Your role is not allowed to access "
+                    "category expense summaries."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    month_param = request.query_params.get(
+        "month"
+    )
+
+    month = _parse_month(
+        month_param
+    )
+
+    line_items = (
+        ExpenseLineItem.objects
+        .filter(
+            receipt__company=profile.company,
+            is_removed=False,
+            is_deleted=False,
+        )
+    )
+
+    if month:
+        line_items = line_items.filter(
+            receipt__report__month=month
+        )
+
+    results = (
+        line_items
+        .values(
+            "category"
+        )
+        .annotate(
+            total_amount=Sum(
+                "amount"
+            ),
+            line_item_count=Count(
+                "id"
+            ),
+        )
+        .order_by(
+            "-total_amount"
+        )
+    )
+
+    return Response(
+        {
+            "success": True,
+            "month": month_param,
+            "results": list(results),
+        },
+        status=status.HTTP_200_OK,
+    )

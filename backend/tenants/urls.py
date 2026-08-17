@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     company_imap_config,
+    company_policy_settings,
     create_department,
     list_departments,
     create_employee,
@@ -24,6 +25,7 @@ from .views import (
     update_department,
     deactivate_department,
     activate_department,
+    update_employee,
     update_policy_rule,
     deactivate_policy_rule,
     activate_policy_rule,
@@ -75,6 +77,11 @@ from .views import (
     company_exchange_rates,
     update_company_exchange_rate,
     delete_company_exchange_rate,
+    get_company_workflows,
+    update_company_workflow,
+    create_workflow_step,
+    update_workflow_step,
+    delete_workflow_step,
     
     
 
@@ -323,5 +330,54 @@ path(
     "company/imap-config/",
     company_imap_config,
     name="company-imap-config",
+),
+path(
+    "roles/<uuid:role_id>/",
+    update_company_role,
+    name="update-company-role",
+),
+path(
+    "employees/<uuid:employee_id>/",
+    update_employee,
+    name="update-employee",
+),
+path(
+    "departments/<uuid:department_id>/",
+    update_department,
+    name="update-department",
+),
+path(
+    "company/policy/",
+    company_policy_settings,
+    name="company-policy-settings",
+),
+path(
+    "workflows/",
+    get_company_workflows,
+    name="get-company-workflows",
+),
+
+path(
+    "workflows/<int:workflow_id>/",
+    update_company_workflow,
+    name="update-company-workflow",
+),
+
+path(
+    "workflows/<int:workflow_id>/steps/",
+    create_workflow_step,
+    name="create-workflow-step",
+),
+
+path(
+    "workflow-steps/<int:step_id>/",
+    update_workflow_step,
+    name="update-workflow-step",
+),
+
+path(
+    "workflow-steps/<int:step_id>/delete/",
+    delete_workflow_step,
+    name="delete-workflow-step",
 ),
 ]

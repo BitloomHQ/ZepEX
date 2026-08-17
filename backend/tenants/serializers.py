@@ -15,6 +15,10 @@ from .models import (
     ReimbursementEmailConfig,
     CompanySMTPConfig,
 )
+from expenses.models import (
+    ApprovalWorkflow,
+    ApprovalWorkflowStep,
+)
 from .models import PolicyVersion
 
 
@@ -965,3 +969,523 @@ class CompanyImapConfigSerializer(serializers.ModelSerializer):
         instance.save()
 
         return instance
+    
+
+class CompanySettingsSerializer(
+    serializers.ModelSerializer
+):
+
+    class Meta:
+        model = Company
+
+        fields = [
+            "id",
+            "name",
+            "domain",
+            "reimbursement_email",
+            "is_verified",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+
+        read_only_fields = [
+            "id",
+            "is_verified",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+
+class CompanyRoleUpdateSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = CompanyRole
+
+        fields = [
+            "id",
+            "name",
+
+            # Expense permissions
+            "can_upload_receipt",
+            "can_submit_expense",
+            "can_approve_expense",
+            "can_mark_paid",
+
+            # Management permissions
+            "can_manage_company",
+            "can_manage_roles",
+            "can_manage_employees",
+            "can_manage_departments",
+            "can_manage_policy",
+            "can_manage_workflow",
+            "can_view_company_reports",
+        ]
+
+        read_only_fields = [
+            "id",
+        ]
+
+class EmployeeUpdateSerializer(serializers.ModelSerializer):
+
+    email = serializers.EmailField(
+        source="user.email",
+        required=False,
+    )
+
+    first_name = serializers.CharField(
+        source="user.first_name",
+        required=False,
+        allow_blank=True,
+    )
+
+    last_name = serializers.CharField(
+        source="user.last_name",
+        required=False,
+        allow_blank=True,
+    )
+
+    class Meta:
+        model = UserProfile
+
+        fields = [
+            "id",
+            "email",
+            "first_name",
+            "last_name",
+            "department",
+            "company_role",
+            "manager",
+        ]
+
+        read_only_fields = [
+            "id",
+        ]
+
+    def validate_department(self, department):
+
+        profile = self.context["request"].user.profile
+
+        if department.company_id != profile.company_id:
+            raise serializers.ValidationError(
+                "Department does not belong to your company."
+            )
+
+        return department
+
+    def validate_company_role(self, company_role):
+
+        profile = self.context["request"].user.profile
+
+        if company_role.company_id != profile.company_id:
+            raise serializers.ValidationError(
+                "Company role does not belong to your company."
+            )
+
+        return company_role
+
+    def validate_manager(self, manager):
+
+        profile = self.context["request"].user.profile
+
+        if manager.company_id != profile.company_id:
+            raise serializers.ValidationError(
+                "Manager does not belong to your company."
+            )
+
+        return manager
+
+    def update(self, instance, validated_data):
+
+        user_data = validated_data.pop(
+            "user",
+            {}
+        )
+
+        user = instance.user
+
+        for attr, value in user_data.items():
+            setattr(
+                user,
+                attr,
+                value,
+            )
+
+        user.save()
+
+        for attr, value in validated_data.items():
+            setattr(
+                instance,
+                attr,
+                value,
+            )
+
+        instance.save()
+
+        return instance
+
+
+class DepartmentUpdateSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = Department
+
+        fields = [
+            "id",
+            "name",
+        ]
+
+        read_only_fields = [
+            "id",
+        ]
+
+class CompanyPolicyUpdateSerializer(
+    serializers.ModelSerializer
+):
+
+    class Meta:
+        model = CompanyPolicy
+
+        fields = [
+            "old_bill_limit_days",
+            "auto_approve_if_no_violation",
+        ]
+
+class ApprovalWorkflowStepSerializer(
+    serializers.ModelSerializer
+):
+
+    approver_role_name = serializers.CharField(
+        source="approver_role.name",
+        read_only=True,
+    )
+
+    specific_user_name = serializers.SerializerMethodField()
+
+    specific_user_email = serializers.EmailField(
+        source="specific_user.user.email",
+        read_only=True,
+    )
+
+    department_name = serializers.CharField(
+        source="department.name",
+        read_only=True,
+    )
+
+    approver_type_display = serializers.CharField(
+        source="get_approver_type_display",
+        read_only=True,
+    )
+
+    routing_type_display = serializers.CharField(
+        source="get_routing_type_display",
+        read_only=True,
+    )
+
+    class Meta:
+        model = ApprovalWorkflowStep
+
+        fields = [
+            "id",
+
+            "step_order",
+
+            "approver_type",
+            "approver_type_display",
+
+            "approver_role",
+            "approver_role_name",
+
+            "specific_user",
+            "specific_user_name",
+            "specific_user_email",
+
+            "department",
+            "department_name",
+
+            "routing_type",
+            "routing_type_display",
+
+            "is_active",
+            "created_at",
+        ]
+
+        read_only_fields = [
+            "id",
+            "approver_role_name",
+            "specific_user_name",
+            "specific_user_email",
+            "department_name",
+            "approver_type_display",
+            "routing_type_display",
+            "created_at",
+        ]
+
+    def get_specific_user_name(self, obj):
+
+        if not obj.specific_user:
+            return None
+
+        user = obj.specific_user.user
+
+        return (
+            user.get_full_name()
+            or user.email
+        )
+
+
+class ApprovalWorkflowSerializer(
+    serializers.ModelSerializer
+):
+
+    start_role_name = serializers.CharField(
+        source="start_role.name",
+        read_only=True,
+    )
+
+    steps = ApprovalWorkflowStepSerializer(
+        many=True,
+        read_only=True,
+    )
+
+    class Meta:
+        model = ApprovalWorkflow
+
+        fields = [
+            "id",
+            "name",
+
+            "start_role",
+            "start_role_name",
+
+            "is_active",
+
+            "steps",
+
+            "created_at",
+            "updated_at",
+        ]
+
+        read_only_fields = [
+            "id",
+            "start_role_name",
+            "steps",
+            "created_at",
+            "updated_at",
+        ]
+
+class ApprovalWorkflowUpdateSerializer(
+    serializers.ModelSerializer
+):
+
+    class Meta:
+        model = ApprovalWorkflow
+
+        fields = [
+            "name",
+            "start_role",
+            "is_active",
+        ]
+
+    def validate_start_role(self, role):
+
+        profile = self.context["request"].user.profile
+
+        if role.company_id != profile.company_id:
+            raise serializers.ValidationError(
+                "Start role does not belong to your company."
+            )
+
+        return role
+
+class ApprovalWorkflowStepWriteSerializer(
+    serializers.ModelSerializer
+):
+
+    class Meta:
+        model = ApprovalWorkflowStep
+
+        fields = [
+            "step_order",
+            "approver_type",
+            "approver_role",
+            "specific_user",
+            "department",
+            "routing_type",
+            "is_active",
+        ]
+
+    def validate(self, attrs):
+
+        request = self.context["request"]
+
+        profile = request.user.profile
+
+        company = profile.company
+
+        # --------------------------------------------------
+        # Existing values for PATCH
+        # --------------------------------------------------
+
+        approver_type = attrs.get(
+            "approver_type",
+            getattr(
+                self.instance,
+                "approver_type",
+                None,
+            ),
+        )
+
+        approver_role = attrs.get(
+            "approver_role",
+            getattr(
+                self.instance,
+                "approver_role",
+                None,
+            ),
+        )
+
+        specific_user = attrs.get(
+            "specific_user",
+            getattr(
+                self.instance,
+                "specific_user",
+                None,
+            ),
+        )
+
+        department = attrs.get(
+            "department",
+            getattr(
+                self.instance,
+                "department",
+                None,
+            ),
+        )
+
+        routing_type = attrs.get(
+            "routing_type",
+            getattr(
+                self.instance,
+                "routing_type",
+                None,
+            ),
+        )
+
+        # --------------------------------------------------
+        # Company isolation
+        # --------------------------------------------------
+
+        if (
+            approver_role
+            and approver_role.company_id != company.id
+        ):
+            raise serializers.ValidationError(
+                {
+                    "approver_role": (
+                        "Approver role does not belong "
+                        "to your company."
+                    )
+                }
+            )
+
+        if (
+            specific_user
+            and specific_user.company_id != company.id
+        ):
+            raise serializers.ValidationError(
+                {
+                    "specific_user": (
+                        "Specific user does not belong "
+                        "to your company."
+                    )
+                }
+            )
+
+        if (
+            department
+            and department.company_id != company.id
+        ):
+            raise serializers.ValidationError(
+                {
+                    "department": (
+                        "Department does not belong "
+                        "to your company."
+                    )
+                }
+            )
+
+        # --------------------------------------------------
+        # APPROVER TYPE validation
+        # --------------------------------------------------
+
+        if (
+            approver_type
+            == ApprovalWorkflowStep.APPROVER_COMPANY_ROLE
+        ):
+
+            if not approver_role:
+                raise serializers.ValidationError(
+                    {
+                        "approver_role": (
+                            "approver_role is required "
+                            "when approver_type is COMPANY_ROLE."
+                        )
+                    }
+                )
+
+            # Remove incompatible value
+            attrs["specific_user"] = None
+
+        elif (
+            approver_type
+            == ApprovalWorkflowStep.APPROVER_SPECIFIC_USER
+        ):
+
+            if not specific_user:
+                raise serializers.ValidationError(
+                    {
+                        "specific_user": (
+                            "specific_user is required "
+                            "when approver_type is SPECIFIC_USER."
+                        )
+                    }
+                )
+
+            attrs["approver_role"] = None
+
+        elif approver_type in [
+            ApprovalWorkflowStep.APPROVER_REPORTING_MANAGER,
+            ApprovalWorkflowStep.APPROVER_DEPARTMENT_MANAGER,
+        ]:
+
+            attrs["approver_role"] = None
+            attrs["specific_user"] = None
+
+        # --------------------------------------------------
+        # ROUTING validation
+        # --------------------------------------------------
+
+        if (
+            routing_type
+            == ApprovalWorkflowStep.ROUTING_DEPARTMENT
+        ):
+
+            if not department:
+                raise serializers.ValidationError(
+                    {
+                        "department": (
+                            "Department is required for "
+                            "department-based routing."
+                        )
+                    }
+                )
+
+        elif (
+            routing_type
+            == ApprovalWorkflowStep.ROUTING_COMPANY
+        ):
+
+            attrs["department"] = None
+
+        return attrs
