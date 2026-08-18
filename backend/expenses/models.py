@@ -476,6 +476,7 @@ class ExpenseReceipt(models.Model):
         )
 
 class ExpenseLineItem(models.Model):
+
     id = models.UUIDField(
         primary_key=True,
         default=uuid.uuid4,
@@ -503,9 +504,58 @@ class ExpenseLineItem(models.Model):
         null=True
     )
 
+    # ======================================================
+    # LEGACY / CURRENT AMOUNT
+    # ======================================================
+
     amount = models.DecimalField(
         max_digits=12,
         decimal_places=2
+    )
+
+    # ======================================================
+    # ORIGINAL RECEIPT CURRENCY
+    # ======================================================
+
+    original_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+
+    original_currency = models.CharField(
+        max_length=3,
+        null=True,
+        blank=True,
+    )
+
+    # ======================================================
+    # COMPANY REIMBURSEMENT CURRENCY
+    # ======================================================
+
+    company_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+
+    company_currency = models.CharField(
+        max_length=3,
+        null=True,
+        blank=True,
+    )
+
+    # ======================================================
+    # EXCHANGE INFORMATION
+    # ======================================================
+
+    exchange_rate = models.DecimalField(
+        max_digits=18,
+        decimal_places=8,
+        null=True,
+        blank=True,
     )
 
     bill_date = models.DateField(
@@ -527,9 +577,9 @@ class ExpenseLineItem(models.Model):
         blank=True,
     )
 
-    # ---------------------------------
-    # Approval-stage removal / restore
-    # ---------------------------------
+    # ======================================================
+    # APPROVAL-STAGE REMOVAL / RESTORE
+    # ======================================================
 
     is_removed = models.BooleanField(
         default=False
@@ -558,7 +608,10 @@ class ExpenseLineItem(models.Model):
     )
 
     def __str__(self):
-        return f"{self.category} - {self.amount}"
+        return (
+            f"{self.category} - "
+            f"{self.company_amount or self.amount}"
+        )
 
 class ApprovalHistory(models.Model):
 

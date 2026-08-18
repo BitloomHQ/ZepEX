@@ -216,6 +216,13 @@ class CompanyRole(models.Model):
     can_view_company_reports = models.BooleanField(
     default=False
 )
+    can_manage_integrations = models.BooleanField(
+    default=False
+)
+
+    can_view_integrations = models.BooleanField(
+    default=False
+)
 
     class Meta:
         unique_together = ("company", "name")

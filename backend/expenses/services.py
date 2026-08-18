@@ -861,22 +861,101 @@ def _apply_ai_failure(receipt: ExpenseReceipt, error: str):
 
 
 def recalculate_report_total(report):
-    total = Decimal("0.00")
+    """
+    Recalculate the monthly ExpenseReport total.
 
-    for receipt in report.receipts.all():
-        amount = receipt.company_amount
+    ExpenseReport.total_amount always represents
+    the company's reimbursement/accounting currency.
+
+    Therefore the preferred source is:
+
+        ExpenseReceipt.company_amount
+    """
+
+    from decimal import Decimal, ROUND_HALF_UP
+
+    total = Decimal(
+        "0.00"
+    )
+
+    receipts = (
+        report.receipts
+        .all()
+        .order_by(
+            "created_at"
+        )
+    )
+
+    for receipt in receipts:
+
+        # ======================================================
+        # 1. PREFERRED AMOUNT
+        # ======================================================
+
+        amount = (
+            receipt.company_amount
+        )
+
+        # ======================================================
+        # 2. LEGACY FALLBACK
+        # ======================================================
+
         if amount is None:
-            amount = receipt.total_amount
 
-        if amount is not None and amount > Decimal("0.00"):
+            amount = (
+                receipt.total_amount
+            )
+
+        if amount is None:
+
+            amount = Decimal(
+                "0.00"
+            )
+
+        try:
+
+            amount = Decimal(
+                str(amount)
+            ).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+
+        except Exception:
+
+            amount = Decimal(
+                "0.00"
+            )
+
+        # ======================================================
+        # 3. ONLY POSITIVE CLAIM AMOUNTS
+        # ======================================================
+
+        if amount > Decimal(
+            "0.00"
+        ):
+
             total += amount
-            continue
 
-        if receipt.ai_status == ExpenseReceipt.AI_COMPLETED:
-            total += amount or Decimal("0.00")
+    # ==========================================================
+    # 4. FINAL REPORT TOTAL
+    # ==========================================================
+
+    total = total.quantize(
+        Decimal("0.01"),
+        rounding=ROUND_HALF_UP,
+    )
 
     report.total_amount = total
-    report.save(update_fields=["total_amount", "updated_at"])
+
+    report.save(
+        update_fields=[
+            "total_amount",
+            "updated_at",
+        ]
+    )
+
+    return total
 
 
 def resync_draft_receipts_to_company_currency(company):
@@ -978,67 +1057,142 @@ def resync_draft_receipts_to_company_currency(company):
 
 
 def recalculate_receipt_from_line_items(receipt):
-    from decimal import Decimal
-    from django.db.models import Sum
+    """
+    Recalculate an ExpenseReceipt from its active line items.
+
+    IMPORTANT:
+
+    ExpenseLineItem now contains:
+
+        original_amount
+        original_currency
+        company_amount
+        company_currency
+        exchange_rate
+
+    Therefore we prefer line-item company_amount values instead
+    of converting the entire receipt again.
+
+    Removed line items never contribute to receipt totals.
+    """
+
+    from decimal import Decimal, ROUND_HALF_UP
+
     from django.utils import timezone
 
     from .currency_services import convert_currency
 
-    # --------------------------------------------------
-    # 1. Sanitize line items
-    # --------------------------------------------------
+    # ==========================================================
+    # 1. SANITIZE LINE ITEMS
+    # ==========================================================
 
-    sanitize_receipt_line_items(receipt)
+    sanitize_receipt_line_items(
+        receipt
+    )
 
-    # --------------------------------------------------
-    # 2. Get ONLY active line items
+    # ==========================================================
+    # 2. GET LINE ITEMS
+    # ==========================================================
+
+    all_line_items = (
+        receipt.line_items
+        .all()
+        .order_by(
+            "created_at"
+        )
+    )
+
+    active_line_items = (
+        all_line_items
+        .filter(
+            is_removed=False,
+        )
+    )
+
+    has_any_line_items = (
+        all_line_items.exists()
+    )
+
+    has_active_line_items = (
+        active_line_items.exists()
+    )
+
+    # ==========================================================
+    # 3. NO ACTIVE LINE ITEMS
+    # ==========================================================
     #
-    # Removed/deleted items must not contribute
-    # to the receipt amount.
-    # --------------------------------------------------
+    # Two different situations are possible:
+    #
+    # A. No line items have been created yet.
+    #    → Keep the AI-extracted receipt amount.
+    #
+    # B. Line items existed but all were removed.
+    #    → Receipt amount must become zero.
+    # ==========================================================
 
-    active_line_items = receipt.line_items.filter(
-        is_removed=False,
-    )
+    if not has_active_line_items:
 
-    # --------------------------------------------------
-    # 3. Calculate total from active line items
-    # --------------------------------------------------
+        # ------------------------------------------------------
+        # CASE A:
+        # AI processing may not have created line items yet.
+        # Preserve existing receipt-level totals.
+        # ------------------------------------------------------
 
-    line_total = (
-        active_line_items.aggregate(
-            total=Sum("amount")
-        )["total"]
-        or Decimal("0.00")
-    )
+        if not has_any_line_items:
 
-    # --------------------------------------------------
-    # 4. No active line items
-    # --------------------------------------------------
+            stored_original = (
+                receipt.original_amount
+                or Decimal("0.00")
+            )
 
-    if line_total <= Decimal("0.00"):
-        stored_original = receipt.original_amount or Decimal("0.00")
-        stored_company = receipt.company_amount or Decimal("0.00")
+            stored_company = (
+                receipt.company_amount
+                or Decimal("0.00")
+            )
 
-        # Keep AI-extracted amounts when line items are not ready yet (or were
-        # temporarily cleared). sync_receipt_totals must not wipe claim totals.
-        if stored_original > Decimal("0.00") or stored_company > Decimal("0.00"):
-            if receipt.report_id:
-                recalculate_report_total(receipt.report)
-            return
+            if (
+                stored_original
+                > Decimal("0.00")
+                or stored_company
+                > Decimal("0.00")
+            ):
 
-        receipt.original_amount = Decimal("0.00")
-        receipt.company_amount = Decimal("0.00")
-        receipt.total_amount = Decimal("0.00")
+                if receipt.report_id:
 
-        # No active expense remains in this receipt.
+                    recalculate_report_total(
+                        receipt.report
+                    )
+
+                return
+
+        # ------------------------------------------------------
+        # CASE B:
+        # Every line item has been removed.
+        # ------------------------------------------------------
+
+        receipt.original_amount = (
+            Decimal("0.00")
+        )
+
+        receipt.company_amount = (
+            Decimal("0.00")
+        )
+
+        receipt.total_amount = (
+            Decimal("0.00")
+        )
+
+        # No active claim remains, therefore receipt-level
+        # violations must be cleared and recalculated.
         receipt.has_duplicate_violation = False
         receipt.has_old_bill_violation = False
         receipt.has_amount_violation = False
         receipt.has_any_violation = False
         receipt.policy_violation_reason = ""
 
-        receipt.status = ExpenseReceipt.STATUS_VALID
+        receipt.status = (
+            ExpenseReceipt.STATUS_VALID
+        )
 
         receipt.save(
             update_fields=[
@@ -1055,150 +1209,391 @@ def recalculate_receipt_from_line_items(receipt):
             ]
         )
 
-    # --------------------------------------------------
-    # 5. Active line items exist
-    # --------------------------------------------------
+        if receipt.report_id:
 
-    else:
-
-        finance_settings = receipt.company.finance_settings
-
-        company_currency = (
-            finance_settings.base_currency.code
-            if (
-                finance_settings
-                and finance_settings.base_currency
+            recalculate_report_total(
+                receipt.report
             )
-            else (
-                receipt.company_currency
-                or receipt.original_currency
-                or "INR"
-            )
-        ).upper()
 
-        # --------------------------------------------------
-        # Original receipt amount
-        # --------------------------------------------------
+        return
 
-        receipt.original_amount = line_total
+    # ==========================================================
+    # 4. COMPANY FINANCE SETTINGS
+    # ==========================================================
 
-        # --------------------------------------------------
-        # Currency conversion
-        # --------------------------------------------------
+    try:
 
+        finance_settings = (
+            receipt.company
+            .finance_settings
+        )
+
+    except Exception:
+
+        finance_settings = None
+
+    company_currency = (
+        finance_settings.base_currency.code
         if (
             finance_settings
-            and finance_settings.auto_currency_conversion
+            and finance_settings.base_currency
+        )
+        else (
+            receipt.company_currency
+            or receipt.original_currency
+            or "INR"
+        )
+    ).strip().upper()
+
+    original_currency = (
+        receipt.original_currency
+        or receipt.currency
+        or company_currency
+    ).strip().upper()
+
+    # ==========================================================
+    # 5. SUM ORIGINAL + COMPANY AMOUNTS
+    # ==========================================================
+
+    original_total = Decimal(
+        "0.00"
+    )
+
+    company_total = Decimal(
+        "0.00"
+    )
+
+    legacy_original_total = Decimal(
+        "0.00"
+    )
+
+    legacy_items_present = False
+
+    # ----------------------------------------------------------
+    # IMPORTANT
+    #
+    # We iterate instead of using a simple Sum() because old
+    # records may not have original_amount/company_amount.
+    # ----------------------------------------------------------
+
+    for line_item in active_line_items:
+
+        # ======================================================
+        # ORIGINAL AMOUNT
+        # ======================================================
+
+        item_original_amount = (
+            line_item.original_amount
+            if (
+                line_item.original_amount
+                is not None
+            )
+            else line_item.amount
+        )
+
+        item_original_amount = Decimal(
+            str(
+                item_original_amount
+                or "0"
+            )
+        ).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+
+        original_total += (
+            item_original_amount
+        )
+
+        # ======================================================
+        # COMPANY AMOUNT
+        # ======================================================
+
+        if (
+            line_item.company_amount
+            is not None
         ):
 
-            conversion_result = convert_currency(
-                amount=receipt.original_amount,
-                from_currency=receipt.original_currency,
-                to_currency=company_currency,
-                company=receipt.company,
+            item_company_amount = Decimal(
+                str(
+                    line_item.company_amount
+                )
+            ).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
             )
 
-            if conversion_result.get("success"):
-
-                receipt.company_amount = (
-                    conversion_result["company_amount"]
-                )
-
-                receipt.company_currency = (
-                    conversion_result["company_currency"]
-                )
-
-                receipt.exchange_rate = (
-                    conversion_result["exchange_rate"]
-                )
-
-                receipt.exchange_rate_date = (
-                    conversion_result["exchange_rate_date"]
-                )
-
-                receipt.exchange_rate_provider = (
-                    conversion_result[
-                        "exchange_rate_provider"
-                    ]
-                )
-
-            else:
-
-                # Fallback if conversion fails
-                receipt.company_amount = (
-                    receipt.original_amount
-                )
-
-                receipt.company_currency = (
-                    receipt.original_currency
-                )
-
-                receipt.exchange_rate = None
-                receipt.exchange_rate_date = None
-                receipt.exchange_rate_provider = None
+            company_total += (
+                item_company_amount
+            )
 
         else:
 
-            # Currency conversion disabled
-            receipt.company_amount = (
-                receipt.original_amount
+            # --------------------------------------------------
+            # Legacy line item.
+            #
+            # company_amount did not exist when this record was
+            # created. We'll convert these items below.
+            # --------------------------------------------------
+
+            legacy_items_present = True
+
+            legacy_original_total += (
+                item_original_amount
             )
 
-            receipt.company_currency = (
-                receipt.original_currency
-                or company_currency
+    original_total = (
+        original_total.quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+    )
+
+    company_total = (
+        company_total.quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+    )
+
+    # ==========================================================
+    # 6. HANDLE LEGACY LINE ITEMS
+    # ==========================================================
+
+    if (
+        legacy_items_present
+        and legacy_original_total
+        > Decimal("0.00")
+    ):
+
+        # ------------------------------------------------------
+        # Same currency
+        # ------------------------------------------------------
+
+        if (
+            original_currency
+            == company_currency
+        ):
+
+            converted_legacy_total = (
+                legacy_original_total
             )
 
-            receipt.exchange_rate = Decimal("1")
-            receipt.exchange_rate_date = timezone.now()
+        # ------------------------------------------------------
+        # Existing receipt exchange rate available
+        # ------------------------------------------------------
+
+        elif receipt.exchange_rate:
+
+            converted_legacy_total = (
+                legacy_original_total
+                * Decimal(
+                    str(
+                        receipt.exchange_rate
+                    )
+                )
+            ).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+
+        # ------------------------------------------------------
+        # Need fresh conversion
+        # ------------------------------------------------------
+
+        elif (
+            finance_settings
+            and finance_settings
+            .auto_currency_conversion
+        ):
+
+            conversion_result = (
+                convert_currency(
+                    amount=(
+                        legacy_original_total
+                    ),
+                    from_currency=(
+                        original_currency
+                    ),
+                    to_currency=(
+                        company_currency
+                    ),
+                    company=(
+                        receipt.company
+                    ),
+                )
+            )
+
+            if not conversion_result.get(
+                "success"
+            ):
+
+                raise ValueError(
+                    (
+                        "Unable to convert legacy "
+                        "expense line items from "
+                        f"{original_currency} to "
+                        f"{company_currency}."
+                    )
+                )
+
+            converted_legacy_total = (
+                Decimal(
+                    str(
+                        conversion_result[
+                            "company_amount"
+                        ]
+                    )
+                )
+            ).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+
+            receipt.exchange_rate = (
+                conversion_result.get(
+                    "exchange_rate"
+                )
+            )
+
+            receipt.exchange_rate_date = (
+                conversion_result.get(
+                    "exchange_rate_date"
+                )
+            )
+
             receipt.exchange_rate_provider = (
-                "Conversion Disabled"
+                conversion_result.get(
+                    "exchange_rate_provider"
+                )
             )
 
-        # --------------------------------------------------
-        # Final receipt amount
-        # --------------------------------------------------
+        else:
 
-        receipt.total_amount = receipt.company_amount
+            # --------------------------------------------------
+            # Conversion disabled but currencies differ.
+            #
+            # Do not pretend that 100 USD == 100 INR.
+            # --------------------------------------------------
 
-        receipt.save(
-            update_fields=[
-                "original_amount",
-                "company_amount",
-                "company_currency",
-                "total_amount",
-                "exchange_rate",
-                "exchange_rate_date",
-                "exchange_rate_provider",
-                "updated_at",
-            ]
+            raise ValueError(
+                (
+                    "Currency conversion is required "
+                    f"for {original_currency} -> "
+                    f"{company_currency}, but no "
+                    "exchange rate is available."
+                )
+            )
+
+        company_total += (
+            converted_legacy_total
         )
 
-        # --------------------------------------------------
-        # 6. Re-run policy validation
-        #
-        # This is IMPORTANT.
-        #
-        # Example:
-        #
-        # Receipt:
-        #   Food       ₹500
-        #   Beer       ₹200
-        #
-        # Approver removes Beer.
-        #
-        # We now validate the receipt again using
-        # only the remaining active line items.
-        # --------------------------------------------------
+    company_total = (
+        company_total.quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+    )
 
-        check_policy_violations(receipt)
+    # ==========================================================
+    # 7. UPDATE RECEIPT
+    # ==========================================================
 
-    # --------------------------------------------------
-    # 7. Recalculate monthly report total
-    # --------------------------------------------------
+    receipt.original_amount = (
+        original_total
+    )
+
+    receipt.original_currency = (
+        original_currency
+    )
+
+    receipt.company_amount = (
+        company_total
+    )
+
+    receipt.company_currency = (
+        company_currency
+    )
+
+    # ----------------------------------------------------------
+    # total_amount is the amount ZepEx reimburses/accounting uses.
+    # ----------------------------------------------------------
+
+    receipt.total_amount = (
+        company_total
+    )
+
+    # ----------------------------------------------------------
+    # Same-currency receipt
+    # ----------------------------------------------------------
+
+    if (
+        original_currency
+        == company_currency
+    ):
+
+        receipt.exchange_rate = (
+            Decimal("1.00000000")
+        )
+
+        if not receipt.exchange_rate_date:
+
+            receipt.exchange_rate_date = (
+                timezone.now()
+            )
+
+        if not receipt.exchange_rate_provider:
+
+            receipt.exchange_rate_provider = (
+                "Same Currency"
+            )
+
+    receipt.save(
+        update_fields=[
+            "original_amount",
+            "original_currency",
+            "company_amount",
+            "company_currency",
+            "total_amount",
+            "exchange_rate",
+            "exchange_rate_date",
+            "exchange_rate_provider",
+            "updated_at",
+        ]
+    )
+
+    # ==========================================================
+    # 8. RE-RUN POLICY VALIDATION
+    # ==========================================================
+    #
+    # Example:
+    #
+    # Food     ₹500
+    # Alcohol  ₹200
+    #
+    # Approver removes Alcohol.
+    #
+    # Recalculate:
+    #     receipt total = ₹500
+    #
+    # Then policy validation runs only against the
+    # current active expense.
+    # ==========================================================
+
+    check_policy_violations(
+        receipt
+    )
+
+    # ==========================================================
+    # 9. RECALCULATE MONTHLY REPORT
+    # ==========================================================
 
     if receipt.report_id:
-        recalculate_report_total(receipt.report)
+
+        recalculate_report_total(
+            receipt.report
+        )
 
 def sync_receipt_totals_for_report(report):
     from django.db.models import Sum
@@ -1237,6 +1632,105 @@ def sync_receipt_totals_for_report(report):
     return changed
 
 
+from decimal import Decimal, ROUND_HALF_UP
+
+
+def _calculate_line_item_currency_values(
+    *,
+    amount,
+    receipt,
+):
+    """
+    Build original/company currency values for an ExpenseLineItem.
+
+    Assumption:
+        The AI-extracted line item amount belongs to the
+        receipt's original currency.
+
+    Examples:
+
+        Receipt:
+            100 USD
+
+        Exchange rate:
+            87 INR per USD
+
+        Line:
+            80 USD
+
+        Result:
+            original_amount = 80
+            company_amount = 6960
+    """
+
+    original_amount = Decimal(
+        str(amount or "0")
+    ).quantize(
+        Decimal("0.01"),
+        rounding=ROUND_HALF_UP,
+    )
+
+    original_currency = (
+        receipt.original_currency
+        or receipt.currency
+        or "INR"
+    ).strip().upper()
+
+    company_currency = (
+        receipt.company_currency
+        or receipt.currency
+        or original_currency
+    ).strip().upper()
+
+    exchange_rate = receipt.exchange_rate
+
+    # ======================================================
+    # SAME CURRENCY
+    # ======================================================
+
+    if original_currency == company_currency:
+
+        return {
+            "original_amount": original_amount,
+            "original_currency": original_currency,
+            "company_amount": original_amount,
+            "company_currency": company_currency,
+            "exchange_rate": Decimal("1.00000000"),
+        }
+
+    # ======================================================
+    # DIFFERENT CURRENCY
+    # ======================================================
+
+    if not exchange_rate:
+
+        raise ValueError(
+            (
+                "Exchange rate is required for "
+                f"{original_currency} -> "
+                f"{company_currency} conversion."
+            )
+        )
+
+    exchange_rate = Decimal(
+        str(exchange_rate)
+    )
+
+    company_amount = (
+        original_amount
+        * exchange_rate
+    ).quantize(
+        Decimal("0.01"),
+        rounding=ROUND_HALF_UP,
+    )
+
+    return {
+        "original_amount": original_amount,
+        "original_currency": original_currency,
+        "company_amount": company_amount,
+        "company_currency": company_currency,
+        "exchange_rate": exchange_rate,
+    }
 def extract_receipt_with_gemini(receipt: ExpenseReceipt):
     """
     Extract receipt information using Gemini.
@@ -4409,15 +4903,107 @@ Return valid JSON only.
                 "==================================================\n"
             )
 
+                    # =================================================
+        # CREATE EXPENSE LINE ITEMS
+        # =================================================
+
+        for bill_index, bill in enumerate(
+            normalized_bills
+        ):
+
+            try:
+                amount = Decimal(
+                    str(
+                        bill.get(
+                            "amount",
+                            "0.00",
+                        )
+                    )
+                )
+
+            except (
+                InvalidOperation,
+                TypeError,
+                ValueError,
+            ):
+                amount = Decimal(
+                    "0.00"
+                )
+
+            approved_bill_total = Decimal(
+                "0.00"
+            )
+
             # ------------------------------------------------
-            # Create extracted line items
+            # Bill date
             # ------------------------------------------------
+
+            bill_date = None
+
+            if bill.get(
+                "bill_date"
+            ):
+
+                try:
+                    bill_date = (
+                        datetime.strptime(
+                            bill[
+                                "bill_date"
+                            ],
+                            "%Y-%m-%d",
+                        ).date()
+                    )
+
+                except (
+                    TypeError,
+                    ValueError,
+                ):
+                    bill_date = None
+
+            # ------------------------------------------------
+            # Normalize line items
+            # ------------------------------------------------
+
+            line_items = (
+                normalize_bill_line_items(
+                    bill
+                )
+            )
+
+            print(
+                "\n=================================================="
+            )
+
+            print(
+                f"BILL {bill_index + 1} "
+                "LINE ITEMS BEFORE DB CREATION"
+            )
+
+            print(
+                json.dumps(
+                    line_items,
+                    indent=4,
+                    default=str,
+                )
+            )
+
+            print(
+                "==================================================\n"
+            )
+
+            # =================================================
+            # EXTRACTED LINE ITEMS
+            # =================================================
 
             if line_items:
 
                 for item_index, item in enumerate(
                     line_items
                 ):
+
+                    # -----------------------------------------
+                    # Name
+                    # -----------------------------------------
 
                     item_name = str(
                         item.get(
@@ -4438,6 +5024,10 @@ Return valid JSON only.
                             or "Expense"
                         )
 
+                    # -----------------------------------------
+                    # Subcategory
+                    # -----------------------------------------
+
                     item_subcategory = str(
                         item.get(
                             "subcategory",
@@ -4445,6 +5035,10 @@ Return valid JSON only.
                         )
                         or ""
                     ).strip()
+
+                    # -----------------------------------------
+                    # Amount
+                    # -----------------------------------------
 
                     try:
 
@@ -4466,8 +5060,8 @@ Return valid JSON only.
                         ValueError,
                     ):
 
-                        item_amount = (
-                            Decimal("0.00")
+                        item_amount = Decimal(
+                            "0.00"
                         )
 
                     if item_amount <= Decimal(
@@ -4482,12 +5076,20 @@ Return valid JSON only.
 
                         continue
 
+                    # -----------------------------------------
+                    # Reimbursable
+                    # -----------------------------------------
+
                     is_reimbursable = bool(
                         item.get(
                             "is_reimbursable",
                             True,
                         )
                     )
+
+                    # -----------------------------------------
+                    # Violation reason
+                    # -----------------------------------------
 
                     item_reason = str(
                         item.get(
@@ -4496,6 +5098,10 @@ Return valid JSON only.
                         )
                         or ""
                     ).strip()
+
+                    # -----------------------------------------
+                    # Category
+                    # -----------------------------------------
 
                     item_category = str(
                         item.get(
@@ -4508,8 +5114,23 @@ Return valid JSON only.
                         or "miscellaneous"
                     ).strip().lower()
 
+                    if (
+                        item_category
+                        not in allowed_categories
+                    ):
+                        item_category = (
+                            "miscellaneous"
+                        )
+
+                    # -----------------------------------------
+                    # Vendor
+                    # -----------------------------------------
+
                     item_vendor = str(
-                        bill.get(
+                        item.get(
+                            "vendor"
+                        )
+                        or bill.get(
                             "vendor",
                             "",
                         )
@@ -4541,7 +5162,7 @@ Return valid JSON only.
                     )
 
                     print(
-                        "Amount:",
+                        "Original Amount:",
                         item_amount,
                     )
 
@@ -4550,24 +5171,104 @@ Return valid JSON only.
                         is_reimbursable,
                     )
 
-                    # -----------------------------------------
-                    # ACTUAL DATABASE CREATE
-                    # -----------------------------------------
+                    # =========================================
+                    # CURRENCY VALUES
+                    # =========================================
+
+                    currency_values = (
+                        _calculate_line_item_currency_values(
+                            amount=item_amount,
+                            receipt=receipt,
+                        )
+                    )
+
+                    # =========================================
+                    # CREATE DATABASE LINE ITEM
+                    # =========================================
 
                     expense_item = (
                         ExpenseLineItem.objects.create(
                             receipt=receipt,
-                            description=item_name,
-                            category=item_category,
+
+                            description=(
+                                item_name
+                            ),
+
+                            category=(
+                                item_category
+                            ),
+
                             subcategory=(
                                 item_subcategory
                             ),
-                            vendor=item_vendor,
-                            amount=item_amount,
-                            bill_date=bill_date,
+
+                            vendor=(
+                                item_vendor
+                            ),
+
+                            # ---------------------------------
+                            # Legacy amount
+                            #
+                            # Keep original extracted amount
+                            # for backward compatibility.
+                            # ---------------------------------
+
+                            amount=(
+                                currency_values[
+                                    "original_amount"
+                                ]
+                            ),
+
+                            # ---------------------------------
+                            # Original receipt currency
+                            # ---------------------------------
+
+                            original_amount=(
+                                currency_values[
+                                    "original_amount"
+                                ]
+                            ),
+
+                            original_currency=(
+                                currency_values[
+                                    "original_currency"
+                                ]
+                            ),
+
+                            # ---------------------------------
+                            # Company reimbursement currency
+                            # ---------------------------------
+
+                            company_amount=(
+                                currency_values[
+                                    "company_amount"
+                                ]
+                            ),
+
+                            company_currency=(
+                                currency_values[
+                                    "company_currency"
+                                ]
+                            ),
+
+                            # ---------------------------------
+                            # Exchange rate
+                            # ---------------------------------
+
+                            exchange_rate=(
+                                currency_values[
+                                    "exchange_rate"
+                                ]
+                            ),
+
+                            bill_date=(
+                                bill_date
+                            ),
+
                             is_violating=(
                                 not is_reimbursable
                             ),
+
                             violation_reason=(
                                 item_reason
                                 if not is_reimbursable
@@ -4606,8 +5307,33 @@ Return valid JSON only.
                     )
 
                     print(
-                        "Amount:",
-                        expense_item.amount,
+                        "Original Amount:",
+                        expense_item.original_amount,
+                    )
+
+                    print(
+                        "Original Currency:",
+                        expense_item.original_currency,
+                    )
+
+                    print(
+                        "Company Amount:",
+                        expense_item.company_amount,
+                    )
+
+                    print(
+                        "Company Currency:",
+                        expense_item.company_currency,
+                    )
+
+                    print(
+                        "Exchange Rate:",
+                        expense_item.exchange_rate,
+                    )
+
+                    print(
+                        "Reimbursable:",
+                        not expense_item.is_violating,
                     )
 
                     print(
@@ -4618,18 +5344,34 @@ Return valid JSON only.
                         expense_item.id
                     )
 
-                    approved_bill_total += (
-                        item_amount
-                    )
+                    # =========================================
+                    # APPROVED BILL TOTAL
+                    #
+                    # Only reimbursable lines contribute.
+                    # Always use company reimbursement amount.
+                    # =========================================
+
+                    if is_reimbursable:
+
+                        approved_bill_total += (
+                            expense_item.company_amount
+                            or Decimal(
+                                "0.00"
+                            )
+                        )
+
+                    # -----------------------------------------
+                    # Link uploaded receipt/document
+                    # -----------------------------------------
 
                     _link_receipt_file_attachment(
                         expense_item,
                         receipt,
                     )
 
-            # ------------------------------------------------
-            # Fallback line item
-            # ------------------------------------------------
+            # =================================================
+            # FALLBACK LINE ITEM
+            # =================================================
 
             elif amount > Decimal(
                 "0.00"
@@ -4645,17 +5387,39 @@ Return valid JSON only.
                     or "Receipt total"
                 )
 
+                # =============================================
+                # CURRENCY VALUES
+                # =============================================
+
+                currency_values = (
+                    _calculate_line_item_currency_values(
+                        amount=amount,
+                        receipt=receipt,
+                    )
+                )
+
+                # =============================================
+                # CREATE FALLBACK DATABASE LINE ITEM
+                # =============================================
+
                 expense_item = (
                     ExpenseLineItem.objects.create(
                         receipt=receipt,
+
                         description=str(
                             fallback_name
                         ),
-                        category=bill.get(
-                            "type",
-                            "miscellaneous",
-                        ),
+
+                        category=str(
+                            bill.get(
+                                "type",
+                                "miscellaneous",
+                            )
+                            or "miscellaneous"
+                        ).strip().lower(),
+
                         subcategory="",
+
                         vendor=str(
                             bill.get(
                                 "vendor",
@@ -4663,9 +5427,65 @@ Return valid JSON only.
                             )
                             or ""
                         )[:255],
-                        amount=amount,
-                        bill_date=bill_date,
+
+                        # -------------------------------------
+                        # Legacy original amount
+                        # -------------------------------------
+
+                        amount=(
+                            currency_values[
+                                "original_amount"
+                            ]
+                        ),
+
+                        # -------------------------------------
+                        # Original receipt currency
+                        # -------------------------------------
+
+                        original_amount=(
+                            currency_values[
+                                "original_amount"
+                            ]
+                        ),
+
+                        original_currency=(
+                            currency_values[
+                                "original_currency"
+                            ]
+                        ),
+
+                        # -------------------------------------
+                        # Company reimbursement currency
+                        # -------------------------------------
+
+                        company_amount=(
+                            currency_values[
+                                "company_amount"
+                            ]
+                        ),
+
+                        company_currency=(
+                            currency_values[
+                                "company_currency"
+                            ]
+                        ),
+
+                        # -------------------------------------
+                        # Exchange rate
+                        # -------------------------------------
+
+                        exchange_rate=(
+                            currency_values[
+                                "exchange_rate"
+                            ]
+                        ),
+
+                        bill_date=(
+                            bill_date
+                        ),
+
                         is_violating=False,
+
                         violation_reason="",
                     )
                 )
@@ -4690,8 +5510,33 @@ Return valid JSON only.
                 )
 
                 print(
-                    "Amount:",
-                    expense_item.amount,
+                    "Category:",
+                    expense_item.category,
+                )
+
+                print(
+                    "Original Amount:",
+                    expense_item.original_amount,
+                )
+
+                print(
+                    "Original Currency:",
+                    expense_item.original_currency,
+                )
+
+                print(
+                    "Company Amount:",
+                    expense_item.company_amount,
+                )
+
+                print(
+                    "Company Currency:",
+                    expense_item.company_currency,
+                )
+
+                print(
+                    "Exchange Rate:",
+                    expense_item.exchange_rate,
                 )
 
                 print(
@@ -4702,8 +5547,16 @@ Return valid JSON only.
                     expense_item.id
                 )
 
+                # ---------------------------------------------
+                # Fallback line is reimbursable by default.
+                # Use company amount.
+                # ---------------------------------------------
+
                 approved_bill_total = (
-                    amount
+                    expense_item.company_amount
+                    or Decimal(
+                        "0.00"
+                    )
                 )
 
                 _link_receipt_file_attachment(
@@ -4711,27 +5564,50 @@ Return valid JSON only.
                     receipt,
                 )
 
-            bill["approved_amount"] = str(
+            # =================================================
+            # SAVE APPROVED AMOUNT INTO NORMALIZED BILL
+            # =================================================
+
+            bill[
+                "approved_amount"
+            ] = str(
                 approved_bill_total
             )
 
-        # =================================================
+        # =====================================================
         # VERIFY LINE ITEMS INSIDE TRANSACTION
-        # =================================================
+        # =====================================================
 
         db_line_items = list(
-            ExpenseLineItem.objects.filter(
+            ExpenseLineItem.objects
+            .filter(
                 receipt=receipt
-            ).values(
+            )
+            .values(
                 "id",
                 "description",
                 "category",
                 "subcategory",
                 "vendor",
+
+                # Legacy value
                 "amount",
+
+                # Original receipt value
+                "original_amount",
+                "original_currency",
+
+                # Company reimbursement value
+                "company_amount",
+                "company_currency",
+
+                # Conversion
+                "exchange_rate",
+
                 "bill_date",
                 "is_violating",
                 "violation_reason",
+                "is_removed",
             )
         )
 
@@ -4749,7 +5625,9 @@ Return valid JSON only.
 
         print(
             "LINE ITEM COUNT:",
-            len(db_line_items),
+            len(
+                db_line_items
+            ),
         )
 
         print(
@@ -4759,259 +5637,23 @@ Return valid JSON only.
         if not db_line_items:
 
             raise Exception(
-                "Gemini extracted receipt data, "
-                "but no ExpenseLineItem records were created."
+                (
+                    "Gemini extracted receipt data, "
+                    "but no ExpenseLineItem records "
+                    "were created."
+                )
             )
 
-        # ------------------------------------------------
-        # Recalculate receipt + report from line items
-        # ------------------------------------------------
+        # =====================================================
+        # RECALCULATE RECEIPT + REPORT
+        # =====================================================
 
-        recalculate_receipt_from_line_items(receipt)
+        recalculate_receipt_from_line_items(
+            receipt
+        )
 
         if receipt.report:
 
             recalculate_report_total(
                 receipt.report
             )
-
-    # ====================================================
-    # TRANSACTION HAS COMMITTED HERE
-    # ====================================================
-
-    print(
-        "\n========== TRANSACTION COMMITTED =========="
-    )
-
-    print(
-        "Receipt ID:",
-        receipt.id,
-    )
-
-    print(
-        "============================================\n"
-    )
-
-    # ====================================================
-    # POLICY VALIDATION
-    # ====================================================
-
-    try:
-
-        check_policy_violations(
-            receipt
-        )
-
-    except Exception as policy_error:
-
-        print(
-            "\n========== POLICY VALIDATION ERROR =========="
-        )
-
-        print(
-            str(policy_error)
-        )
-
-        print(
-            "Line items were already committed."
-        )
-
-        print(
-            "=============================================\n"
-        )
-
-        receipt.refresh_from_db()
-
-        receipt.ai_error_message = (
-            "Policy validation warning: "
-            f"{str(policy_error)}"
-        )
-
-        receipt.save(
-            update_fields=[
-                "ai_error_message",
-                "updated_at",
-            ]
-        )
-
-    # ====================================================
-    # Refresh receipt
-    # ====================================================
-
-    receipt.refresh_from_db()
-
-    # ====================================================
-    # FINAL DATABASE VERIFICATION
-    # ====================================================
-
-    final_line_items = list(
-        ExpenseLineItem.objects.filter(
-            receipt=receipt
-        ).values(
-            "id",
-            "description",
-            "category",
-            "subcategory",
-            "vendor",
-            "amount",
-            "bill_date",
-            "is_violating",
-            "violation_reason",
-        )
-    )
-
-    print(
-        "\n=================================================="
-    )
-
-    print(
-        "FINAL COMMITTED LINE ITEMS"
-    )
-
-    print(
-        json.dumps(
-            final_line_items,
-            indent=4,
-            default=str,
-        )
-    )
-
-    print(
-        "FINAL COUNT:",
-        len(final_line_items),
-    )
-
-    print(
-        "==================================================\n"
-    )
-
-    if not final_line_items:
-
-        raise Exception(
-            "Receipt processing completed, "
-            "but no ExpenseLineItem records exist "
-            "after transaction commit."
-        )
-
-    # ====================================================
-    # Success response
-    # ====================================================
-
-    return {
-        "success": True,
-
-        "receipt_id": str(
-            receipt.id
-        ),
-
-        "ai_status": (
-            ExpenseReceipt.AI_COMPLETED
-        ),
-
-        "document_language": (
-            parsed_data.get(
-                "document_language"
-            )
-        ),
-
-        "document_language_code": (
-            parsed_data.get(
-                "document_language_code"
-            )
-        ),
-
-        "document_summary": (
-            parsed_data.get(
-                "document_summary"
-            )
-        ),
-
-        "receipt_quality": (
-            parsed_data.get(
-                "receipt_quality"
-            )
-        ),
-
-        "fraud_analysis": (
-            parsed_data.get(
-                "fraud_analysis"
-            )
-        ),
-
-        "document_metadata": (
-            parsed_data.get(
-                "document_metadata"
-            )
-        ),
-
-        "output_language": {
-            "code": output_language_code,
-            "name": output_language_name,
-            "preserve_original_text": (
-                preserve_original_text
-            ),
-        },
-
-        "bills": normalized_bills,
-
-        "line_items_created": [
-            str(
-                item["id"]
-            )
-            for item in final_line_items
-        ],
-
-        "line_items": final_line_items,
-
-        "original_amount": str(
-            receipt.original_amount
-        ),
-
-        "original_currency": (
-            receipt.original_currency
-        ),
-
-        "company_amount": str(
-            receipt.company_amount
-        ),
-
-        "company_currency": (
-            receipt.company_currency
-        ),
-
-        "exchange_rate": (
-            str(
-                receipt.exchange_rate
-            )
-            if receipt.exchange_rate is not None
-            else None
-        ),
-
-        "exchange_rate_date": (
-            receipt.exchange_rate_date.isoformat()
-            if receipt.exchange_rate_date
-            else None
-        ),
-
-        "exchange_rate_provider": (
-            receipt.exchange_rate_provider
-        ),
-
-        "currency_conversion": (
-            conversion_result
-        ),
-
-        "has_any_violation": (
-            receipt.has_any_violation
-        ),
-
-        "violation_reason": (
-            receipt.policy_violation_reason
-        ),
-    }
-
-
-# NOTE: Global exception handling should be implemented at the caller level.
-# The previous top-level 'except' block was removed because it caused
-# a syntax error when left unmatched. Exceptions should be caught inside
-# functions or by the task/worker that invokes this processing routine.

@@ -1,61 +1,153 @@
 from rest_framework import serializers
 
-from .models import Integration
+from .models import CompanyIntegration
 
 
-class IntegrationSerializer(serializers.ModelSerializer):
+class CompanyIntegrationSerializer(
+    serializers.ModelSerializer
+):
 
-    category_display = serializers.CharField(
-        source="get_category_display",
-        read_only=True,
-    )
-
-    provider_display = serializers.CharField(
+    provider_name = serializers.CharField(
         source="get_provider_display",
         read_only=True,
     )
 
-    status_display = serializers.CharField(
-        source="get_status_display",
-        read_only=True,
-    )
-
-    is_token_expired = serializers.BooleanField(
-        read_only=True,
-    )
+    configured = serializers.SerializerMethodField()
 
     class Meta:
-        model = Integration
+        model = CompanyIntegration
 
         fields = [
             "id",
-            "category",
-            "category_display",
             "provider",
-            "provider_display",
-            "status",
-            "status_display",
-            "external_account_id",
-            "scope",
-            "connected_at",
+            "provider_name",
+
+            "is_connected",
+            "is_active",
+
+            "configured",
+
             "last_synced_at",
-            "last_error",
-            "is_token_expired",
-            "bamboohr_domain",
+            "last_sync_status",
+            "last_sync_error",
+
+            "created_at",
+            "updated_at",
+        ]
+
+        read_only_fields = fields
+
+    def get_configured(self, obj):
+
+        try:
+            credential = obj.credential
+        except Exception:
+            return False
+
+        return bool(
+            credential
+            and credential.encrypted_config
+        )
+
+
+from rest_framework import serializers
+
+from .models import (
+    CompanyIntegration,
+    IntegrationSyncLog,
+)
+
+
+class BambooHRStatusSerializer(
+    serializers.ModelSerializer
+):
+    provider_name = serializers.CharField(
+        source="get_provider_display",
+        read_only=True,
+    )
+
+    configured = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CompanyIntegration
+
+        fields = [
+            "id",
+            "provider",
+            "provider_name",
+            "is_connected",
+            "is_active",
+            "configured",
+            "last_synced_at",
+            "last_sync_status",
+            "last_sync_error",
+            "created_at",
+            "updated_at",
+        ]
+
+        read_only_fields = fields
+
+    def get_configured(self, obj):
+        try:
+            credential = obj.credential
+        except Exception:
+            return False
+
+        return bool(
+            credential
+            and credential.encrypted_config
+        )
+
+
+class IntegrationSyncLogSerializer(
+    serializers.ModelSerializer
+):
+
+    class Meta:
+        model = IntegrationSyncLog
+
+        fields = [
+            "id",
+            "status",
+            "trigger",
+            "records_received",
+            "records_created",
+            "records_updated",
+            "records_skipped",
+            "error_message",
+            "stats",
+            "errors",
+            "started_at",
+            "completed_at",
+        ]
+
+        read_only_fields = fields
+
+from .models import QuickBooksCategoryMapping
+
+
+class QuickBooksCategoryMappingSerializer(
+    serializers.ModelSerializer
+):
+
+    class Meta:
+
+        model = QuickBooksCategoryMapping
+
+        fields = [
+            "id",
+            "zepex_category",
+            "quickbooks_account_id",
+            "quickbooks_account_name",
+            "quickbooks_account_type",
+            "quickbooks_account_sub_type",
+            "is_active",
             "created_at",
             "updated_at",
         ]
 
         read_only_fields = [
             "id",
-            "status",
-            "external_account_id",
-            "scope",
-            "connected_at",
-            "last_synced_at",
-            "last_error",
-            "is_token_expired",
-            "bamboohr_domain",
             "created_at",
             "updated_at",
         ]
