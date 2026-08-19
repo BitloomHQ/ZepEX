@@ -82,6 +82,7 @@ from .views import (
     create_workflow_step,
     update_workflow_step,
     delete_workflow_step,
+    company_settings,
     
     
 
@@ -332,12 +333,17 @@ path(
     name="company-imap-config",
 ),
 path(
-    "roles/<uuid:role_id>/",
-    update_company_role,
-    name="update-company-role",
+    "company/settings/",
+    company_settings,
+    name="company-settings",
 ),
 path(
-    "employees/<uuid:employee_id>/",
+    "roles/<int:role_id>/",
+    update_company_role,
+    name="update-company-role-v2",
+),
+path(
+    "employees/<int:employee_id>/",
     update_employee,
     name="update-employee",
 ),

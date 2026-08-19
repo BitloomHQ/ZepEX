@@ -1,6 +1,7 @@
 import { CheckCircle2, ClipboardList, LayoutDashboard, Wallet } from 'lucide-react'
 import type { NavItem } from '@/components/layout/DashboardLayout'
 import type { User, UserPermissions } from '@/types'
+import { mergeRoleNavWithAdminPages } from '@/lib/adminNav'
 import { approvedReportsPath, pendingReportsPath } from '@/lib/reportQueuePaths'
 
 export function hasPermission(user: User | null, permission: keyof UserPermissions) {
@@ -61,7 +62,7 @@ export function buildEmployeeNav(user: User | null): NavItem[] {
   if (canManageOwnExpenses(user)) {
     items.push({ label: 'Expenses', to: '/employee/expenses', icon: Wallet })
   }
-  return items
+  return mergeRoleNavWithAdminPages(items, user)
 }
 
 export function buildManagerNav(user: User | null): NavItem[] {
@@ -72,7 +73,7 @@ export function buildManagerNav(user: User | null): NavItem[] {
     items.push({ label: 'My Expenses', to: '/manager/expenses', icon: Wallet })
   }
   appendReportQueueNav(items, user, 'MANAGER')
-  return items
+  return mergeRoleNavWithAdminPages(items, user)
 }
 
 export function buildAccountsNav(user: User | null): NavItem[] {
@@ -83,7 +84,7 @@ export function buildAccountsNav(user: User | null): NavItem[] {
     items.push({ label: 'My Expenses', to: '/accounts/expenses', icon: Wallet })
   }
   appendReportQueueNav(items, user, 'ACCOUNTS')
-  return items
+  return mergeRoleNavWithAdminPages(items, user)
 }
 
 export function navItemsForUser(user: User | null): NavItem[] {

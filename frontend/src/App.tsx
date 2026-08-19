@@ -30,6 +30,7 @@ import { ReportsRedirect } from '@/pages/tenant/reports/ReportsRedirect'
 import { RolesPage } from '@/pages/tenant/admin/RolesPage'
 import { WorkflowPage } from '@/pages/tenant/admin/WorkflowPage'
 import { AdminReportsPage } from '@/pages/tenant/admin/AdminReportsPage'
+import { ExpenseReportsPage } from '@/pages/tenant/reports/ExpenseReportsPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { Toaster } from '@/components/ui/toaster'
 
@@ -101,17 +102,93 @@ export default function App() {
 
           <Route element={<ProtectedRoute allowedRoles={['COMPANY_ADMIN']} />}>
             <Route path="/admin" element={<AdminDashboard />} />
-            <Route path="/admin/departments" element={<DepartmentsPage />} />
-            <Route path="/admin/employees" element={<EmployeesPage />} />
-            <Route path="/admin/roles" element={<RolesPage />} />
-            <Route path="/admin/workflow" element={<WorkflowPage />} />
             <Route path="/admin/reports" element={<AdminReportsPage />} />
-            <Route path="/admin/policy" element={<PolicyPage />} />
-            <Route path="/admin/settings" element={<SettingsPage />} />
             <Route path="/admin/audit-logs" element={<AuditLogsPage />} />
             <Route
               path="/company-admin-dashboard"
               element={<Navigate to="/admin" replace />}
+            />
+          </Route>
+
+          <Route
+            element={
+              <ProtectedRoute
+                allowedRoles={['COMPANY_ADMIN']}
+                anyPermissions={['can_manage_departments']}
+              />
+            }
+          >
+            <Route path="/admin/departments" element={<DepartmentsPage />} />
+          </Route>
+
+          <Route
+            element={
+              <ProtectedRoute
+                allowedRoles={['COMPANY_ADMIN']}
+                anyPermissions={['can_manage_employees', 'can_manage_users']}
+              />
+            }
+          >
+            <Route path="/admin/employees" element={<EmployeesPage />} />
+          </Route>
+
+          <Route
+            element={
+              <ProtectedRoute
+                allowedRoles={['COMPANY_ADMIN']}
+                anyPermissions={['can_manage_roles']}
+              />
+            }
+          >
+            <Route path="/admin/roles" element={<RolesPage />} />
+          </Route>
+
+          <Route
+            element={
+              <ProtectedRoute
+                allowedRoles={['COMPANY_ADMIN']}
+                anyPermissions={['can_manage_workflow']}
+              />
+            }
+          >
+            <Route path="/admin/workflow" element={<WorkflowPage />} />
+          </Route>
+
+          <Route
+            element={
+              <ProtectedRoute
+                allowedRoles={['COMPANY_ADMIN']}
+                anyPermissions={['can_manage_policy']}
+              />
+            }
+          >
+            <Route path="/admin/policy" element={<PolicyPage />} />
+          </Route>
+
+          <Route
+            element={
+              <ProtectedRoute
+                allowedRoles={['COMPANY_ADMIN']}
+                anyPermissions={['can_manage_company', 'can_manage_policy']}
+              />
+            }
+          >
+            <Route path="/admin/settings" element={<SettingsPage />} />
+          </Route>
+
+          <Route
+            element={
+              <ProtectedRoute
+                allowedRoles={['COMPANY_ADMIN']}
+                anyPermissions={['can_view_company_reports', 'can_view_all_reports', 'can_mark_paid']}
+              />
+            }
+          >
+            <Route path="/expense-reports" element={<ExpenseReportsPage />} />
+            <Route path="/admin/expense-reports" element={<Navigate to="/expense-reports" replace />} />
+            <Route
+              path="/accounts/expense-reports"
+              element={<Navigate to="/expense-reports" replace />}
             />
           </Route>
 

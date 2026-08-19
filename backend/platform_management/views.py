@@ -8,7 +8,7 @@ from rest_framework.decorators import api_view, authentication_classes, permissi
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from .models import CompanyRegistrationRequest
+from .models import CompanyRegistrationRequest, PlatformOwner
 from .serializers import CompanyRegistrationRequestSerializer
 from .permissions import IsPlatformOwner
 
@@ -20,6 +20,7 @@ from tenants.models import Company
 
 from django.core.paginator import Paginator
 from django.db.models import Q
+from datetime import datetime
 
 from tenants.models import (
     Company,
@@ -30,7 +31,7 @@ from tenants.models import (
     PolicyCategoryRule,
 )
 
-from expenses.models import ApprovalWorkflow, ApprovalWorkflowStep
+from expenses.models import ApprovalWorkflow, ApprovalWorkflowStep, ExpenseReport
 from tenants.serializers import (
     CompanySerializer,
     DepartmentSerializer,
@@ -40,11 +41,10 @@ from tenants.serializers import (
     
 )
 from .serializers import CompanyRegistrationRequestSerializer, PlatformSettingsSerializer
-from expenses.serializers import ApprovalWorkflowSerializer
+from expenses.serializers import ApprovalWorkflowSerializer, ExpenseReportSerializer
 from django.utils import timezone
 from tenants.email_utils import send_company_registration_otp
 from django.conf import settings
-from platform_access.models import PlatformAdmin
 from platform_management.email_service import (
     send_company_approved_email,
     send_company_rejected_email,
@@ -54,6 +54,15 @@ from platform_management.domain_validator import (
     validate_registration_admin_email,
 )
 from platform_access.decorators import platform_permission_required
+
+
+def _resolve_platform_owner(user):
+    owner = getattr(user, "platform_owner", None)
+    if owner is not None:
+        return owner
+    return PlatformOwner.objects.order_by("id").first()
+
+
 def _registration_email_validation_response(admin_email, company_domain, *, verify_domain):
     """Return a 400 Response when registration email/domain checks fail."""
     ok, message, details, error_code = validate_registration_admin_email(
@@ -146,6 +155,9 @@ def create_company_request(request):
             )
 
         company_request.is_email_verified = True
+        company_request.email_verified_via = (
+            CompanyRegistrationRequest.EMAIL_VERIFIED_VIA_EMAIL
+        )
 
     serializer = CompanyRegistrationRequestSerializer(
         company_request,
@@ -155,6 +167,10 @@ def create_company_request(request):
 
     if serializer.is_valid():
         company_request.is_email_verified = True
+        company_request.email_verified_via = (
+            company_request.email_verified_via
+            or CompanyRegistrationRequest.EMAIL_VERIFIED_VIA_EMAIL
+        )
         company_request.status = "PENDING"
         company_request.otp = None
         company_request.otp_expires_at = None
@@ -237,18 +253,7 @@ def approve_company_request(request, request_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    if not company_request.is_email_verified:
-        return Response(
-            {
-                "success": False,
-                "error": (
-                    "Admin email is not verified. "
-                    "OTP verification is required before approval."
-                ),
-                "error_code": "ADMIN_EMAIL_NOT_VERIFIED",
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+    email_verified_by_admin = not company_request.is_email_verified
 
     company_name = str(
         company_request.company_name or ""
@@ -359,11 +364,7 @@ def approve_company_request(request, request_id):
     # Resolve platform owner
     # =========================================================
 
-    platform_owner = getattr(
-        request.user,
-        "platform_owner",
-        None,
-    )
+    platform_owner = _resolve_platform_owner(request.user)
 
     if platform_owner is None:
         return Response(
@@ -428,26 +429,26 @@ def approve_company_request(request, request_id):
             invite_email_sent=False,
             invite_email_sent_at=None,
         )
-        # =====================================================
-        # Create Platform Owner
-        # =====================================================
-
-        PlatformAdmin.objects.create(
-            company=company,
-            user=profile,
-            is_owner=True,
-            is_active=True,
-            created_by=profile,
-        )
+        # Company admins must not receive platform-console access.
         # =====================================================
         # Mark registration request approved
         # =====================================================
 
         company_request.status = "APPROVED"
-
+        company_request.is_email_verified = True
+        if email_verified_by_admin:
+            company_request.email_verified_via = (
+                CompanyRegistrationRequest.EMAIL_VERIFIED_VIA_ADMIN
+            )
+        elif not company_request.email_verified_via:
+            company_request.email_verified_via = (
+                CompanyRegistrationRequest.EMAIL_VERIFIED_VIA_EMAIL
+            )
         company_request.save(
             update_fields=[
                 "status",
+                "is_email_verified",
+                "email_verified_via",
             ]
         )
 
@@ -549,7 +550,15 @@ def approve_company_request(request, request_id):
     return Response(
         {
             "success": True,
-            "message": "Company approved successfully.",
+            "message": (
+                "Company approved successfully. "
+                "Admin email was marked as verified by platform admin."
+                if email_verified_by_admin
+                else "Company approved successfully."
+            ),
+            "admin_email": user.email,
+            "temporary_password": temp_password,
+            "email_verified_by_admin": email_verified_by_admin,
 
             "company": {
                 "id": str(company.id),
@@ -711,6 +720,47 @@ def pending_company_list(request):
         "count": companies.count(),
         "results": serializer.data
     })
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+@platform_permission_required("edit_company")
+def update_platform_company(request, company_id):
+
+    try:
+        company = Company.objects.get(id=company_id)
+    except Company.DoesNotExist:
+        return Response(
+            {"error": "Company not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    serializer = CompanySerializer(
+        company,
+        data=request.data,
+        partial=True,
+    )
+
+    if not serializer.is_valid():
+        return Response(
+            {
+                "success": False,
+                "errors": serializer.errors,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    serializer.save()
+
+    return Response(
+        {
+            "success": True,
+            "message": "Company details updated successfully.",
+            "company": serializer.data,
+        }
+    )
+
+
 from audit_logs.utils import create_audit_log
 @api_view(["PATCH"])
 @permission_classes([IsAuthenticated])
@@ -842,11 +892,9 @@ def platform_company_details(request, company_id):
     department_id = request.GET.get("department_id")
     role = request.GET.get("role")
     company_role_id = request.GET.get("company_role_id")
-    if company_role_id:
-       policy_rules = policy_rules.filter(
-        company_role_id=company_role_id
-    )
     category = request.GET.get("category")
+    report_status = request.GET.get("status")
+    report_month = request.GET.get("month")
 
     def paginate_queryset(queryset, serializer_class):
         paginator = Paginator(queryset, page_size)
@@ -854,7 +902,8 @@ def platform_company_details(request, company_id):
 
         serializer = serializer_class(
             page_obj,
-            many=True
+            many=True,
+            context={"request": request},
         )
 
         return {
@@ -971,6 +1020,11 @@ def platform_company_details(request, company_id):
                 category_name__iexact=category
             )
 
+        if company_role_id:
+            policy_rules = policy_rules.filter(
+                company_role_id=company_role_id
+            )
+
         if search:
             policy_rules = policy_rules.filter(
                 Q(category_name__icontains=search)
@@ -1000,6 +1054,46 @@ def platform_company_details(request, company_id):
         response_data["workflow"] = (
             ApprovalWorkflowSerializer(workflow).data
             if workflow else None
+        )
+
+    if section in ["all", "reports"]:
+        reports = (
+            ExpenseReport.objects
+            .select_related(
+                "employee__user",
+                "department",
+            )
+            .prefetch_related(
+                "receipts",
+                "approval_history",
+            )
+            .filter(company=company)
+            .order_by("-month", "-submitted_at")
+        )
+
+        if search:
+            reports = reports.filter(
+                Q(employee__user__first_name__icontains=search)
+                | Q(employee__user__last_name__icontains=search)
+                | Q(employee__user__email__icontains=search)
+            )
+
+        if report_status:
+            reports = reports.filter(status__iexact=report_status)
+
+        if report_month:
+            try:
+                month_date = datetime.strptime(
+                    report_month[:7],
+                    "%Y-%m",
+                ).date().replace(day=1)
+                reports = reports.filter(month=month_date)
+            except (TypeError, ValueError):
+                pass
+
+        response_data["reports"] = paginate_queryset(
+            reports,
+            ExpenseReportSerializer,
         )
 
     return Response(response_data)
@@ -1118,6 +1212,7 @@ def _request_company_registration_otp(request):
     company_request.otp = otp
     company_request.otp_expires_at = timezone.now() + timedelta(minutes=10)
     company_request.is_email_verified = False
+    company_request.email_verified_via = ""
 
     company_request.save()
 
@@ -1182,11 +1277,15 @@ def verify_company_registration_otp(request):
         )
 
     company_request.is_email_verified = True
+    company_request.email_verified_via = (
+        CompanyRegistrationRequest.EMAIL_VERIFIED_VIA_EMAIL
+    )
     company_request.otp = None
     company_request.otp_expires_at = None
 
     company_request.save(update_fields=[
         "is_email_verified",
+        "email_verified_via",
         "otp",
         "otp_expires_at",
     ])

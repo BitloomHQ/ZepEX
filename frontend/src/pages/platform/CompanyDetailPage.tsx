@@ -1,27 +1,40 @@
-import { Building2, GitBranch, ListFilter } from 'lucide-react'
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { Building2, GitBranch, ListFilter, Pencil } from 'lucide-react'
+import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { getPlatformCompanyDetails } from '@/api'
+import { getPlatformCompanyDetails, updatePlatformCompany } from '@/api'
 import { getApiErrorMessage } from '@/api/client'
 import { AdminDataTable, AdminTableCell, AdminTableRow } from '@/components/admin/AdminDataTable'
 import { AdminListPanel } from '@/components/admin/AdminListPanel'
 import { AdminListSearchBar } from '@/components/admin/AdminListSearchBar'
+import { AdminModalFooter } from '@/components/admin/AdminModalFooter'
 import { StatusBadge } from '@/components/StatusBadge'
 import { DashboardLayout, platformNavWithAudit } from '@/components/layout/DashboardLayout'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { TabbedTablePageShimmer } from '@/components/ui/shimmer'
 import { PaginationControls } from '@/components/ui/pagination-controls'
+import { formatReportTotal } from '@/lib/receiptDisplay'
+import { toast } from '@/lib/toast'
 import { formatDate } from '@/lib/utils'
 import type {
   ApprovalWorkflow,
   CompanyRole,
   DepartmentRecord,
   EmployeeRecord,
+  ExpenseReport,
   PlatformCompanyDetailsResponse,
   PolicyRule,
 } from '@/types'
 
-type Section = 'departments' | 'employees' | 'roles' | 'policy_rules' | 'workflow'
+type Section = 'departments' | 'employees' | 'roles' | 'policy_rules' | 'workflow' | 'reports'
 
 const SECTION_TABS: { label: string; value: Section }[] = [
   { label: 'Departments', value: 'departments' },
@@ -29,6 +42,7 @@ const SECTION_TABS: { label: string; value: Section }[] = [
   { label: 'Roles', value: 'roles' },
   { label: 'Policy', value: 'policy_rules' },
   { label: 'Workflow', value: 'workflow' },
+  { label: 'Reports', value: 'reports' },
 ]
 
 const ROLE_OPTIONS = ['EMPLOYEE', 'MANAGER', 'ACCOUNTS', 'COMPANY_ADMIN'] as const
@@ -47,6 +61,7 @@ export function CompanyDetailPage() {
   const [filterRole, setFilterRole] = useState('')
   const [filterCompanyRoleId, setFilterCompanyRoleId] = useState('')
   const [filterCategory, setFilterCategory] = useState('')
+  const [filterStatus, setFilterStatus] = useState('')
   const [data, setData] = useState<PlatformCompanyDetailsResponse | null>(null)
   const [filterOptions, setFilterOptions] = useState<{
     departments: DepartmentRecord[]
@@ -54,6 +69,14 @@ export function CompanyDetailPage() {
   }>({ departments: [], roles: [] })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [editOpen, setEditOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [editForm, setEditForm] = useState({
+    name: '',
+    domain: '',
+    reimbursement_email: '',
+    is_verified: false,
+  })
 
   useEffect(() => {
     if (!companyId) return
@@ -85,8 +108,17 @@ export function CompanyDetailPage() {
         company_role_id:
           section === 'employees' && filterCompanyRoleId ? filterCompanyRoleId : undefined,
         category: section === 'policy_rules' && filterCategory ? filterCategory : undefined,
+        status: section === 'reports' && filterStatus ? filterStatus : undefined,
       })
       setData(response)
+      if (response.company) {
+        setEditForm({
+          name: response.company.name ?? '',
+          domain: response.company.domain ?? '',
+          reimbursement_email: response.company.reimbursement_email ?? '',
+          is_verified: Boolean(response.company.is_verified),
+        })
+      }
     } catch (err) {
       setError(getApiErrorMessage(err))
       setData(null)
@@ -102,6 +134,7 @@ export function CompanyDetailPage() {
     filterRole,
     filterCompanyRoleId,
     filterCategory,
+    filterStatus,
   ])
 
   useEffect(() => {
@@ -110,7 +143,7 @@ export function CompanyDetailPage() {
 
   useEffect(() => {
     setPage(1)
-  }, [section, search, filterDepartmentId, filterRole, filterCompanyRoleId, filterCategory])
+  }, [section, search, filterDepartmentId, filterRole, filterCompanyRoleId, filterCategory, filterStatus])
 
   useEffect(() => {
     setFiltersOpen(false)
@@ -118,13 +151,48 @@ export function CompanyDetailPage() {
     setFilterRole('')
     setFilterCompanyRoleId('')
     setFilterCategory('')
+    setFilterStatus('')
     setSearchDraft('')
     setSearch('')
   }, [section])
 
   const company = data?.company
   const showSearch = section !== 'workflow'
-  const showFilters = section === 'employees' || section === 'policy_rules'
+  const showFilters = section === 'employees' || section === 'policy_rules' || section === 'reports'
+
+  const saveCompanyDetails = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!companyId) return
+    if (!editForm.name.trim() || !editForm.domain.trim()) {
+      setError('Company name and domain are required.')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      const { data: response } = await updatePlatformCompany(companyId, {
+        name: editForm.name.trim(),
+        domain: editForm.domain.trim(),
+        reimbursement_email: editForm.reimbursement_email.trim() || null,
+        is_verified: editForm.is_verified,
+      })
+      setData((current) =>
+        current ? { ...current, company: { ...current.company, ...response.company } } : current,
+      )
+      setEditForm({
+        name: response.company.name ?? '',
+        domain: response.company.domain ?? '',
+        reimbursement_email: response.company.reimbursement_email ?? '',
+        is_verified: Boolean(response.company.is_verified),
+      })
+      toast.success(response.message || 'Company details updated.')
+      setEditOpen(false)
+    } catch (err) {
+      setError(getApiErrorMessage(err))
+    } finally {
+      setSaving(false)
+    }
+  }
 
   if (loading && !data) {
     return (
@@ -149,19 +217,28 @@ export function CompanyDetailPage() {
       icon={Building2}
       navItems={platformNavWithAudit}
       headerAction={
-        <Button asChild variant="outline">
-          <Link to="/platform/companies">Back to companies</Link>
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" variant="outline" onClick={() => setEditOpen(true)} disabled={!company}>
+            <Pencil className="h-4 w-4" />
+            Edit details
+          </Button>
+          <Button asChild variant="outline">
+            <Link to="/platform/companies">Back to companies</Link>
+          </Button>
+        </div>
       }
     >
-      {error && (
+      {error && !editOpen && (
         <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
       )}
 
       {company && (
-        <div className="mb-4 flex flex-wrap gap-2 text-sm text-gray-600">
+        <div className="mb-4 flex flex-wrap items-center gap-2 text-sm text-gray-600">
           <StatusBadge status={company.is_verified ? 'APPROVED' : 'PENDING'} />
           {company.is_active === false && <StatusBadge status="INACTIVE" />}
+          {company.reimbursement_email && (
+            <span className="text-gray-500">{company.reimbursement_email}</span>
+          )}
         </div>
       )}
 
@@ -258,6 +335,22 @@ export function CompanyDetailPage() {
                 />
               </div>
             )}
+            {filtersOpen && section === 'reports' && (
+              <div className="mt-3 rounded-lg border border-[#e2e8f0] bg-gray-50 p-3">
+                <select
+                  className={selectClassName}
+                  value={filterStatus}
+                  onChange={(e) => setFilterStatus(e.target.value)}
+                >
+                  <option value="">All statuses</option>
+                  <option value="DRAFT">Draft</option>
+                  <option value="SUBMITTED">Submitted</option>
+                  <option value="APPROVED">Approved</option>
+                  <option value="REJECTED">Rejected</option>
+                  <option value="PAID">Paid</option>
+                </select>
+              </div>
+            )}
           </div>
         </AdminListPanel>
       )}
@@ -331,6 +424,7 @@ export function CompanyDetailPage() {
                     role.can_submit_expense && 'Submit',
                     role.can_approve_expense && 'Approve',
                     role.can_mark_paid && 'Pay',
+                    role.can_view_company_reports && 'Reports',
                   ]
                     .filter(Boolean)
                     .join(', ') || '—'}
@@ -380,7 +474,115 @@ export function CompanyDetailPage() {
             </div>
           </AdminListPanel>
         )}
+
+        {section === 'reports' && (
+          <SectionTable
+            title="Expense reports"
+            count={data?.reports?.count}
+            columns={['Employee', 'Month', 'Status', 'Amount', 'Submitted']}
+            page={page}
+            totalPages={data?.reports?.total_pages ?? 1}
+            onPageChange={setPage}
+            loading={loading}
+          >
+            {(data?.reports?.results ?? []).map((report: ExpenseReport) => (
+              <AdminTableRow key={report.id}>
+                <AdminTableCell>
+                  <div>
+                    <p className="font-medium text-gray-900">
+                      {report.employee_name || report.employee_email}
+                    </p>
+                    <p className="text-xs text-gray-500">{report.employee_email}</p>
+                  </div>
+                </AdminTableCell>
+                <AdminTableCell>{String(report.month).slice(0, 7)}</AdminTableCell>
+                <AdminTableCell>
+                  <StatusBadge status={report.status} />
+                </AdminTableCell>
+                <AdminTableCell>{formatReportTotal(report)}</AdminTableCell>
+                <AdminTableCell className="text-gray-500">
+                  {formatDate(report.submitted_at)}
+                </AdminTableCell>
+              </AdminTableRow>
+            ))}
+          </SectionTable>
+        )}
       </div>
+
+      <Dialog
+        open={editOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditOpen(false)
+            setError('')
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit company details</DialogTitle>
+            <DialogDescription>
+              Update this company&apos;s name, domain, reimbursement email, and verification status.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={saveCompanyDetails} className="space-y-3">
+            <div className="space-y-2">
+              <Label htmlFor="platform-company-name">Company name</Label>
+              <Input
+                id="platform-company-name"
+                value={editForm.name}
+                onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                disabled={saving}
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="platform-company-domain">Domain</Label>
+              <Input
+                id="platform-company-domain"
+                value={editForm.domain}
+                onChange={(e) => setEditForm({ ...editForm, domain: e.target.value })}
+                disabled={saving}
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="platform-company-email">Reimbursement email</Label>
+              <Input
+                id="platform-company-email"
+                type="email"
+                value={editForm.reimbursement_email}
+                onChange={(e) => setEditForm({ ...editForm, reimbursement_email: e.target.value })}
+                disabled={saving}
+              />
+            </div>
+            <label className="flex items-start gap-2 rounded-lg border border-[#e2e8f0] bg-gray-50 px-3 py-2 text-sm text-gray-800">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={editForm.is_verified}
+                onChange={(e) => setEditForm({ ...editForm, is_verified: e.target.checked })}
+                disabled={saving}
+              />
+              <span>
+                Mark company email as verified
+                <span className="mt-0.5 block text-xs text-gray-500">
+                  Verified companies appear in the main companies list.
+                </span>
+              </span>
+            </label>
+            {error && editOpen && <p className="text-sm text-red-600">{error}</p>}
+            <AdminModalFooter
+              onCancel={() => {
+                setEditOpen(false)
+                setError('')
+              }}
+              submitLabel="Save details"
+              submitting={saving}
+            />
+          </form>
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   )
 }

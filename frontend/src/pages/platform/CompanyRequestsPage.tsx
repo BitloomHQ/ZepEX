@@ -6,6 +6,7 @@ import {
   rejectCompanyRequest,
 } from '@/api'
 import { getApiErrorMessage } from '@/api/client'
+import { ApproveCompanyRequestDialog } from '@/components/platform/ApproveCompanyRequestDialog'
 import { CompanyRequestCard } from '@/components/platform/CompanyRequestCard'
 import { CompanyRequestCardsShimmer } from '@/components/platform/CompanyRequestCardsShimmer'
 import { RejectCompanyRequestDialog } from '@/components/platform/RejectCompanyRequestDialog'
@@ -18,6 +19,7 @@ export function CompanyRequestsPage() {
   const [loading, setLoading] = useState(true)
   const [actionId, setActionId] = useState<number | null>(null)
   const [rejectTarget, setRejectTarget] = useState<CompanyRegistrationRequest | null>(null)
+  const [approveTarget, setApproveTarget] = useState<CompanyRegistrationRequest | null>(null)
   const [error, setError] = useState('')
 
   const load = useCallback(async () => {
@@ -34,13 +36,28 @@ export function CompanyRequestsPage() {
     load()
   }, [load])
 
+  const handleApproveClick = (id: number) => {
+    const request = requests.find((item) => item.id === id) ?? null
+    if (!request) return
+    if (request.is_email_verified) {
+      void handleApprove(id)
+      return
+    }
+    setApproveTarget(request)
+  }
+
   const handleApprove = async (id: number) => {
     setActionId(id)
     setError('')
     try {
       const { data } = await approveCompanyRequest(id)
+      setApproveTarget(null)
+      const password = data.temporary_password
+      const email = data.admin_email
       toast.success(
-        `Approved ${data.admin_email}. Welcome email sent with login credentials. Temp password: ${data.temporary_password}`,
+        data.email_verified_by_admin
+          ? `Approved ${email}. Email marked as verified by admin. Welcome email sent. Temp password: ${password}`
+          : `Approved ${email}. Welcome email sent with login credentials. Temp password: ${password}`,
       )
       await load()
     } catch (err) {
@@ -102,9 +119,9 @@ export function CompanyRequestsPage() {
               Registration Requests ({requests.length})
             </h2>
             <p className="mt-1 text-sm text-gray-500">
-              {verifiedPendingCount} request(s) ready for review
+              {pendingCount} pending request(s)
               {pendingCount > verifiedPendingCount
-                ? ` · ${pendingCount - verifiedPendingCount} awaiting OTP verification`
+                ? ` · ${pendingCount - verifiedPendingCount} without email verification (can still be approved by admin)`
                 : ''}
               . Approving or rejecting sends an email to the applicant.
             </p>
@@ -121,7 +138,7 @@ export function CompanyRequestsPage() {
                   key={request.id}
                   request={request}
                   actionId={actionId}
-                  onApprove={handleApprove}
+                  onApprove={handleApproveClick}
                   onReject={handleRejectClick}
                 />
               ))}
@@ -129,6 +146,18 @@ export function CompanyRequestsPage() {
           )}
         </div>
       )}
+
+      <ApproveCompanyRequestDialog
+        request={approveTarget}
+        open={approveTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && actionId === null) {
+            setApproveTarget(null)
+          }
+        }}
+        onConfirm={handleApprove}
+        loading={actionId !== null}
+      />
 
       <RejectCompanyRequestDialog
         request={rejectTarget}

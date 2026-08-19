@@ -52,14 +52,10 @@ export function CompanyRequestCard({
 }: CompanyRequestCardProps) {
   const isPending = request.status === 'PENDING'
   const emailVerified = request.is_email_verified === true
-  const canApprove = isPending && emailVerified && request.company_name !== 'PENDING'
+  const canApprove = isPending && request.company_name !== 'PENDING'
   const busy = actionId === request.id
   const approveTooltip =
-    isPending && !canApprove
-      ? !emailVerified
-        ? 'Email not verified. Approve is available after the admin verifies their email.'
-        : 'Registration details are incomplete.'
-      : undefined
+    isPending && !canApprove ? 'Registration details are incomplete.' : undefined
 
   return (
     <article className="rounded-xl border border-[#e2e8f0] bg-white p-5 shadow-sm">
@@ -70,7 +66,11 @@ export function CompanyRequestCard({
               {requestStatusLabel[request.status]}
             </Badge>
             <Badge variant={emailVerified ? 'success' : 'destructive'}>
-              {emailVerified ? 'Email verified' : 'Email not verified'}
+              {emailVerified
+                ? request.email_verified_via === 'ADMIN'
+                  ? 'Email verified by admin'
+                  : 'Email verified through email'
+                : 'Email not verified'}
             </Badge>
           </div>
           <h3 className="mt-3 text-xl font-bold text-gray-900">{request.company_name}</h3>

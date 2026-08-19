@@ -40,7 +40,28 @@ const defaultPermissions = {
   can_submit_expense: false,
   can_approve_expense: false,
   can_mark_paid: false,
+  can_manage_company: false,
+  can_manage_roles: false,
+  can_manage_employees: false,
+  can_manage_departments: false,
+  can_manage_policy: false,
+  can_manage_workflow: false,
+  can_view_company_reports: false,
 }
+
+const permissionFields: Array<{ key: keyof typeof defaultPermissions; label: string }> = [
+  { key: 'can_upload_receipt', label: 'Upload receipt' },
+  { key: 'can_submit_expense', label: 'Submit expense' },
+  { key: 'can_approve_expense', label: 'Approve expense' },
+  { key: 'can_mark_paid', label: 'Mark paid' },
+  { key: 'can_manage_company', label: 'Edit company details' },
+  { key: 'can_manage_roles', label: 'Manage roles' },
+  { key: 'can_manage_employees', label: 'Manage employees' },
+  { key: 'can_manage_departments', label: 'Manage departments' },
+  { key: 'can_manage_policy', label: 'Manage policy' },
+  { key: 'can_manage_workflow', label: 'Manage workflow' },
+  { key: 'can_view_company_reports', label: 'View company reports' },
+]
 
 function PermissionCheck({
   label,
@@ -147,6 +168,13 @@ export function RolesPage() {
       can_submit_expense: role.can_submit_expense,
       can_approve_expense: role.can_approve_expense,
       can_mark_paid: role.can_mark_paid,
+      can_manage_company: Boolean(role.can_manage_company),
+      can_manage_roles: Boolean(role.can_manage_roles),
+      can_manage_employees: Boolean(role.can_manage_employees),
+      can_manage_departments: Boolean(role.can_manage_departments),
+      can_manage_policy: Boolean(role.can_manage_policy),
+      can_manage_workflow: Boolean(role.can_manage_workflow),
+      can_view_company_reports: Boolean(role.can_view_company_reports),
     })
     setError('')
     setEditOpen(true)
@@ -207,6 +235,13 @@ export function RolesPage() {
     if (role.can_submit_expense) parts.push('Submit')
     if (role.can_approve_expense) parts.push('Approve')
     if (role.can_mark_paid) parts.push('Pay')
+    if (role.can_manage_company) parts.push('Company')
+    if (role.can_manage_roles) parts.push('Roles')
+    if (role.can_manage_employees) parts.push('Employees')
+    if (role.can_manage_departments) parts.push('Departments')
+    if (role.can_manage_policy) parts.push('Policy')
+    if (role.can_manage_workflow) parts.push('Workflow')
+    if (role.can_view_company_reports) parts.push('Reports')
     return parts.join(', ') || '—'
   }
 
@@ -333,27 +368,15 @@ export function RolesPage() {
             </div>
             <div className="space-y-2">
               <Label>Permissions</Label>
-              <div className="space-y-2 rounded-md border border-gray-200 p-3">
-                <PermissionCheck
-                  label="Upload receipt"
-                  checked={form.can_upload_receipt}
-                  onChange={(v) => setForm({ ...form, can_upload_receipt: v })}
-                />
-                <PermissionCheck
-                  label="Submit expense"
-                  checked={form.can_submit_expense}
-                  onChange={(v) => setForm({ ...form, can_submit_expense: v })}
-                />
-                <PermissionCheck
-                  label="Approve expense"
-                  checked={form.can_approve_expense}
-                  onChange={(v) => setForm({ ...form, can_approve_expense: v })}
-                />
-                <PermissionCheck
-                  label="Mark paid"
-                  checked={form.can_mark_paid}
-                  onChange={(v) => setForm({ ...form, can_mark_paid: v })}
-                />
+              <div className="max-h-64 space-y-2 overflow-y-auto rounded-md border border-gray-200 p-3">
+                {permissionFields.map((field) => (
+                  <PermissionCheck
+                    key={field.key}
+                    label={field.label}
+                    checked={form[field.key]}
+                    onChange={(v) => setForm({ ...form, [field.key]: v })}
+                  />
+                ))}
               </div>
             </div>
             {error && createOpen && <p className="text-sm text-red-600">{error}</p>}
@@ -382,27 +405,15 @@ export function RolesPage() {
             </div>
             <div className="space-y-2">
               <Label>Permissions</Label>
-              <div className="space-y-2 rounded-md border border-gray-200 p-3">
-                <PermissionCheck
-                  label="Upload receipt"
-                  checked={editForm.can_upload_receipt}
-                  onChange={(v) => setEditForm({ ...editForm, can_upload_receipt: v })}
-                />
-                <PermissionCheck
-                  label="Submit expense"
-                  checked={editForm.can_submit_expense}
-                  onChange={(v) => setEditForm({ ...editForm, can_submit_expense: v })}
-                />
-                <PermissionCheck
-                  label="Approve expense"
-                  checked={editForm.can_approve_expense}
-                  onChange={(v) => setEditForm({ ...editForm, can_approve_expense: v })}
-                />
-                <PermissionCheck
-                  label="Mark paid"
-                  checked={editForm.can_mark_paid}
-                  onChange={(v) => setEditForm({ ...editForm, can_mark_paid: v })}
-                />
+              <div className="max-h-64 space-y-2 overflow-y-auto rounded-md border border-gray-200 p-3">
+                {permissionFields.map((field) => (
+                  <PermissionCheck
+                    key={field.key}
+                    label={field.label}
+                    checked={editForm[field.key]}
+                    onChange={(v) => setEditForm({ ...editForm, [field.key]: v })}
+                  />
+                ))}
               </div>
             </div>
             {error && editOpen && <p className="text-sm text-red-600">{error}</p>}

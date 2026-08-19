@@ -12,6 +12,7 @@ import {
   listDepartments,
   listEmployees,
   saveApprovalWorkflow,
+  updateCompanyWorkflow,
   updateWorkflowStep,
 } from '@/api'
 import { getApiErrorMessage } from '@/api/client'
@@ -105,12 +106,17 @@ export function WorkflowPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [workflowName, setWorkflowName] = useState('Default Approval Workflow')
+  const [selectedName, setSelectedName] = useState('')
   const [startRoleId, setStartRoleId] = useState<number | ''>('')
 
   const selectedWorkflow = useMemo(
     () => workflows.find((item) => item.id === selectedWorkflowId) ?? null,
     [workflows, selectedWorkflowId],
   )
+
+  useEffect(() => {
+    setSelectedName(selectedWorkflow?.name ?? '')
+  }, [selectedWorkflow])
 
   const activeSteps = getActiveSteps(selectedWorkflow)
 
@@ -292,6 +298,28 @@ export function WorkflowPage() {
           : 'Workflow created with manager approval step.',
       )
       invalidateAdminSetupCache()
+    } catch (err) {
+      toast.error(getApiErrorMessage(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleRenameWorkflow = async () => {
+    if (!selectedWorkflow) return
+    const name = selectedName.trim()
+    if (!name) {
+      toast.error('Workflow name is required.')
+      return
+    }
+    if (name === selectedWorkflow.name) return
+
+    setSaving(true)
+    setError('')
+    try {
+      await updateCompanyWorkflow(selectedWorkflow.id, { name })
+      await refreshWorkflows(selectedWorkflow.id)
+      toast.success('Workflow name updated.')
     } catch (err) {
       toast.error(getApiErrorMessage(err))
     } finally {
@@ -577,9 +605,27 @@ export function WorkflowPage() {
             )}
 
             {selectedWorkflow && (
-              <div className="border-t border-[#e2e8f0] px-4 py-3 text-sm sm:px-5">
-                <p className="font-medium text-gray-900">{selectedWorkflow.name}</p>
-                <p className="mt-0.5 text-muted-foreground">
+              <div className="space-y-3 border-t border-[#e2e8f0] px-4 py-3 text-sm sm:px-5">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <Label htmlFor="selected-workflow-name">Workflow name</Label>
+                    <Input
+                      id="selected-workflow-name"
+                      value={selectedName}
+                      onChange={(e) => setSelectedName(e.target.value)}
+                      disabled={saving}
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={saving || !selectedName.trim() || selectedName.trim() === selectedWorkflow.name}
+                    onClick={() => void handleRenameWorkflow()}
+                  >
+                    Save name
+                  </Button>
+                </div>
+                <p className="text-muted-foreground">
                   Submitter role:{' '}
                   <span className="font-medium text-gray-800">
                     {selectedWorkflow.start_role_name}

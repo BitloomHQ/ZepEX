@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { getCompanyAdminDashboard } from '@/api'
 import type { NavItem } from '@/components/layout/DashboardLayout'
+import { useAuth } from '@/context/AuthContext'
 import { buildAdminNav } from '@/lib/adminNav'
+import { getNavForUser } from '@/lib/dashboardNav'
 import { isSetupComplete } from '@/lib/adminSetup'
 
 let cachedSetup: Record<string, boolean> | null = null
@@ -30,21 +32,28 @@ export function invalidateAdminSetupCache() {
   cachePromise = null
 }
 
+function navForUser(user: Parameters<typeof getNavForUser>[0]) {
+  if (!user || user.role === 'COMPANY_ADMIN') return buildAdminNav(user)
+  return getNavForUser(user)
+}
+
 export function useAdminNav() {
-  const [navItems, setNavItems] = useState<NavItem[]>(() => buildAdminNav())
+  const { user } = useAuth()
+  const [navItems, setNavItems] = useState<NavItem[]>(() => navForUser(user))
   const [setupComplete, setSetupComplete] = useState(false)
   const [setupStatus, setSetupStatus] = useState<Record<string, boolean>>({})
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
+    setNavItems(navForUser(user))
     fetchAdminSetupStatus().then((status) => {
       const complete = isSetupComplete(status)
       setSetupStatus(status)
       setSetupComplete(complete)
-      setNavItems(buildAdminNav())
+      setNavItems(navForUser(user))
       setReady(true)
     })
-  }, [])
+  }, [user])
 
   return { navItems, setupComplete, setupStatus, ready }
 }

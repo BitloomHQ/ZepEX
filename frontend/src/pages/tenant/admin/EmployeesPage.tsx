@@ -9,6 +9,7 @@ import {
   deleteCompanyUser,
   downloadEmployeesTemplate,
   editCompanyUser,
+  updateEmployee,
   importEmployeesCsv,
   listCompanyRoles,
   listDepartments,
@@ -291,6 +292,13 @@ export function EmployeesPage() {
     setSaving(true)
     setError('')
     try {
+      await updateEmployee(editing.id, {
+        first_name: editForm.first_name,
+        last_name: editForm.last_name,
+        email: editForm.email,
+        department: isCompanyAdmin ? null : editForm.department_id || null,
+        company_role: isCompanyAdmin ? null : parseInt(editForm.company_role_id, 10),
+      })
       await editCompanyUser(editing.id, {
         first_name: editForm.first_name,
         last_name: editForm.last_name,
