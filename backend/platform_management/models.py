@@ -64,6 +64,21 @@ class CompanyRegistrationRequest(models.Model):
         default=False
     )
 
+    EMAIL_VERIFIED_VIA_EMAIL = "EMAIL"
+    EMAIL_VERIFIED_VIA_ADMIN = "ADMIN"
+    EMAIL_VERIFIED_VIA_CHOICES = (
+        ("", "Not verified"),
+        (EMAIL_VERIFIED_VIA_EMAIL, "Verified through email"),
+        (EMAIL_VERIFIED_VIA_ADMIN, "Verified by admin"),
+    )
+
+    email_verified_via = models.CharField(
+        max_length=16,
+        choices=EMAIL_VERIFIED_VIA_CHOICES,
+        blank=True,
+        default="",
+    )
+
     created_at = models.DateTimeField(
         auto_now_add=True
     )

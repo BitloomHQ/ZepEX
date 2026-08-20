@@ -3786,13 +3786,14 @@ def _can_access_payments(profile):
     if profile.role == "COMPANY_ADMIN":
         return True
 
-    if (
-        profile.company_role
-        and profile.company_role.can_mark_paid
-    ):
-        return True
+    role = profile.company_role
+    if not role:
+        return False
 
-    return False
+    return bool(
+        role.can_mark_paid
+        or getattr(role, "can_view_company_reports", False)
+    )
 
 from datetime import datetime
 
@@ -4429,7 +4430,6 @@ def payment_category_summary(request):
         .filter(
             receipt__company=profile.company,
             is_removed=False,
-            is_deleted=False,
         )
     )
 
@@ -4456,11 +4456,22 @@ def payment_category_summary(request):
         )
     )
 
+    payload = []
+    for row in results:
+        payload.append(
+            {
+                "category": row["category"],
+                "total_amount": row["total_amount"],
+                "line_item_count": row["line_item_count"],
+                "report_count": row["line_item_count"],
+            }
+        )
+
     return Response(
         {
             "success": True,
             "month": month_param,
-            "results": list(results),
+            "results": payload,
         },
         status=status.HTTP_200_OK,
     )

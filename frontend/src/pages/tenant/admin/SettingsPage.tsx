@@ -1,8 +1,9 @@
-import { ChevronRight, Mail, Settings, Shield, Trash2, Wallet } from 'lucide-react'
+import { Building2, ChevronRight, Mail, Settings, Shield, Trash2, Wallet } from 'lucide-react'
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   createCompanyExchangeRate,
   deleteCompanyExchangeRate,
+  getCompanyDetails,
   getCompanyExchangeRates,
   getCompanyImapConfig,
   getCompanyPolicySettings,
@@ -10,6 +11,7 @@ import {
   patchCompanyImapConfig,
   saveCompanyImapConfig,
   testCompanyImapConnection,
+  updateCompanyDetails,
   updateCompanyExchangeRate,
   updateFinanceSettings,
 } from '@/api'
@@ -20,7 +22,9 @@ import { CompanyPolicySettingsPanel } from '@/components/admin/CompanyPolicySett
 import { CurrencySelect } from '@/components/admin/CurrencySelect'
 import { StatusBadge } from '@/components/StatusBadge'
 import { DashboardLayout } from '@/components/layout/DashboardLayout'
+import { useAuth } from '@/context/AuthContext'
 import { useAdminNav, invalidateAdminSetupCache } from '@/hooks/useAdminNav'
+import { hasPermission } from '@/lib/rolePermissions'
 import {
   Dialog,
   DialogContent,
@@ -35,6 +39,7 @@ import { formatDateTime } from '@/lib/utils'
 import { toast } from '@/lib/toast'
 import { financeCurrencyLabel as formatFinanceCurrencyLabel } from '@/lib/financeSettings'
 import type {
+  CompanyDetails,
   CompanyExchangeRate,
   CompanyImapConfig,
   CompanyPolicySettings,
@@ -55,15 +60,21 @@ type CurrencyOption = {
 }
 
 export function SettingsPage() {
+  const { user } = useAuth()
   const { navItems } = useAdminNav()
+  const canEditCompany = hasPermission(user, 'can_manage_company')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [financeOpen, setFinanceOpen] = useState(false)
   const [emailOpen, setEmailOpen] = useState(false)
   const [policyOpen, setPolicyOpen] = useState(false)
+  const [companyOpen, setCompanyOpen] = useState(false)
   const [policyLoaded, setPolicyLoaded] = useState(false)
   const [policySummary, setPolicySummary] = useState('Not configured')
+  const [companyLoaded, setCompanyLoaded] = useState(false)
+  const [companySummary, setCompanySummary] = useState('Not configured')
+  const [companyForm, setCompanyForm] = useState({ name: '', domain: '' })
   const [emailForm, setEmailForm] = useState({
     reimbursement_email: '',
     imap_host: '',
@@ -146,6 +157,17 @@ export function SettingsPage() {
     setPolicyLoaded(true)
   }
 
+  const applyCompanyDetails = (company: CompanyDetails) => {
+    setCompanyForm({
+      name: company.name ?? '',
+      domain: company.domain ?? '',
+    })
+    setCompanySummary(
+      [company.name, company.domain].filter(Boolean).join(' · ') || 'Not configured',
+    )
+    setCompanyLoaded(true)
+  }
+
   const applyImapConfig = (config: CompanyImapConfig) => {
     setEmailForm((current) => ({
       ...current,
@@ -180,10 +202,11 @@ export function SettingsPage() {
     async function loadSettings() {
       setLoading(true)
       try {
-        const [financeRes, imapRes, policyRes] = await Promise.all([
+        const [financeRes, imapRes, policyRes, companyRes] = await Promise.all([
           getFinanceSettings(),
           getCompanyImapConfig().catch(() => null),
           getCompanyPolicySettings().catch(() => null),
+          getCompanyDetails().catch(() => null),
         ])
 
         if (financeRes.data.settings) {
@@ -199,6 +222,10 @@ export function SettingsPage() {
 
         if (policyRes?.data.policy) {
           applyPolicySettings(policyRes.data.policy)
+        }
+
+        if (companyRes?.data.company) {
+          applyCompanyDetails(companyRes.data.company)
         }
       } finally {
         setLoading(false)
@@ -216,6 +243,14 @@ export function SettingsPage() {
 
   const settingsRows = useMemo(
     () => [
+      {
+        id: 'company' as const,
+        title: 'Company details',
+        description: 'Legal name and login domain for this tenant.',
+        summary: companySummary,
+        configured: companyLoaded,
+        icon: Building2,
+      },
       {
         id: 'finance' as const,
         title: 'Finance settings',
@@ -246,6 +281,8 @@ export function SettingsPage() {
       },
     ],
     [
+      companySummary,
+      companyLoaded,
       financeCurrencyLabel,
       financeLoaded,
       financeForm.exchange_rate_source,
@@ -255,6 +292,11 @@ export function SettingsPage() {
       policyLoaded,
     ],
   )
+
+  const closeCompanyModal = () => {
+    setCompanyOpen(false)
+    setError('')
+  }
 
   const closeFinanceModal = () => {
     setFinanceOpen(false)
@@ -276,6 +318,34 @@ export function SettingsPage() {
       to_currency: null,
       exchange_rate: '',
     })
+  }
+
+  const saveCompanyDetails = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!canEditCompany) {
+      setError('You are not allowed to edit company details.')
+      return
+    }
+    if (!companyForm.name.trim() || !companyForm.domain.trim()) {
+      setError('Company name and domain are required.')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      const { data } = await updateCompanyDetails({
+        name: companyForm.name.trim(),
+        domain: companyForm.domain.trim(),
+      })
+      if (data.company) applyCompanyDetails(data.company)
+      toast.success(data.message || 'Company details updated.')
+      closeCompanyModal()
+      invalidateAdminSetupCache()
+    } catch (err) {
+      setError(getApiErrorMessage(err))
+    } finally {
+      setSaving(false)
+    }
   }
 
   const saveFinance = async (e: FormEvent) => {
@@ -511,7 +581,7 @@ export function SettingsPage() {
       icon={Settings}
       navItems={navItems}
     >
-      {error && !financeOpen && !emailOpen && !policyOpen && (
+      {error && !financeOpen && !emailOpen && !policyOpen && !companyOpen && (
         <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
       )}
 
@@ -533,6 +603,8 @@ export function SettingsPage() {
                     setFinanceOpen(true)
                   } else if (row.id === 'policy') {
                     setPolicyOpen(true)
+                  } else if (row.id === 'company') {
+                    setCompanyOpen(true)
                   } else {
                     setEmailOpen(true)
                   }
@@ -556,6 +628,47 @@ export function SettingsPage() {
           })}
         </div>
       </AdminListPanel>
+
+      <Dialog open={companyOpen} onOpenChange={(open) => !open && closeCompanyModal()}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Company details</DialogTitle>
+            <DialogDescription>Update the company name and domain shown to employees.</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={saveCompanyDetails} className="space-y-3">
+            <div className="space-y-2">
+              <Label htmlFor="company-name">Company name</Label>
+              <Input
+                id="company-name"
+                value={companyForm.name}
+                onChange={(e) => setCompanyForm({ ...companyForm, name: e.target.value })}
+                disabled={saving || !canEditCompany}
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="company-domain">Domain</Label>
+              <Input
+                id="company-domain"
+                value={companyForm.domain}
+                onChange={(e) => setCompanyForm({ ...companyForm, domain: e.target.value })}
+                disabled={saving || !canEditCompany}
+                required
+              />
+            </div>
+            {!canEditCompany && (
+              <p className="text-sm text-gray-500">Your role can view these details but cannot edit them.</p>
+            )}
+            {error && companyOpen && <p className="text-sm text-red-600">{error}</p>}
+            <AdminModalFooter
+              onCancel={closeCompanyModal}
+              submitLabel="Save company details"
+              submitDisabled={!canEditCompany}
+              submitting={saving}
+            />
+          </form>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={financeOpen} onOpenChange={(open) => !open && closeFinanceModal()}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">

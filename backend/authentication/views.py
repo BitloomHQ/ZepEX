@@ -4,17 +4,15 @@ from django.shortcuts import render
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
-from rest_framework.response import Response
-
-from .serializers import LoginSerializer
-
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from tenants.role_utils import permissions_for_profile
+from rest_framework.response import Response
 
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
 from django.core.mail import EmailMultiAlternatives
 from platform_access.models import PlatformAdmin
+from .serializers import LoginSerializer
 
 from django.contrib.auth.tokens import default_token_generator
 from django.utils.http import (
@@ -179,49 +177,7 @@ def login_api(request):
 
         platform_permissions = []
 
-        if profile.role == "COMPANY_ADMIN":
-
-            permissions = {
-                "can_upload_receipt": True,
-                "can_submit_expense": True,
-                "can_approve_expense": True,
-                "can_mark_paid": True,
-                "can_manage_users": True,
-                "can_manage_policy": True,
-                "can_manage_workflow": True,
-                "can_view_all_reports": True,
-                "can_view_audit_logs": True,
-            }
-
-        else:
-
-            permissions = {
-                "can_upload_receipt": (
-                    profile.company_role.can_upload_receipt
-                    if profile.company_role
-                    else False
-                ),
-                "can_submit_expense": (
-                    profile.company_role.can_submit_expense
-                    if profile.company_role
-                    else False
-                ),
-                "can_approve_expense": (
-                    profile.company_role.can_approve_expense
-                    if profile.company_role
-                    else False
-                ),
-                "can_mark_paid": (
-                    profile.company_role.can_mark_paid
-                    if profile.company_role
-                    else False
-                ),
-                "can_manage_users": False,
-                "can_manage_policy": False,
-                "can_manage_workflow": False,
-                "can_view_all_reports": False,
-                "can_view_audit_logs": False,
-            }
+        permissions = permissions_for_profile(profile)
 
     redirect_map = {
         "PLATFORM_OWNER": "/platform-dashboard",

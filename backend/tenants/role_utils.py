@@ -32,20 +32,48 @@ SYSTEM_ROLE_TO_DEFAULT_ROLE_NAME = {
 
 
 def permissions_for_profile(profile):
-    if not profile or not profile.company_role:
-        return {
-            "can_upload_receipt": False,
-            "can_submit_expense": False,
-            "can_approve_expense": False,
-            "can_mark_paid": False,
-        }
+    empty = {
+        "can_upload_receipt": False,
+        "can_submit_expense": False,
+        "can_approve_expense": False,
+        "can_mark_paid": False,
+        "can_manage_company": False,
+        "can_manage_roles": False,
+        "can_manage_employees": False,
+        "can_manage_departments": False,
+        "can_manage_users": False,
+        "can_manage_policy": False,
+        "can_manage_workflow": False,
+        "can_view_company_reports": False,
+        "can_view_all_reports": False,
+        "can_view_audit_logs": False,
+    }
+
+    if not profile:
+        return empty
+
+    if profile.role == "COMPANY_ADMIN":
+        return {key: True for key in empty}
 
     role = profile.company_role
+    if not role:
+        return empty
+
     return {
         "can_upload_receipt": role.can_upload_receipt,
         "can_submit_expense": role.can_submit_expense,
         "can_approve_expense": role.can_approve_expense,
         "can_mark_paid": role.can_mark_paid,
+        "can_manage_company": role.can_manage_company,
+        "can_manage_roles": role.can_manage_roles,
+        "can_manage_employees": role.can_manage_employees,
+        "can_manage_departments": role.can_manage_departments,
+        "can_manage_users": role.can_manage_employees,
+        "can_manage_policy": role.can_manage_policy,
+        "can_manage_workflow": role.can_manage_workflow,
+        "can_view_company_reports": role.can_view_company_reports,
+        "can_view_all_reports": role.can_view_company_reports,
+        "can_view_audit_logs": False,
     }
 
 

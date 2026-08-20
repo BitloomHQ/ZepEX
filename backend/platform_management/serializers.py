@@ -23,6 +23,7 @@ class CompanyRegistrationRequestSerializer(serializers.ModelSerializer):
             "expected_employee_count",
             "otp",
             "is_email_verified",
+            "email_verified_via",
             "reject_reason",
         ]
         read_only_fields = [
@@ -31,6 +32,7 @@ class CompanyRegistrationRequestSerializer(serializers.ModelSerializer):
             "created_at",
             "otp",
             "is_email_verified",
+            "email_verified_via",
         ]
 
 class PlatformSettingsSerializer(serializers.ModelSerializer):

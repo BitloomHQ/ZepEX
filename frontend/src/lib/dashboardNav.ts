@@ -13,7 +13,7 @@ export function getNavForUser(user: User | null, adminNavItems?: NavItem[]): Nav
 
   switch (user.role as UserRole) {
     case 'COMPANY_ADMIN':
-      return adminNavItems ?? buildAdminNav()
+      return adminNavItems ?? buildAdminNav(user)
     case 'MANAGER':
       return buildManagerNav(user)
     case 'EMPLOYEE':

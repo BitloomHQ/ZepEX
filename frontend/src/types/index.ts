@@ -11,9 +11,14 @@ export interface UserPermissions {
   can_submit_expense: boolean
   can_approve_expense: boolean
   can_mark_paid: boolean
+  can_manage_company?: boolean
+  can_manage_roles?: boolean
+  can_manage_employees?: boolean
+  can_manage_departments?: boolean
   can_manage_users?: boolean
   can_manage_policy?: boolean
   can_manage_workflow?: boolean
+  can_view_company_reports?: boolean
   can_view_all_reports?: boolean
   can_view_audit_logs?: boolean
 }
@@ -84,6 +89,13 @@ export interface CompanyRole {
   can_submit_expense: boolean
   can_approve_expense: boolean
   can_mark_paid: boolean
+  can_manage_company?: boolean
+  can_manage_roles?: boolean
+  can_manage_employees?: boolean
+  can_manage_departments?: boolean
+  can_manage_policy?: boolean
+  can_manage_workflow?: boolean
+  can_view_company_reports?: boolean
   is_active: boolean
   created_at: string
 }
@@ -97,6 +109,7 @@ export interface CompanyRegistrationRequest {
   status: 'PENDING' | 'APPROVED' | 'REJECTED'
   expected_employee_count?: number
   is_email_verified?: boolean
+  email_verified_via?: 'EMAIL' | 'ADMIN' | ''
   reject_reason?: string | null
   created_at: string
 }
@@ -104,9 +117,10 @@ export interface CompanyRegistrationRequest {
 export interface ApproveCompanyRequestResponse {
   success: boolean
   message: string
-  company_id: string
+  company_id?: string
   admin_email: string
   temporary_password: string
+  email_verified_by_admin?: boolean
   reimbursement_email?: string
   platform_receipt_email?: string
   forwarding_instruction?: string
@@ -742,16 +756,96 @@ export interface ReimbursementEmailConfigResponse {
 }
 
 export interface CompanyPolicySettings {
-  id: string
-  company: string
+  id?: string
+  company?: string
   old_bill_limit_days: number
   auto_approve_if_no_violation: boolean
-  updated_at: string
+  updated_at?: string
 }
 
 export interface CompanyPolicySettingsResponse {
-  message: string
+  success?: boolean
+  message?: string
   policy: CompanyPolicySettings
+}
+
+export interface CompanyDetails {
+  id: string
+  name: string
+  domain: string
+  reimbursement_email: string | null
+  is_verified: boolean
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface CompanyDetailsResponse {
+  success: boolean
+  message?: string
+  company: CompanyDetails
+}
+
+export interface PaymentMonthlyExpenseRow {
+  report_id: string
+  employee: {
+    id: string
+    name: string
+    email: string
+    department: string | null
+  }
+  month: string
+  status: string
+  total_amount: string
+  currency?: string
+  submitted_at: string | null
+  paid_at: string | null
+  paid_notes?: string | null
+  can_mark_paid?: boolean
+}
+
+export interface PaymentEmployeeSummary {
+  employee_id: string
+  name: string
+  email: string
+  department: string | null
+  total_reports: number
+  paid_reports: number
+  total_reimbursed: string
+}
+
+export interface PaymentEmployeeHistoryItem {
+  report_id: string
+  month: string
+  status: string
+  total_amount: string
+  submitted_at?: string | null
+  paid_at?: string | null
+}
+
+export interface PaymentMonthlySummary {
+  success: boolean
+  month: string | null
+  total_claimed: string
+  awaiting_payment: string
+  paid_amount: string
+  rejected_amount: string
+  report_count: number
+  employee_count: number
+}
+
+export interface PaymentDepartmentSummaryRow {
+  department_id: string | null
+  department__name?: string | null
+  department_name?: string | null
+  total_amount: string | number
+  report_count: number
+}
+
+export interface PaymentCategorySummaryRow {
+  category?: string
+  total_amount: string | number
+  report_count?: number
 }
 
 export type NotificationType =
@@ -873,6 +967,7 @@ export interface PlatformCompanySummary {
   id: string
   name: string
   domain: string
+  reimbursement_email?: string | null
   reimbursement_email_prefix?: string
   is_verified: boolean
   is_active?: boolean
@@ -887,6 +982,7 @@ export interface PlatformCompanyDetailsResponse {
   roles?: import('@/lib/pagination').PaginatedResponse<CompanyRole>
   policy_rules?: import('@/lib/pagination').PaginatedResponse<PolicyRule>
   workflow?: ApprovalWorkflow | null
+  reports?: import('@/lib/pagination').PaginatedResponse<ExpenseReport>
 }
 
 export interface EmployeeInviteResult {

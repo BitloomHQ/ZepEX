@@ -85,6 +85,13 @@ class CompanyRoleSerializer(serializers.ModelSerializer):
             "can_submit_expense",
             "can_approve_expense",
             "can_mark_paid",
+            "can_manage_company",
+            "can_manage_roles",
+            "can_manage_employees",
+            "can_manage_departments",
+            "can_manage_policy",
+            "can_manage_workflow",
+            "can_view_company_reports",
             "is_active",
             "created_at",
         ]
@@ -634,11 +641,17 @@ class CompanySerializer(serializers.ModelSerializer):
             "domain",
             "reimbursement_email_prefix",
             "is_verified",
+            "is_active",
             "created_at",
             "reimbursement_email",
             "imap_host",
             "imap_port",
             "imap_username",
+        ]
+        read_only_fields = [
+            "id",
+            "created_at",
+            "reimbursement_email_prefix",
         ]
 
 
@@ -1127,17 +1140,46 @@ class EmployeeUpdateSerializer(serializers.ModelSerializer):
 
 class DepartmentUpdateSerializer(serializers.ModelSerializer):
 
+    manager_id = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+    )
+
     class Meta:
         model = Department
 
         fields = [
             "id",
             "name",
+            "manager_id",
         ]
 
         read_only_fields = [
             "id",
         ]
+
+    def update(self, instance, validated_data):
+        manager_id = validated_data.pop("manager_id", "__omit__")
+        instance = super().update(instance, validated_data)
+
+        if manager_id == "__omit__":
+            return instance
+
+        request = self.context.get("request")
+        company = request.user.profile.company if request else instance.company
+
+        if manager_id is None:
+            instance.manager = None
+        else:
+            manager = UserProfile.objects.get(
+                id=manager_id,
+                company=company,
+                user__is_active=True,
+            )
+            instance.manager = manager
+
+        instance.save(update_fields=["manager", "updated_at"])
+        return instance
 
 class CompanyPolicyUpdateSerializer(
     serializers.ModelSerializer

@@ -1765,9 +1765,12 @@ def create_company_role(request):
 
     profile = request.user.profile
 
-    if profile.role != "COMPANY_ADMIN":
+    if not has_company_permission(
+        profile,
+        "can_manage_roles",
+    ):
         return Response(
-            {"error": "Only company admin can create roles."},
+            {"error": "You are not allowed to manage company roles."},
             status=status.HTTP_403_FORBIDDEN
         )
 
@@ -6780,7 +6783,7 @@ def company_settings(request):
     )
 
 
-@api_view(["PATCH"])
+@api_view(["PUT", "PATCH"])
 @permission_classes([IsAuthenticated])
 def update_company_role(request, role_id):
 
@@ -6952,6 +6955,7 @@ def update_department(request, department_id):
         department,
         data=request.data,
         partial=True,
+        context={"request": request},
     )
 
     if not serializer.is_valid():

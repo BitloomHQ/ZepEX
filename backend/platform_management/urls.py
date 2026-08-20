@@ -7,6 +7,7 @@ from .views import (
     reject_company_request,
     company_list,
     pending_company_list,
+    update_platform_company,
     deactivate_company,
     activate_company,
     delete_company,
@@ -60,6 +61,11 @@ path(
 ),
 
 path("companies/<uuid:company_id>/activate/", activate_company,name="activate-company"),
+path(
+    "companies/<uuid:company_id>/",
+    update_platform_company,
+    name="update-platform-company",
+),
 path("companies/<uuid:company_id>/delete/",delete_company,name="delete-company"
 ),
 path(

@@ -202,7 +202,7 @@ path(
 ),
 
 path(
-    "payments/employees/<uuid:employee_id>/history/",
+    "payments/employees/<int:employee_id>/history/",
     payment_employee_history,
     name="payment-employee-history",
 ),

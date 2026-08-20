@@ -166,7 +166,7 @@ export const assignManager = (department_id: string, manager_id: number) =>
 export const updateDepartment = (
   departmentId: string,
   data: { name?: string; manager_id?: number | null },
-) => api.patch(`/tenants/departments/${departmentId}/update/`, data)
+) => api.patch(`/tenants/departments/${departmentId}/`, data)
 
 export const deactivateDepartment = (departmentId: string) =>
   api.patch(`/tenants/departments/${departmentId}/deactivate/`)
@@ -191,6 +191,18 @@ export const editCompanyUser = (
   },
 ) => api.patch(`/tenants/users/${userId}/edit/`, data)
 
+export const updateEmployee = (
+  employeeId: number,
+  data: {
+    first_name?: string
+    last_name?: string
+    email?: string
+    department?: string | null
+    company_role?: number | null
+    manager?: number | null
+  },
+) => api.patch(`/tenants/employees/${employeeId}/`, data)
+
 export const deactivateCompanyUser = (userId: number) =>
   api.patch(`/tenants/users/${userId}/deactivate/`)
 
@@ -206,6 +218,13 @@ export const createCompanyRole = (data: {
   can_submit_expense: boolean
   can_approve_expense: boolean
   can_mark_paid: boolean
+  can_manage_company?: boolean
+  can_manage_roles?: boolean
+  can_manage_employees?: boolean
+  can_manage_departments?: boolean
+  can_manage_policy?: boolean
+  can_manage_workflow?: boolean
+  can_view_company_reports?: boolean
 }) => api.post('/tenants/roles/create/', data)
 
 export const updateCompanyRole = (
@@ -216,8 +235,15 @@ export const updateCompanyRole = (
     can_submit_expense?: boolean
     can_approve_expense?: boolean
     can_mark_paid?: boolean
+    can_manage_company?: boolean
+    can_manage_roles?: boolean
+    can_manage_employees?: boolean
+    can_manage_departments?: boolean
+    can_manage_policy?: boolean
+    can_manage_workflow?: boolean
+    can_view_company_reports?: boolean
   },
-) => api.put(`/tenants/roles/${roleId}/update/`, data)
+) => api.patch(`/tenants/roles/${roleId}/`, data)
 
 export const deactivateCompanyRole = (roleId: number) =>
   api.post(`/tenants/roles/${roleId}/deactivate/`)
@@ -377,18 +403,25 @@ export const saveReimbursementEmailConfig = (data: { reimbursement_email: string
   api.post<ReimbursementEmailConfigResponse>('/tenants/reimbursement-email/save/', data)
 
 export const getCompanyPolicySettings = () =>
-  api.get<import('@/types').CompanyPolicySettingsResponse>(
-    '/expenses/company/policy/settings/',
-  )
+  api.get<import('@/types').CompanyPolicySettingsResponse>('/tenants/company/policy/')
 
 export const updateCompanyPolicySettings = (data: {
   old_bill_limit_days?: number
   auto_approve_if_no_violation?: boolean
 }) =>
   api.patch<import('@/types').CompanyPolicySettingsResponse>(
-    '/expenses/company/policy/settings/',
+    '/tenants/company/policy/',
     data,
   )
+
+export const getCompanyDetails = () =>
+  api.get<import('@/types').CompanyDetailsResponse>('/tenants/company/settings/')
+
+export const updateCompanyDetails = (data: {
+  name?: string
+  domain?: string
+  reimbursement_email?: string | null
+}) => api.patch<import('@/types').CompanyDetailsResponse>('/tenants/company/settings/', data)
 
 export const getNotifications = () =>
   api.get<import('@/types').NotificationsListResponse>('/expenses/notifications/')
@@ -550,7 +583,7 @@ export const sendEmployeeInvites = (data: { employee_ids?: string[]; send_to_all
 export const getPlatformCompanyDetails = (
   companyId: string,
   params?: {
-    section?: 'all' | 'departments' | 'employees' | 'roles' | 'policy_rules' | 'workflow'
+    section?: 'all' | 'departments' | 'employees' | 'roles' | 'policy_rules' | 'workflow' | 'reports'
     page?: number
     page_size?: number
     search?: string
@@ -558,12 +591,30 @@ export const getPlatformCompanyDetails = (
     role?: string
     company_role_id?: string
     category?: string
+    status?: string
+    month?: string
   },
 ) =>
   api.get<import('@/types').PlatformCompanyDetailsResponse>(
     `/platform/companies/${companyId}/details/`,
     { params },
   )
+
+export const updatePlatformCompany = (
+  companyId: string,
+  data: {
+    name?: string
+    domain?: string
+    reimbursement_email?: string | null
+    is_verified?: boolean
+    is_active?: boolean
+  },
+) =>
+  api.patch<{
+    success: boolean
+    message?: string
+    company: import('@/types').PlatformCompanySummary
+  }>(`/platform/companies/${companyId}/`, data)
 
 export const deactivatePlatformCompany = (companyId: string) =>
   api.patch(`/platform/companies/${companyId}/deactivate/`)
@@ -760,8 +811,30 @@ export const accountsMarkPaid = (reportId: string, notes = '') =>
 export const markReportPaid = accountsMarkPaid
 
 // Approval workflow
-export const listApprovalWorkflows = () =>
-  api.get<import('@/types').ApprovalWorkflowListResponse>('/expenses/workflow/')
+export const listApprovalWorkflows = async () => {
+  const { data } = await api.get<{
+    success?: boolean
+    count?: number
+    results?: ApprovalWorkflow[]
+    workflows?: ApprovalWorkflow[]
+  }>('/tenants/workflows/')
+  const workflows = data.results ?? data.workflows ?? []
+  return {
+    data: {
+      count: data.count ?? workflows.length,
+      workflows,
+    } as import('@/types').ApprovalWorkflowListResponse,
+  }
+}
+
+export const updateCompanyWorkflow = (
+  workflowId: string | number,
+  data: { name?: string; start_role?: number; is_active?: boolean },
+) =>
+  api.patch<{ success: boolean; message: string; workflow: ApprovalWorkflow }>(
+    `/tenants/workflows/${workflowId}/`,
+    data,
+  )
 
 export const getApprovalWorkflow = (workflowId: string) =>
   api.get<ApprovalWorkflow>(`/expenses/workflow/?workflow_id=${workflowId}`)
@@ -781,10 +854,20 @@ export const addWorkflowStep = (data: {
   routing_type: 'DEPARTMENT' | 'COMPANY'
   department?: string | null
   specific_user?: string | null
-}) => api.post<AddWorkflowStepResponse>('/expenses/workflow/steps/add/', data)
+}) =>
+  api.post<AddWorkflowStepResponse>(`/tenants/workflows/${data.workflow_id}/steps/`, {
+    step_order: data.step_order,
+    approver_role: data.approver_role,
+    approver_type: data.approver_type,
+    routing_type: data.routing_type,
+    department: data.department,
+    specific_user: data.specific_user,
+  })
 
 export const deactivateWorkflowStep = (stepId: string) =>
-  api.patch<DeactivateWorkflowStepResponse>(`/expenses/workflow/steps/${stepId}/deactivate/`)
+  api.patch<DeactivateWorkflowStepResponse>(`/tenants/workflow-steps/${stepId}/`, {
+    is_active: false,
+  })
 
 export const updateWorkflowStep = (
   stepId: string,
@@ -796,7 +879,10 @@ export const updateWorkflowStep = (
     department?: string | null
     specific_user?: string | null
   },
-) => api.patch<UpdateWorkflowStepResponse>(`/expenses/workflow/steps/${stepId}/update/`, data)
+) => api.patch<UpdateWorkflowStepResponse>(`/tenants/workflow-steps/${stepId}/`, data)
+
+export const deleteWorkflowStep = (stepId: string) =>
+  api.post(`/tenants/workflow-steps/${stepId}/delete/`)
 
 export const deleteApprovalWorkflow = (workflowId: string) =>
   api.delete<import('@/types').DeleteWorkflowResponse>(`/expenses/workflow/${workflowId}/`)
@@ -805,6 +891,55 @@ export const simulateWorkflow = (employeeId: string | number) =>
   api.post<WorkflowSimulateResponse>('/expenses/workflow/simulate/', {
     employee_id: employeeId,
   })
+
+export const getPaymentMonthlyExpenses = (params?: {
+  employee_id?: number | string
+  status?: string
+}) =>
+  api.get<{
+    success: boolean
+    count: number
+    results: import('@/types').PaymentMonthlyExpenseRow[]
+  }>('/expenses/payments/monthly-expenses/', { params })
+
+export const getPaymentMonthlyExpenseDetail = (reportId: string) =>
+  api.get(`/expenses/payments/monthly-expenses/${reportId}/`)
+
+export const getPaymentEmployeeSummary = () =>
+  api.get<{
+    success: boolean
+    count: number
+    results: import('@/types').PaymentEmployeeSummary[]
+  }>('/expenses/payments/employees/')
+
+export const getPaymentEmployeeHistory = (employeeId: number | string) =>
+  api.get<{
+    success: boolean
+    employee: {
+      id: string
+      name: string
+      email: string
+      department: string | null
+    }
+    total_reimbursed: string
+    count: number
+    history: import('@/types').PaymentEmployeeHistoryItem[]
+  }>(`/expenses/payments/employees/${employeeId}/history/`)
+
+export const getPaymentMonthlySummary = (params?: { month?: string }) =>
+  api.get<import('@/types').PaymentMonthlySummary>('/expenses/payments/summary/', { params })
+
+export const getPaymentDepartmentSummary = (params?: { month?: string }) =>
+  api.get<{
+    success: boolean
+    results: import('@/types').PaymentDepartmentSummaryRow[]
+  }>('/expenses/payments/department-summary/', { params })
+
+export const getPaymentCategorySummary = (params?: { month?: string }) =>
+  api.get<{
+    success: boolean
+    results: import('@/types').PaymentCategorySummaryRow[]
+  }>('/expenses/payments/category-summary/', { params })
 
 // Dashboards
 export const getDashboard = () => api.get('/dashboard/')
