@@ -1,6 +1,9 @@
 import logging
+from urllib.parse import urlencode
 
 import requests
+
+from django.conf import settings
 
 
 logger = logging.getLogger(__name__)
@@ -21,7 +24,7 @@ class BambooHRAuthenticationError(
     BambooHRIntegrationError
 ):
     """
-    BambooHR rejected the supplied credentials.
+    BambooHR rejected the OAuth token or credentials.
     """
 
 
@@ -29,8 +32,8 @@ class BambooHRPermissionError(
     BambooHRIntegrationError
 ):
     """
-    BambooHR credentials are valid, but the user
-    does not have permission to access the resource.
+    BambooHR authentication succeeded but the
+    caller does not have access to the resource.
     """
 
 
@@ -43,7 +46,444 @@ class BambooHRConnectionError(
 
 
 # ==========================================================
-# BAMBOOHR CLIENT
+# DOMAIN NORMALIZATION
+# ==========================================================
+
+
+def normalize_bamboohr_company_domain(
+    company_domain,
+):
+    """
+    Normalize BambooHR company domain.
+
+    Accepted:
+
+        bitloom
+        https://bitloom.bamboohr.com
+        bitloom.bamboohr.com
+
+    Returns:
+
+        bitloom
+    """
+
+    company_domain = (
+        company_domain
+        or ""
+    ).strip().lower()
+
+    if not company_domain:
+        raise ValueError(
+            "BambooHR company domain is required."
+        )
+
+    company_domain = (
+        company_domain
+        .replace(
+            "https://",
+            "",
+        )
+        .replace(
+            "http://",
+            "",
+        )
+    )
+
+    company_domain = (
+        company_domain.split(
+            "/"
+        )[0]
+    )
+
+    if company_domain.endswith(
+        ".bamboohr.com"
+    ):
+        company_domain = (
+            company_domain[
+                :-len(
+                    ".bamboohr.com"
+                )
+            ]
+        )
+
+    company_domain = (
+        company_domain.strip(
+            "."
+        )
+    )
+
+    if not company_domain:
+        raise ValueError(
+            "Invalid BambooHR company domain."
+        )
+
+    return company_domain
+
+
+# ==========================================================
+# OAUTH SERVICE
+# ==========================================================
+
+
+class BambooHROAuthService:
+    """
+    Handles BambooHR OAuth 2.0 authorization.
+
+    This class is used before BambooHRClient exists.
+
+    Flow:
+
+        company_domain
+            ↓
+        build_authorization_url()
+            ↓
+        BambooHR login/consent
+            ↓
+        callback code
+            ↓
+        exchange_authorization_code()
+            ↓
+        access_token + refresh_token
+    """
+
+    SCOPES = [
+        "openid",
+        "email",
+        "employee",
+        "employee:job",
+        "employee:management",
+        "employee:name",
+        "field",
+        "offline_access",
+    ]
+
+    def __init__(
+        self,
+        *,
+        company_domain,
+        timeout=30,
+    ):
+
+        self.company_domain = (
+            normalize_bamboohr_company_domain(
+                company_domain
+            )
+        )
+
+        self.timeout = timeout
+
+        self.client_id = (
+            getattr(
+                settings,
+                "BAMBOOHR_CLIENT_ID",
+                None,
+            )
+            or ""
+        ).strip()
+
+        self.client_secret = (
+            getattr(
+                settings,
+                "BAMBOOHR_CLIENT_SECRET",
+                None,
+            )
+            or ""
+        ).strip()
+
+        self.redirect_uri = (
+            getattr(
+                settings,
+                "BAMBOOHR_REDIRECT_URI",
+                None,
+            )
+            or ""
+        ).strip()
+
+        if not self.client_id:
+            raise BambooHRIntegrationError(
+                "BambooHR client ID is not configured."
+            )
+
+        if not self.client_secret:
+            raise BambooHRIntegrationError(
+                "BambooHR client secret is not configured."
+            )
+
+        if not self.redirect_uri:
+            raise BambooHRIntegrationError(
+                "BambooHR redirect URI is not configured."
+            )
+
+    # ======================================================
+    # AUTHORIZATION URL
+    # ======================================================
+
+    def build_authorization_url(
+        self,
+        *,
+        state,
+    ):
+        """
+        Generate BambooHR OAuth authorization URL.
+        """
+
+        if not state:
+            raise ValueError(
+                "OAuth state is required."
+            )
+
+        authorization_url = (
+            f"https://{self.company_domain}."
+            "bamboohr.com/authorize.php"
+        )
+
+        params = {
+            "request": "authorize",
+            "state": state,
+            "response_type": "code",
+            "scope": " ".join(
+                self.SCOPES
+            ),
+            "client_id": (
+                self.client_id
+            ),
+            "redirect_uri": (
+                self.redirect_uri
+            ),
+        }
+
+        return (
+            f"{authorization_url}?"
+            f"{urlencode(params)}"
+        )
+
+    # ======================================================
+    # TOKEN ENDPOINT
+    # ======================================================
+
+    @property
+    def token_url(self):
+        return (
+            f"https://{self.company_domain}."
+            "bamboohr.com/"
+            "token.php?request=token"
+        )
+
+    # ======================================================
+    # EXCHANGE AUTHORIZATION CODE
+    # ======================================================
+
+    def exchange_authorization_code(
+        self,
+        *,
+        code,
+    ):
+        """
+        Exchange BambooHR authorization code for tokens.
+        """
+
+        if not code:
+            raise BambooHRAuthenticationError(
+                "BambooHR authorization code is missing."
+            )
+
+        payload = {
+            "client_secret": (
+                self.client_secret
+            ),
+            "client_id": (
+                self.client_id
+            ),
+            "code": code,
+            "grant_type": (
+                "authorization_code"
+            ),
+            "redirect_uri": (
+                self.redirect_uri
+            ),
+        }
+
+        return self._token_request(
+            payload
+        )
+
+    # ======================================================
+    # REFRESH TOKEN
+    # ======================================================
+
+    def refresh_access_token(
+        self,
+        *,
+        refresh_token,
+    ):
+        """
+        Refresh BambooHR access token.
+        """
+
+        if not refresh_token:
+            raise BambooHRAuthenticationError(
+                "BambooHR refresh token is missing."
+            )
+
+        payload = {
+            "client_secret": (
+                self.client_secret
+            ),
+            "client_id": (
+                self.client_id
+            ),
+            "refresh_token": (
+                refresh_token
+            ),
+            "grant_type": (
+                "refresh_token"
+            ),
+            "redirect_uri": (
+                self.redirect_uri
+            ),
+        }
+
+        return self._token_request(
+            payload
+        )
+
+    # ======================================================
+    # INTERNAL TOKEN REQUEST
+    # ======================================================
+
+    def _token_request(
+        self,
+        payload,
+    ):
+
+        try:
+
+            response = requests.post(
+                self.token_url,
+                data=payload,
+                headers={
+                    "Accept": (
+                        "application/json"
+                    ),
+                    "Content-Type": (
+                        "application/"
+                        "x-www-form-urlencoded"
+                    ),
+                },
+                timeout=self.timeout,
+            )
+
+        except requests.Timeout as exc:
+
+            raise BambooHRConnectionError(
+                "BambooHR OAuth request timed out."
+            ) from exc
+
+        except requests.ConnectionError as exc:
+
+            raise BambooHRConnectionError(
+                "Unable to connect to BambooHR OAuth service."
+            ) from exc
+
+        except requests.RequestException as exc:
+
+            raise BambooHRConnectionError(
+                "BambooHR OAuth request failed."
+            ) from exc
+
+        if response.status_code in (
+            400,
+            401,
+        ):
+
+            try:
+                error_data = (
+                    response.json()
+                )
+            except ValueError:
+                error_data = {}
+
+            error_description = (
+                error_data.get(
+                    "error_description"
+                )
+                or error_data.get(
+                    "error"
+                )
+                or (
+                    "BambooHR OAuth "
+                    "authentication failed."
+                )
+            )
+
+            raise BambooHRAuthenticationError(
+                error_description
+            )
+
+        if response.status_code == 403:
+
+            raise BambooHRPermissionError(
+                "BambooHR OAuth access was denied."
+            )
+
+        if response.status_code == 429:
+
+            raise BambooHRConnectionError(
+                "BambooHR OAuth rate limit reached."
+            )
+
+        if response.status_code >= 500:
+
+            raise BambooHRConnectionError(
+                "BambooHR OAuth service is "
+                "temporarily unavailable."
+            )
+
+        if not response.ok:
+
+            raise BambooHRIntegrationError(
+                (
+                    "BambooHR OAuth request failed "
+                    f"with status "
+                    f"{response.status_code}."
+                )
+            )
+
+        try:
+
+            token_data = (
+                response.json()
+            )
+
+        except ValueError as exc:
+
+            raise BambooHRIntegrationError(
+                (
+                    "BambooHR OAuth returned "
+                    "invalid JSON."
+                )
+            ) from exc
+
+        access_token = (
+            token_data.get(
+                "access_token"
+            )
+        )
+
+        if not access_token:
+
+            raise BambooHRAuthenticationError(
+                (
+                    "BambooHR did not return "
+                    "an access token."
+                )
+            )
+
+        return token_data
+
+
+# ==========================================================
+# BAMBOOHR API CLIENT
 # ==========================================================
 
 
@@ -51,116 +491,75 @@ class BambooHRClient:
     """
     BambooHR API client used by ZepEx.
 
-    Current authentication:
-        username = BambooHR API key
-        password = arbitrary value
+    OAuth authentication:
 
-    Example BambooHR URL:
+        Authorization: Bearer <access_token>
 
-        https://bitloom.bamboohr.com
+    Example:
 
-    company_domain:
-
-        bitloom
+        BambooHRClient(
+            company_domain="bitloom",
+            access_token="...",
+        )
     """
 
     BASE_DOMAIN = "bamboohr.com"
-
-    # ======================================================
-    # INITIALIZATION
-    # ======================================================
 
     def __init__(
         self,
         *,
         company_domain,
-        api_key,
+        access_token,
         timeout=30,
     ):
 
-        company_domain = (
-            company_domain or ""
-        ).strip().lower()
+        self.company_domain = (
+            normalize_bamboohr_company_domain(
+                company_domain
+            )
+        )
 
-        api_key = (
-            api_key or ""
+        access_token = (
+            access_token
+            or ""
         ).strip()
 
-        # --------------------------------------------------
-        # Validate required configuration
-        # --------------------------------------------------
-
-        if not company_domain:
+        if not access_token:
             raise ValueError(
-                "BambooHR company domain is required."
+                "BambooHR access token is required."
             )
 
-        if not api_key:
-            raise ValueError(
-                "BambooHR API key is required."
-            )
-
-        # --------------------------------------------------
-        # Normalize company domain
-        # --------------------------------------------------
-
-        company_domain = company_domain.replace(
-            "https://",
-            "",
-        ).replace(
-            "http://",
-            "",
+        self.access_token = (
+            access_token
         )
 
-        company_domain = company_domain.split(
-            "/"
-        )[0]
-
-        if company_domain.endswith(
-            ".bamboohr.com"
-        ):
-            company_domain = company_domain[
-                :-len(".bamboohr.com")
-            ]
-
-        company_domain = company_domain.strip(
-            "."
-        )
-
-        if not company_domain:
-            raise ValueError(
-                "Invalid BambooHR company domain."
-            )
-
-        self.company_domain = company_domain
-        self.api_key = api_key
         self.timeout = timeout
-
-        # --------------------------------------------------
-        # BambooHR API base URL
-        # --------------------------------------------------
 
         self.base_url = (
             f"https://{self.company_domain}."
             f"{self.BASE_DOMAIN}/api"
         )
 
-        # --------------------------------------------------
-        # Reusable HTTP session
-        # --------------------------------------------------
+        # ======================================================
+        # HTTP SESSION
+        # ======================================================
 
-        self.session = requests.Session()
-
-        self.session.auth = (
-            self.api_key,
-            "x",
+        self.session = (
+            requests.Session()
         )
 
         self.session.headers.update(
             {
-                "Accept": "application/json",
+                "Authorization": (
+                    f"Bearer "
+                    f"{self.access_token}"
+                ),
+                "Accept": (
+                    "application/json"
+                ),
                 "User-Agent": (
-                    "ZepEx-BambooHR-Integration/1.0"
+                    "ZepEx-BambooHR-"
+                    "Integration/2.0"
                 ),
             }
         )
@@ -178,8 +577,7 @@ class BambooHRClient:
         json=None,
     ):
         """
-        Make a request to BambooHR and normalize
-        common API errors into ZepEx exceptions.
+        Make authenticated BambooHR API request.
         """
 
         url = (
@@ -189,18 +587,23 @@ class BambooHRClient:
 
         try:
 
-            response = self.session.request(
-                method=method,
-                url=url,
-                params=params,
-                json=json,
-                timeout=self.timeout,
+            response = (
+                self.session.request(
+                    method=method,
+                    url=url,
+                    params=params,
+                    json=json,
+                    timeout=self.timeout,
+                )
             )
 
         except requests.Timeout as exc:
 
             logger.exception(
-                "BambooHR request timed out. url=%s",
+                (
+                    "BambooHR request timed out. "
+                    "url=%s"
+                ),
                 url,
             )
 
@@ -211,7 +614,10 @@ class BambooHRClient:
         except requests.ConnectionError as exc:
 
             logger.exception(
-                "Unable to connect to BambooHR. url=%s",
+                (
+                    "Unable to connect to "
+                    "BambooHR. url=%s"
+                ),
                 url,
             )
 
@@ -222,7 +628,10 @@ class BambooHRClient:
         except requests.RequestException as exc:
 
             logger.exception(
-                "BambooHR request failed. url=%s",
+                (
+                    "BambooHR request failed. "
+                    "url=%s"
+                ),
                 url,
             )
 
@@ -230,76 +639,93 @@ class BambooHRClient:
                 "BambooHR request failed."
             ) from exc
 
-        # --------------------------------------------------
-        # Authentication error
-        # --------------------------------------------------
+        # ==================================================
+        # AUTHENTICATION
+        # ==================================================
 
         if response.status_code == 401:
 
             raise BambooHRAuthenticationError(
-                "BambooHR authentication failed. "
-                "Check the API key."
+                (
+                    "BambooHR access token "
+                    "is invalid or expired."
+                )
             )
 
-        # --------------------------------------------------
-        # Permission error
-        # --------------------------------------------------
+        # ==================================================
+        # PERMISSION
+        # ==================================================
 
         if response.status_code == 403:
 
-            error_message = response.headers.get(
-                "x-bamboohr-error-message"
+            error_message = (
+                response.headers.get(
+                    "x-bamboohr-error-message"
+                )
             )
 
             raise BambooHRPermissionError(
                 error_message
                 or (
-                    "BambooHR authentication succeeded "
-                    "but this user does not have permission "
-                    "to access this resource."
+                    "BambooHR authentication "
+                    "succeeded but ZepEx does not "
+                    "have permission to access "
+                    "this resource."
                 )
             )
 
-        # --------------------------------------------------
-        # Rate limit
-        # --------------------------------------------------
+        # ==================================================
+        # RATE LIMIT
+        # ==================================================
 
         if response.status_code == 429:
 
-            retry_after = response.headers.get(
-                "Retry-After"
+            retry_after = (
+                response.headers.get(
+                    "Retry-After"
+                )
             )
 
             if retry_after:
 
                 raise BambooHRConnectionError(
-                    "BambooHR rate limit reached. "
-                    f"Retry after {retry_after} seconds."
+                    (
+                        "BambooHR rate limit "
+                        "reached. Retry after "
+                        f"{retry_after} seconds."
+                    )
                 )
 
             raise BambooHRConnectionError(
-                "BambooHR rate limit reached. "
-                "Please try again later."
+                (
+                    "BambooHR rate limit reached. "
+                    "Please try again later."
+                )
             )
 
-        # --------------------------------------------------
-        # BambooHR server errors
-        # --------------------------------------------------
+        # ==================================================
+        # SERVER ERROR
+        # ==================================================
 
         if response.status_code >= 500:
 
             raise BambooHRConnectionError(
-                "BambooHR is temporarily unavailable."
+                (
+                    "BambooHR is temporarily "
+                    "unavailable."
+                )
             )
 
-        # --------------------------------------------------
-        # Other API errors
-        # --------------------------------------------------
+        # ==================================================
+        # OTHER API ERROR
+        # ==================================================
 
         if not response.ok:
 
-            error_message = response.headers.get(
-                "x-bamboohr-error-message"
+            error_message = (
+                response.headers.get(
+                    "x-bamboohr-error-message"
+                )
             )
 
             raise BambooHRIntegrationError(
@@ -311,9 +737,9 @@ class BambooHRClient:
                 )
             )
 
-        # --------------------------------------------------
-        # Parse JSON
-        # --------------------------------------------------
+        # ==================================================
+        # JSON RESPONSE
+        # ==================================================
 
         try:
 
@@ -322,8 +748,10 @@ class BambooHRClient:
         except ValueError as exc:
 
             raise BambooHRIntegrationError(
-                "BambooHR returned an invalid "
-                "JSON response."
+                (
+                    "BambooHR returned an "
+                    "invalid JSON response."
+                )
             ) from exc
 
     # ======================================================
@@ -332,7 +760,8 @@ class BambooHRClient:
 
     def test_connection(self):
         """
-        Test BambooHR credentials.
+        Test OAuth token and retrieve the
+        authenticated employee record.
         """
 
         result = self._request(
@@ -349,7 +778,9 @@ class BambooHRClient:
 
         return {
             "success": True,
-            "company_domain": self.company_domain,
+            "company_domain": (
+                self.company_domain
+            ),
             "employee": result,
         }
 
@@ -366,13 +797,6 @@ class BambooHRClient:
     ):
         """
         Fetch one page of BambooHR employees.
-
-        Fields requested support:
-
-        - employee identity
-        - department sync
-        - reporting manager sync
-        - employee lifecycle sync
         """
 
         if fields is None:
@@ -386,7 +810,9 @@ class BambooHRClient:
             ]
 
         params = {
-            "fields": ",".join(fields),
+            "fields": ",".join(
+                fields
+            ),
             "page[limit]": limit,
         }
 
@@ -408,10 +834,8 @@ class BambooHRClient:
 
     def get_all_employees(self):
         """
-        Fetch all BambooHR employees.
-
-        Cursor pagination is followed until there
-        is no next cursor.
+        Fetch every BambooHR employee using
+        BambooHR cursor pagination.
         """
 
         employees = []
@@ -422,13 +846,17 @@ class BambooHRClient:
 
         while True:
 
-            response = self.list_employees(
-                limit=250,
-                after=after,
+            response = (
+                self.list_employees(
+                    limit=250,
+                    after=after,
+                )
             )
 
             page_employees = (
-                response.get("data")
+                response.get(
+                    "data"
+                )
                 or []
             )
 
@@ -437,31 +865,39 @@ class BambooHRClient:
             )
 
             meta = (
-                response.get("meta")
+                response.get(
+                    "meta"
+                )
                 or {}
             )
 
             page = (
-                meta.get("page")
+                meta.get(
+                    "page"
+                )
                 or {}
             )
 
-            next_cursor = page.get(
-                "nextCursor"
+            next_cursor = (
+                page.get(
+                    "nextCursor"
+                )
             )
 
             if not next_cursor:
                 break
 
-            # --------------------------------------------------
-            # Prevent infinite pagination loop
-            # --------------------------------------------------
-
-            if next_cursor in seen_cursors:
+            if (
+                next_cursor
+                in seen_cursors
+            ):
 
                 logger.warning(
-                    "BambooHR returned duplicate "
-                    "pagination cursor for company=%s.",
+                    (
+                        "BambooHR returned "
+                        "duplicate pagination "
+                        "cursor for company=%s."
+                    ),
                     self.company_domain,
                 )
 
@@ -471,12 +907,19 @@ class BambooHRClient:
                 next_cursor
             )
 
-            after = next_cursor
+            after = (
+                next_cursor
+            )
 
         logger.info(
-            "Fetched %s BambooHR employee(s) "
-            "for company_domain=%s.",
-            len(employees),
+            (
+                "Fetched %s BambooHR "
+                "employee(s) for "
+                "company_domain=%s."
+            ),
+            len(
+                employees
+            ),
             self.company_domain,
         )
 

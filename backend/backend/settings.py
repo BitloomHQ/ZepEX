@@ -540,8 +540,25 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 
-BAMBOOHR_CLIENT_ID = os.getenv("BAMBOOHR_CLIENT_ID")
-BAMBOOHR_CLIENT_SECRET = os.getenv("BAMBOOHR_CLIENT_SECRET")
+# ==========================================================
+# BAMBOOHR OAUTH
+# ==========================================================
+
+BAMBOOHR_CLIENT_ID = os.getenv(
+    "BAMBOOHR_CLIENT_ID"
+)
+
+BAMBOOHR_CLIENT_SECRET = os.getenv(
+    "BAMBOOHR_CLIENT_SECRET"
+)
+
+BAMBOOHR_REDIRECT_URI = os.getenv(
+    "BAMBOOHR_REDIRECT_URI",
+    (
+        "http://127.0.0.1:8000/"
+        "api/integrations/bamboohr/callback/"
+    ),
+)
 
 RIPPLING_CLIENT_ID = os.getenv("RIPPLING_CLIENT_ID")
 RIPPLING_CLIENT_SECRET = os.getenv("RIPPLING_CLIENT_SECRET")

@@ -1,33 +1,127 @@
-from asyncio.log import logger
-from datetime import timedelta
+import logging
 import secrets
+
+from datetime import timedelta
+
+from django.utils import timezone
 
 from rest_framework.decorators import (
     api_view,
     permission_classes,
 )
-from rest_framework.permissions import AllowAny, IsAuthenticated
+
+from rest_framework.permissions import (
+    AllowAny,
+    IsAuthenticated,
+)
+
 from rest_framework.response import Response
+
 from rest_framework import status
 
-from audit_logs.utils import create_integration_audit_log
+
+# ==========================================================
+# AUDIT LOGS
+# ==========================================================
+
 from audit_logs.models import AuditLog
 
-from .tasks import export_report_to_quickbooks_task
+from audit_logs.utils import (
+    create_integration_audit_log,
+)
 
-from .services.quickbooks import QuickBooksClient, QuickBooksIntegrationError
-from .services.quickbooks_auth import get_valid_quickbooks_access_token
+
+# ==========================================================
+# TENANT PERMISSIONS
+# ==========================================================
+
 from tenants.permission_utils import (
     has_company_permission,
 )
 
-from .models import CompanyIntegration, IntegrationSyncLog, QuickBooksCategoryMapping, QuickBooksOAuthState
+
+# ==========================================================
+# INTEGRATION MODELS
+# ==========================================================
+
+from .models import (
+    CompanyIntegration,
+    IntegrationCredential,
+    IntegrationSyncLog,
+    QuickBooksCategoryMapping,
+    QuickBooksOAuthState,
+)
+
+
+# ==========================================================
+# SERIALIZERS
+# ==========================================================
+
 from .serializers import (
     BambooHRStatusSerializer,
     CompanyIntegrationSerializer,
     IntegrationSyncLogSerializer,
     QuickBooksCategoryMappingSerializer,
 )
+
+
+# ==========================================================
+# ENCRYPTION
+# ==========================================================
+
+from .encryption_services import (
+    encrypt_integration_config,
+    decrypt_integration_config,
+)
+
+
+# ==========================================================
+# BAMBOOHR
+# ==========================================================
+
+from .services.bamboohr import (
+    BambooHRClient,
+    BambooHROAuthService,
+    BambooHRIntegrationError,
+    BambooHRAuthenticationError,
+    BambooHRPermissionError,
+    BambooHRConnectionError,
+)
+
+
+# ==========================================================
+# BAMBOOHR SYNC
+# ==========================================================
+
+from .services.integration_sync import (
+    run_bamboohr_sync,
+)
+
+
+# ==========================================================
+# QUICKBOOKS
+# ==========================================================
+
+from .services.quickbooks import (
+    QuickBooksClient,
+    QuickBooksIntegrationError,
+)
+
+from .services.quickbooks_auth import (
+    get_valid_quickbooks_access_token,
+)
+
+
+# ==========================================================
+# CELERY TASKS
+# ==========================================================
+
+from .tasks import (
+    export_report_to_quickbooks_task,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 @api_view(["GET"])
@@ -191,135 +285,7 @@ from .services.bamboohr import (
 )
 
 
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def test_bamboohr_connection(request):
 
-    profile = request.user.profile
-
-    # ==========================================================
-    # Permission
-    # ==========================================================
-
-    if not (
-        profile.role == "COMPANY_ADMIN"
-        or has_company_permission(
-            profile,
-            "can_manage_integrations",
-        )
-    ):
-        return Response(
-            {
-                "success": False,
-                "error": (
-                    "You are not allowed to manage integrations."
-                ),
-            },
-            status=status.HTTP_403_FORBIDDEN,
-        )
-
-    # ==========================================================
-    # Request data
-    # ==========================================================
-
-    company_domain = str(
-        request.data.get(
-            "company_domain",
-            "",
-        )
-    ).strip()
-
-    api_key = str(
-        request.data.get(
-            "api_key",
-            "",
-        )
-    ).strip()
-
-    if not company_domain:
-        return Response(
-            {
-                "success": False,
-                "error": "company_domain is required.",
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    if not api_key:
-        return Response(
-            {
-                "success": False,
-                "error": "api_key is required.",
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    # ==========================================================
-    # Test BambooHR
-    # ==========================================================
-
-    try:
-
-        client = BambooHRClient(
-            company_domain=company_domain,
-            api_key=api_key,
-        )
-
-        result = client.test_connection()
-
-    except BambooHRAuthenticationError as exc:
-
-        return Response(
-            {
-                "success": False,
-                "connected": False,
-                "error": str(exc),
-            },
-            status=status.HTTP_401_UNAUTHORIZED,
-        )
-
-    except BambooHRPermissionError as exc:
-
-        return Response(
-            {
-                "success": False,
-                "connected": False,
-                "error": str(exc),
-            },
-            status=status.HTTP_403_FORBIDDEN,
-        )
-
-    except (
-        BambooHRConnectionError,
-        BambooHRIntegrationError,
-        ValueError,
-    ) as exc:
-
-        return Response(
-            {
-                "success": False,
-                "connected": False,
-                "error": str(exc),
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    return Response(
-        {
-            "success": True,
-            "connected": True,
-            "message": (
-                "BambooHR connection successful."
-            ),
-            "company_domain": (
-                result.get("company_domain")
-            ),
-            "bamboohr_user": (
-                result.get("employee")
-            ),
-        },
-        status=status.HTTP_200_OK,
-    )
 
 from rest_framework.decorators import (
     api_view,
@@ -387,19 +353,12 @@ def connect_bamboohr(request):
         )
 
     # ==========================================================
-    # 2. REQUEST DATA
+    # 2. COMPANY DOMAIN
     # ==========================================================
 
     company_domain = str(
         request.data.get(
             "company_domain",
-            "",
-        )
-    ).strip()
-
-    api_key = str(
-        request.data.get(
-            "api_key",
             "",
         )
     ).strip()
@@ -413,116 +372,8 @@ def connect_bamboohr(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    if not api_key:
-        return Response(
-            {
-                "success": False,
-                "error": "api_key is required.",
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
     # ==========================================================
-    # 3. TEST CONNECTION BEFORE SAVING
-    # ==========================================================
-
-    try:
-
-        client = BambooHRClient(
-            company_domain=company_domain,
-            api_key=api_key,
-        )
-
-        test_result = (
-            client.test_connection()
-        )
-
-    except BambooHRAuthenticationError as exc:
-
-        create_integration_audit_log(
-            company=profile.company,
-            provider="BAMBOOHR",
-            action="BAMBOOHR_CONNECTION_FAILED",
-            action_by=profile,
-            message=(
-                "BambooHR connection failed "
-                "because authentication was rejected."
-            ),
-            metadata={
-                "company_domain": company_domain,
-                "stage": "AUTHENTICATION",
-                "error": str(exc),
-            },
-        )
-
-        return Response(
-            {
-                "success": False,
-                "connected": False,
-                "error": str(exc),
-            },
-            status=status.HTTP_401_UNAUTHORIZED,
-        )
-
-    except BambooHRPermissionError as exc:
-
-        create_integration_audit_log(
-            company=profile.company,
-            provider="BAMBOOHR",
-            action="BAMBOOHR_CONNECTION_FAILED",
-            action_by=profile,
-            message=(
-                "BambooHR connection failed "
-                "because access was denied."
-            ),
-            metadata={
-                "company_domain": company_domain,
-                "stage": "PERMISSION",
-                "error": str(exc),
-            },
-        )
-
-        return Response(
-            {
-                "success": False,
-                "connected": False,
-                "error": str(exc),
-            },
-            status=status.HTTP_403_FORBIDDEN,
-        )
-
-    except (
-        BambooHRConnectionError,
-        BambooHRIntegrationError,
-        ValueError,
-    ) as exc:
-
-        create_integration_audit_log(
-            company=profile.company,
-            provider="BAMBOOHR",
-            action="BAMBOOHR_CONNECTION_FAILED",
-            action_by=profile,
-            message=(
-                "BambooHR connection test failed."
-            ),
-            metadata={
-                "company_domain": company_domain,
-                "stage": "CONNECTION_TEST",
-                "error": str(exc),
-            },
-        )
-
-        return Response(
-            {
-                "success": False,
-                "connected": False,
-                "error": str(exc),
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    # ==========================================================
-    # 4. CREATE / GET COMPANY INTEGRATION
+    # 3. CREATE / GET INTEGRATION
     # ==========================================================
 
     integration, _ = (
@@ -541,65 +392,536 @@ def connect_bamboohr(request):
     )
 
     # ==========================================================
-    # 5. ENCRYPT CONFIG
+    # 4. CREATE OAUTH STATE
     # ==========================================================
+
+    state = secrets.token_urlsafe(
+        32
+    )
+
+    # Store temporary OAuth state information.
+    # We use encrypted IntegrationCredential for now
+    # so callback can identify company/domain safely.
+
+    temporary_config = {
+        "oauth_state": state,
+        "company_domain": company_domain,
+        "oauth_started_by_profile_id": str(
+            profile.id
+        ),
+        "oauth_started_at": (
+            timezone.now().isoformat()
+        ),
+    }
 
     try:
 
         encrypted_config = (
             encrypt_integration_config(
-                {
-                    "company_domain": (
-                        client.company_domain
-                    ),
-                    "api_key": api_key,
-                }
+                temporary_config
             )
+        )
+
+        IntegrationCredential.objects.update_or_create(
+            integration=integration,
+            defaults={
+                "encrypted_config": encrypted_config,
+            },
         )
 
     except Exception as exc:
 
+        logger.exception(
+            "Unable to store BambooHR OAuth state."
+        )
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Unable to start BambooHR authorization."
+                ),
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    # ==========================================================
+    # 5. BUILD BAMBOOHR AUTHORIZATION URL
+    # ==========================================================
+
+    try:
+
+        oauth_service = (
+            BambooHROAuthService(
+                company_domain=company_domain,
+            )
+        )
+
+        authorization_url = (
+            oauth_service
+            .build_authorization_url(
+                state=state,
+            )
+        )
+
+    except (
+        BambooHRIntegrationError,
+        ValueError,
+    ) as exc:
+
+        return Response(
+            {
+                "success": False,
+                "error": str(
+                    exc
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 6. RESPONSE
+    # ==========================================================
+
+    return Response(
+        {
+            "success": True,
+            "provider": "BAMBOOHR",
+            "connected": False,
+            "company_domain": (
+                oauth_service.company_domain
+            ),
+            "authorization_url": (
+                authorization_url
+            ),
+            "message": (
+                "Redirect the user to BambooHR "
+                "to authorize ZepEx."
+            ),
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def bamboohr_callback(request):
+    """
+    BambooHR OAuth callback.
+
+    BambooHR redirects here with:
+
+        code
+        state
+    """
+
+    code = (
+        request.query_params.get(
+            "code"
+        )
+    )
+
+    returned_state = (
+        request.query_params.get(
+            "state"
+        )
+    )
+
+    oauth_error = (
+        request.query_params.get(
+            "error"
+        )
+    )
+
+    # ==========================================================
+    # 1. BAMBOOHR AUTHORIZATION ERROR
+    # ==========================================================
+
+    if oauth_error:
+
+        return Response(
+            {
+                "success": False,
+                "error": oauth_error,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not code:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BambooHR authorization code "
+                    "is missing."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not returned_state:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BambooHR OAuth state is missing."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 2. FIND THE MATCHING INTEGRATION
+    # ==========================================================
+
+    matched_integration = None
+    matched_config = None
+
+    integrations = (
+        CompanyIntegration.objects
+        .filter(
+            provider=(
+                CompanyIntegration
+                .PROVIDER_BAMBOOHR
+            ),
+            is_active=True,
+        )
+        .select_related(
+            "company",
+            "credential",
+        )
+    )
+
+    for integration in integrations:
+
+        try:
+
+            config = (
+                decrypt_integration_config(
+                    integration
+                    .credential
+                    .encrypted_config
+                )
+            )
+
+        except Exception:
+            continue
+
+        if (
+            config.get(
+                "oauth_state"
+            )
+            == returned_state
+        ):
+
+            matched_integration = (
+                integration
+            )
+
+            matched_config = config
+
+            break
+
+    if not matched_integration:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Invalid or expired "
+                    "BambooHR OAuth state."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 3. VALIDATE OAUTH STATE AGE
+    # ==========================================================
+
+    started_at_raw = (
+        matched_config.get(
+            "oauth_started_at"
+        )
+    )
+
+    if started_at_raw:
+
+        try:
+
+            started_at = (
+                timezone.datetime.fromisoformat(
+                    started_at_raw
+                )
+            )
+
+            if timezone.is_naive(
+                started_at
+            ):
+                started_at = (
+                    timezone.make_aware(
+                        started_at
+                    )
+                )
+
+            if (
+                timezone.now()
+                - started_at
+                > timedelta(
+                    minutes=10
+                )
+            ):
+
+                return Response(
+                    {
+                        "success": False,
+                        "error": (
+                            "BambooHR authorization "
+                            "request has expired."
+                        ),
+                    },
+                    status=(
+                        status.HTTP_400_BAD_REQUEST
+                    ),
+                )
+
+        except Exception:
+            pass
+
+    company_domain = (
+        matched_config.get(
+            "company_domain"
+        )
+    )
+
+    # ==========================================================
+    # 4. EXCHANGE CODE FOR TOKENS
+    # ==========================================================
+
+    try:
+
+        oauth_service = (
+            BambooHROAuthService(
+                company_domain=company_domain,
+            )
+        )
+
+        token_data = (
+            oauth_service
+            .exchange_authorization_code(
+                code=code,
+            )
+        )
+
+    except (
+        BambooHRAuthenticationError,
+        BambooHRPermissionError,
+        BambooHRConnectionError,
+        BambooHRIntegrationError,
+        ValueError,
+    ) as exc:
+
         create_integration_audit_log(
-            company=profile.company,
-            integration=integration,
+            company=(
+                matched_integration
+                .company
+            ),
+            integration=(
+                matched_integration
+            ),
             provider="BAMBOOHR",
-            action="BAMBOOHR_CONNECTION_FAILED",
-            action_by=profile,
+            action=(
+                "BAMBOOHR_CONNECTION_FAILED"
+            ),
+            action_by=None,
             message=(
-                "BambooHR connection failed "
-                "while encrypting credentials."
+                "BambooHR OAuth token "
+                "exchange failed."
             ),
             metadata={
                 "company_domain": (
-                    client.company_domain
+                    company_domain
                 ),
-                "stage": "CREDENTIAL_ENCRYPTION",
-                "error": str(exc),
+                "stage": (
+                    "TOKEN_EXCHANGE"
+                ),
+                "error": str(
+                    exc
+                ),
             },
         )
 
         return Response(
             {
                 "success": False,
-                "connected": False,
-                "error": (
-                    "Unable to securely store "
-                    "BambooHR credentials."
+                "error": str(
+                    exc
                 ),
             },
-            status=(
-                status.HTTP_500_INTERNAL_SERVER_ERROR
-            ),
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
     # ==========================================================
-    # 6. SAVE CREDENTIALS
+    # 5. VALIDATE TOKEN DATA
+    # ==========================================================
+
+    access_token = (
+        token_data.get(
+            "access_token"
+        )
+    )
+
+    refresh_token = (
+        token_data.get(
+            "refresh_token"
+        )
+    )
+
+    expires_in = (
+        token_data.get(
+            "expires_in"
+        )
+    )
+
+    if not access_token:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BambooHR did not return "
+                    "an access token."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 6. TEST ACCESS TOKEN
     # ==========================================================
 
     try:
 
+        client = (
+            BambooHRClient(
+                company_domain=(
+                    company_domain
+                ),
+                access_token=(
+                    access_token
+                ),
+            )
+        )
+
+        test_result = (
+            client.test_connection()
+        )
+
+    except (
+        BambooHRAuthenticationError,
+        BambooHRPermissionError,
+        BambooHRConnectionError,
+        BambooHRIntegrationError,
+        ValueError,
+    ) as exc:
+
+        create_integration_audit_log(
+            company=(
+                matched_integration.company
+            ),
+            integration=(
+                matched_integration
+            ),
+            provider="BAMBOOHR",
+            action=(
+                "BAMBOOHR_CONNECTION_FAILED"
+            ),
+            action_by=None,
+            message=(
+                "BambooHR connection validation failed."
+            ),
+            metadata={
+                "company_domain": company_domain,
+                "stage": (
+                    "TOKEN_VALIDATION"
+                ),
+                "error": str(
+                    exc
+                ),
+            },
+        )
+
+        return Response(
+            {
+                "success": False,
+                "error": str(
+                    exc
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 7. STORE TOKENS SECURELY
+    # ==========================================================
+
+    now = timezone.now()
+
+    final_config = {
+        "auth_type": "OAUTH2",
+
+        "company_domain": (
+            company_domain
+        ),
+
+        "access_token": (
+            access_token
+        ),
+
+        "refresh_token": (
+            refresh_token
+        ),
+
+        "access_token_expires_at": (
+            (
+                now
+                + timedelta(
+                    seconds=int(
+                        expires_in
+                    )
+                )
+            ).isoformat()
+            if expires_in
+            else None
+        ),
+
+        "scope": (
+            token_data.get(
+                "scope"
+            )
+        ),
+
+        "token_type": (
+            token_data.get(
+                "token_type"
+            )
+            or "Bearer"
+        ),
+    }
+
+    try:
+
+        encrypted_config = (
+            encrypt_integration_config(
+                final_config
+            )
+        )
+
         IntegrationCredential.objects.update_or_create(
-            integration=integration,
+            integration=(
+                matched_integration
+            ),
             defaults={
                 "encrypted_config": (
                     encrypted_config
@@ -609,32 +931,16 @@ def connect_bamboohr(request):
 
     except Exception as exc:
 
-        create_integration_audit_log(
-            company=profile.company,
-            integration=integration,
-            provider="BAMBOOHR",
-            action="BAMBOOHR_CONNECTION_FAILED",
-            action_by=profile,
-            message=(
-                "BambooHR connection failed "
-                "while saving credentials."
-            ),
-            metadata={
-                "company_domain": (
-                    client.company_domain
-                ),
-                "stage": "CREDENTIAL_STORAGE",
-                "error": str(exc),
-            },
+        logger.exception(
+            "Unable to store BambooHR OAuth tokens."
         )
 
         return Response(
             {
                 "success": False,
-                "connected": False,
                 "error": (
-                    "Unable to save BambooHR "
-                    "credentials."
+                    "Unable to securely save "
+                    "BambooHR credentials."
                 ),
             },
             status=(
@@ -643,14 +949,14 @@ def connect_bamboohr(request):
         )
 
     # ==========================================================
-    # 7. MARK CONNECTED
+    # 8. MARK CONNECTED
     # ==========================================================
 
-    integration.is_connected = True
-    integration.is_active = True
-    integration.last_sync_error = None
+    matched_integration.is_connected = True
+    matched_integration.is_active = True
+    matched_integration.last_sync_error = None
 
-    integration.save(
+    matched_integration.save(
         update_fields=[
             "is_connected",
             "is_active",
@@ -660,30 +966,36 @@ def connect_bamboohr(request):
     )
 
     # ==========================================================
-    # 8. SUCCESS AUDIT LOG
+    # 9. AUDIT LOG
     # ==========================================================
 
     create_integration_audit_log(
-        company=profile.company,
-        integration=integration,
+        company=(
+            matched_integration.company
+        ),
+        integration=(
+            matched_integration
+        ),
         provider="BAMBOOHR",
         action="BAMBOOHR_CONNECTED",
-        action_by=profile,
+        action_by=None,
         message=(
-            "BambooHR connected successfully."
+            "BambooHR connected successfully "
+            "using OAuth."
         ),
         metadata={
             "company_domain": (
-                client.company_domain
+                company_domain
             ),
             "integration_id": str(
-                integration.id
+                matched_integration.id
             ),
+            "auth_type": "OAUTH2",
         },
     )
 
     # ==========================================================
-    # 9. RESPONSE
+    # 10. RESPONSE
     # ==========================================================
 
     return Response(
@@ -695,10 +1007,10 @@ def connect_bamboohr(request):
             ),
             "provider": "BAMBOOHR",
             "integration_id": str(
-                integration.id
+                matched_integration.id
             ),
             "company_domain": (
-                client.company_domain
+                company_domain
             ),
             "bamboohr_user": (
                 test_result.get(
@@ -716,7 +1028,20 @@ def preview_bamboohr_employees(request):
     profile = request.user.profile
 
     # ==========================================================
-    # Permission
+    # 1. COMPANY CHECK
+    # ==========================================================
+
+    if not profile.company:
+        return Response(
+            {
+                "success": False,
+                "error": "Company is not assigned.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 2. PERMISSION
     # ==========================================================
 
     if not (
@@ -725,20 +1050,24 @@ def preview_bamboohr_employees(request):
             profile,
             "can_manage_integrations",
         )
+        or has_company_permission(
+            profile,
+            "can_view_integrations",
+        )
     ):
         return Response(
             {
                 "success": False,
                 "error": (
                     "You are not allowed to "
-                    "manage integrations."
+                    "view integrations."
                 ),
             },
             status=status.HTTP_403_FORBIDDEN,
         )
 
     # ==========================================================
-    # Find BambooHR integration
+    # 3. FIND CONNECTED BAMBOOHR INTEGRATION
     # ==========================================================
 
     try:
@@ -764,15 +1093,13 @@ def preview_bamboohr_employees(request):
         return Response(
             {
                 "success": False,
-                "error": (
-                    "BambooHR is not connected."
-                ),
+                "error": "BambooHR is not connected.",
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     # ==========================================================
-    # Decrypt credentials
+    # 4. DECRYPT OAUTH CONFIG
     # ==========================================================
 
     try:
@@ -785,6 +1112,10 @@ def preview_bamboohr_employees(request):
 
     except Exception:
 
+        logger.exception(
+            "Unable to decrypt BambooHR credentials."
+        )
+
         return Response(
             {
                 "success": False,
@@ -793,25 +1124,74 @@ def preview_bamboohr_employees(request):
                     "credentials."
                 ),
             },
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
         )
 
     # ==========================================================
-    # Create BambooHR client
+    # 5. READ OAUTH VALUES
+    # ==========================================================
+
+    company_domain = (
+        config.get(
+            "company_domain"
+        )
+        or ""
+    ).strip()
+
+    access_token = (
+        config.get(
+            "access_token"
+        )
+        or ""
+    ).strip()
+
+    refresh_token = (
+        config.get(
+            "refresh_token"
+        )
+        or ""
+    ).strip()
+
+    if not company_domain:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BambooHR company domain "
+                    "is missing."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not access_token:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BambooHR access token "
+                    "is missing."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 6. CREATE OAUTH CLIENT
     # ==========================================================
 
     try:
 
         client = BambooHRClient(
             company_domain=(
-                config.get(
-                    "company_domain"
-                )
+                company_domain
             ),
-            api_key=(
-                config.get(
-                    "api_key"
-                )
+            access_token=(
+                access_token
             ),
         )
 
@@ -819,50 +1199,196 @@ def preview_bamboohr_employees(request):
             client.get_all_employees()
         )
 
-    except BambooHRAuthenticationError as exc:
+    # ==========================================================
+    # 7. ACCESS TOKEN EXPIRED
+    # ==========================================================
 
-        return Response(
-            {
-                "success": False,
-                "error": str(exc),
-            },
-            status=status.HTTP_401_UNAUTHORIZED,
-        )
+    except BambooHRAuthenticationError:
+
+        if not refresh_token:
+
+            return Response(
+                {
+                    "success": False,
+                    "error": (
+                        "BambooHR access token "
+                        "expired and no refresh "
+                        "token is available."
+                    ),
+                },
+                status=(
+                    status.HTTP_401_UNAUTHORIZED
+                ),
+            )
+
+        try:
+
+            oauth_service = (
+                BambooHROAuthService(
+                    company_domain=(
+                        company_domain
+                    ),
+                )
+            )
+
+            token_data = (
+                oauth_service
+                .refresh_access_token(
+                    refresh_token=(
+                        refresh_token
+                    ),
+                )
+            )
+
+            new_access_token = (
+                token_data.get(
+                    "access_token"
+                )
+            )
+
+            new_refresh_token = (
+                token_data.get(
+                    "refresh_token"
+                )
+                or refresh_token
+            )
+
+            expires_in = (
+                token_data.get(
+                    "expires_in"
+                )
+            )
+
+            if not new_access_token:
+
+                raise BambooHRAuthenticationError(
+                    (
+                        "BambooHR token refresh "
+                        "did not return an "
+                        "access token."
+                    )
+                )
+
+            # ----------------------------------------------
+            # Update encrypted config
+            # ----------------------------------------------
+
+            config[
+                "access_token"
+            ] = new_access_token
+
+            config[
+                "refresh_token"
+            ] = new_refresh_token
+
+            if expires_in:
+
+                config[
+                    "access_token_expires_at"
+                ] = (
+                    timezone.now()
+                    + timedelta(
+                        seconds=int(
+                            expires_in
+                        )
+                    )
+                ).isoformat()
+
+            encrypted_config = (
+                encrypt_integration_config(
+                    config
+                )
+            )
+
+            IntegrationCredential.objects.update_or_create(
+                integration=integration,
+                defaults={
+                    "encrypted_config": (
+                        encrypted_config
+                    ),
+                },
+            )
+
+            # ----------------------------------------------
+            # Retry BambooHR call
+            # ----------------------------------------------
+
+            client = BambooHRClient(
+                company_domain=(
+                    company_domain
+                ),
+                access_token=(
+                    new_access_token
+                ),
+            )
+
+            employees = (
+                client.get_all_employees()
+            )
+
+        except (
+            BambooHRAuthenticationError,
+            BambooHRPermissionError,
+            BambooHRConnectionError,
+            BambooHRIntegrationError,
+            ValueError,
+        ) as exc:
+
+            return Response(
+                {
+                    "success": False,
+                    "error": str(
+                        exc
+                    ),
+                },
+                status=(
+                    status.HTTP_401_UNAUTHORIZED
+                ),
+            )
 
     except BambooHRPermissionError as exc:
 
         return Response(
             {
                 "success": False,
-                "error": str(exc),
+                "error": str(
+                    exc
+                ),
             },
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    except BambooHRIntegrationError as exc:
+    except (
+        BambooHRConnectionError,
+        BambooHRIntegrationError,
+        ValueError,
+    ) as exc:
 
         return Response(
             {
                 "success": False,
-                "error": str(exc),
+                "error": str(
+                    exc
+                ),
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     # ==========================================================
-    # Return BambooHR data
+    # 8. RESPONSE
     # ==========================================================
 
     return Response(
         {
             "success": True,
             "provider": "BAMBOOHR",
-            "count": len(employees),
+            "count": len(
+                employees
+            ),
             "employees": employees,
         },
         status=status.HTTP_200_OK,
     )
-
 from django.utils import timezone
 
 from .models import CompanyIntegration

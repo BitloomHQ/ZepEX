@@ -1,11 +1,12 @@
 from django.urls import path
 
 from .views import (
+    bamboohr_callback,
     integration_list,
     integration_provider_catalog,
 
     # BambooHR
-    test_bamboohr_connection,
+    
     connect_bamboohr,
     preview_bamboohr_employees,
     sync_bamboohr,
@@ -67,11 +68,7 @@ urlpatterns = [
     # BAMBOOHR
     # ==========================================================
 
-    path(
-        "bamboohr/test/",
-        test_bamboohr_connection,
-        name="test-bamboohr-connection",
-    ),
+    
 
     path(
         "bamboohr/connect/",
@@ -192,4 +189,9 @@ urlpatterns = [
         disconnect_quickbooks,
         name="disconnect-quickbooks",
     ),
+    path(
+    "bamboohr/callback/",
+    bamboohr_callback,
+    name="bamboohr-callback",
+),
 ]
