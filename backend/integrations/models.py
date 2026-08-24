@@ -70,6 +70,28 @@ class CompanyIntegration(models.Model):
     )
 
     # ==========================================================
+    # QUICKBOOKS PAYMENT ACCOUNT
+    # ==========================================================
+
+    quickbooks_payment_account_id = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True,
+    )
+
+    quickbooks_payment_account_name = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+    )
+
+    quickbooks_payment_account_type = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True,
+    )
+
+    # ==========================================================
     # SYNC INFORMATION
     # ==========================================================
 

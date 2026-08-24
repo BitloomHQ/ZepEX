@@ -119,10 +119,43 @@ from .services.quickbooks_auth import (
 from .tasks import (
     export_report_to_quickbooks_task,
 )
+from datetime import timedelta
 
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
+QUICKBOOKS_PENDING_STALE_MINUTES = 5
 
+
+def is_quickbooks_export_stale(
+    export_record,
+):
+    """
+    Consider a PENDING QuickBooks export stale when it has
+    not been updated for more than 5 minutes.
+
+    A stale export can safely be queued again.
+    """
+
+    if (
+        export_record.status
+        != QuickBooksExportRecord.STATUS_PENDING
+    ):
+        return False
+
+    stale_before = (
+        timezone.now()
+        - timedelta(
+            minutes=(
+                QUICKBOOKS_PENDING_STALE_MINUTES
+            )
+        )
+    )
+
+    return (
+        export_record.updated_at
+        < stale_before
+    )
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -1414,14 +1447,40 @@ from .services.integration_sync import (
 )
 
 
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def sync_bamboohr(request):
+def _get_bamboohr_sync_integration(
+    profile,
+):
+    """
+    Return the connected BambooHR integration
+    for the current company.
 
-    profile = request.user.profile
+    Returns:
+        (integration, error_response)
+    """
 
     # ==========================================================
-    # Permission
+    # 1. COMPANY CHECK
+    # ==========================================================
+
+    if not profile.company:
+
+        return (
+            None,
+            Response(
+                {
+                    "success": False,
+                    "error": (
+                        "Company is not assigned."
+                    ),
+                },
+                status=(
+                    status.HTTP_400_BAD_REQUEST
+                ),
+            ),
+        )
+
+    # ==========================================================
+    # 2. PERMISSION CHECK
     # ==========================================================
 
     if not (
@@ -1432,19 +1491,24 @@ def sync_bamboohr(request):
         )
     ):
 
-        return Response(
-            {
-                "success": False,
-                "error": (
-                    "You are not allowed to "
-                    "manage integrations."
+        return (
+            None,
+            Response(
+                {
+                    "success": False,
+                    "error": (
+                        "You are not allowed to "
+                        "manage integrations."
+                    ),
+                },
+                status=(
+                    status.HTTP_403_FORBIDDEN
                 ),
-            },
-            status=status.HTTP_403_FORBIDDEN,
+            ),
         )
 
     # ==========================================================
-    # Find integration
+    # 3. FIND CONNECTED BAMBOOHR
     # ==========================================================
 
     try:
@@ -1467,26 +1531,74 @@ def sync_bamboohr(request):
 
     except CompanyIntegration.DoesNotExist:
 
-        return Response(
-            {
-                "success": False,
-                "error": (
-                    "BambooHR is not connected."
+        return (
+            None,
+            Response(
+                {
+                    "success": False,
+                    "error": (
+                        "BambooHR is not connected."
+                    ),
+                },
+                status=(
+                    status.HTTP_400_BAD_REQUEST
                 ),
-            },
-            status=status.HTTP_400_BAD_REQUEST,
+            ),
         )
 
+    return (
+        integration,
+        None,
+    )
+
+
+def _run_bamboohr_resource_sync(
+    *,
+    profile,
+    resource,
+):
+    """
+    Run BambooHR synchronization for one resource.
+
+    Supported:
+
+        DEPARTMENTS
+        EMPLOYEES
+        MANAGERS
+        ALL
+    """
+
     # ==========================================================
-    # Run common sync service
+    # 1. GET INTEGRATION
+    # ==========================================================
+
+    (
+        integration,
+        error_response,
+    ) = _get_bamboohr_sync_integration(
+        profile
+    )
+
+    if error_response:
+
+        return error_response
+
+    # ==========================================================
+    # 2. RUN SYNC
     # ==========================================================
 
     result = run_bamboohr_sync(
         integration=integration,
         trigger=(
-            IntegrationSyncLog.TRIGGER_MANUAL
+            IntegrationSyncLog
+            .TRIGGER_MANUAL
         ),
+        resource=resource,
     )
+
+    # ==========================================================
+    # 3. FAILED SYNC
+    # ==========================================================
 
     if not result.get(
         "success"
@@ -1494,12 +1606,122 @@ def sync_bamboohr(request):
 
         return Response(
             result,
-            status=status.HTTP_400_BAD_REQUEST,
+            status=(
+                status.HTTP_400_BAD_REQUEST
+            ),
         )
+
+    # ==========================================================
+    # 4. SUCCESS
+    # ==========================================================
 
     return Response(
         result,
         status=status.HTTP_200_OK,
+    )
+
+
+# ==============================================================
+# BAMBOOHR — SYNC DEPARTMENTS
+# ==============================================================
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def sync_bamboohr_departments_view(
+    request,
+):
+    """
+    Synchronize BambooHR departments only.
+    """
+
+    profile = request.user.profile
+
+    return _run_bamboohr_resource_sync(
+        profile=profile,
+        resource="DEPARTMENTS",
+    )
+
+
+# ==============================================================
+# BAMBOOHR — SYNC EMPLOYEES
+# ==============================================================
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def sync_bamboohr_employees_view(
+    request,
+):
+    """
+    Synchronize BambooHR employees only.
+
+    Departments are not created here.
+    Run department sync first when needed.
+    """
+
+    profile = request.user.profile
+
+    return _run_bamboohr_resource_sync(
+        profile=profile,
+        resource="EMPLOYEES",
+    )
+
+
+# ==============================================================
+# BAMBOOHR — SYNC MANAGERS
+# ==============================================================
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def sync_bamboohr_managers_view(
+    request,
+):
+    """
+    Synchronize:
+
+    - employee reporting managers
+    - department manager relationships
+
+    Employees should already be synchronized.
+    """
+
+    profile = request.user.profile
+
+    return _run_bamboohr_resource_sync(
+        profile=profile,
+        resource="MANAGERS",
+    )
+
+
+# ==============================================================
+# BAMBOOHR — SYNC ALL
+# ==============================================================
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def sync_bamboohr_all_view(
+    request,
+):
+    """
+    Run complete BambooHR synchronization.
+
+    Order:
+
+        Departments
+            ↓
+        Employees
+            ↓
+        Managers
+    """
+
+    profile = request.user.profile
+
+    return _run_bamboohr_resource_sync(
+        profile=profile,
+        resource="ALL",
     )
 
 @api_view(["GET"])
@@ -1508,6 +1730,10 @@ def bamboohr_status(request):
 
     profile = request.user.profile
 
+    # ==========================================================
+    # 1. PERMISSION
+    # ==========================================================
+
     can_view = (
         profile.role == "COMPANY_ADMIN"
         or has_company_permission(
@@ -1521,17 +1747,24 @@ def bamboohr_status(request):
     )
 
     if not can_view:
+
         return Response(
             {
                 "success": False,
                 "error": (
-                    "You are not allowed to view integrations."
+                    "You are not allowed to "
+                    "view integrations."
                 ),
             },
             status=status.HTTP_403_FORBIDDEN,
         )
 
+    # ==========================================================
+    # 2. COMPANY
+    # ==========================================================
+
     if not profile.company:
+
         return Response(
             {
                 "success": False,
@@ -1540,12 +1773,17 @@ def bamboohr_status(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    # ==========================================================
+    # 3. FIND BAMBOOHR INTEGRATION
+    # ==========================================================
+
     integration = (
         CompanyIntegration.objects
         .filter(
             company=profile.company,
             provider=(
-                CompanyIntegration.PROVIDER_BAMBOOHR
+                CompanyIntegration
+                .PROVIDER_BAMBOOHR
             ),
         )
         .select_related(
@@ -1554,7 +1792,12 @@ def bamboohr_status(request):
         .first()
     )
 
+    # ==========================================================
+    # 4. NOT CONFIGURED
+    # ==========================================================
+
     if not integration:
+
         return Response(
             {
                 "success": True,
@@ -1562,131 +1805,157 @@ def bamboohr_status(request):
                 "connected": False,
                 "configured": False,
                 "integration": None,
+
+                "sync_status": {
+                    "departments": None,
+                    "employees": None,
+                    "managers": None,
+                    "all": None,
+                },
             },
             status=status.HTTP_200_OK,
         )
 
-    serializer = BambooHRStatusSerializer(
-        integration
+    # ==========================================================
+    # 5. SERIALIZED INTEGRATION
+    # ==========================================================
+
+    serializer = (
+        BambooHRStatusSerializer(
+            integration
+        )
     )
+
+    # ==========================================================
+    # 6. HELPER — LATEST SYNC BY RESOURCE
+    # ==========================================================
+
+    def get_latest_resource_sync(
+        resource,
+    ):
+
+        sync_log = (
+            IntegrationSyncLog.objects
+            .filter(
+                integration=integration,
+                stats__resource=resource,
+            )
+            .order_by(
+                "-started_at"
+            )
+            .first()
+        )
+
+        if not sync_log:
+            return None
+
+        return {
+            "sync_log_id": str(
+                sync_log.id
+            ),
+
+            "resource": resource,
+
+            "status": (
+                sync_log.status
+            ),
+
+            "trigger": (
+                sync_log.trigger
+            ),
+
+            "records_received": (
+                sync_log.records_received
+            ),
+
+            "records_created": (
+                sync_log.records_created
+            ),
+
+            "records_updated": (
+                sync_log.records_updated
+            ),
+
+            "records_skipped": (
+                sync_log.records_skipped
+            ),
+
+            "error_message": (
+                sync_log.error_message
+            ),
+
+            "started_at": (
+                sync_log.started_at
+            ),
+
+            "completed_at": (
+                sync_log.completed_at
+            ),
+        }
+
+    # ==========================================================
+    # 7. RESOURCE-WISE STATUS
+    # ==========================================================
+
+    resource_status = {
+        "departments": (
+            get_latest_resource_sync(
+                "DEPARTMENTS"
+            )
+        ),
+
+        "employees": (
+            get_latest_resource_sync(
+                "EMPLOYEES"
+            )
+        ),
+
+        "managers": (
+            get_latest_resource_sync(
+                "MANAGERS"
+            )
+        ),
+
+        "all": (
+            get_latest_resource_sync(
+                "ALL"
+            )
+        ),
+    }
+
+    # ==========================================================
+    # 8. RESPONSE
+    # ==========================================================
 
     return Response(
         {
             "success": True,
+
             "provider": "BAMBOOHR",
+
             "connected": (
                 integration.is_connected
             ),
+
             "configured": (
-                serializer.data["configured"]
+                serializer.data[
+                    "configured"
+                ]
             ),
-            "integration": serializer.data,
+
+            "integration": (
+                serializer.data
+            ),
+
+            "sync_status": (
+                resource_status
+            ),
         },
         status=status.HTTP_200_OK,
     )
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def bamboohr_sync_history(request):
-
-    profile = request.user.profile
-
-    can_view = (
-        profile.role == "COMPANY_ADMIN"
-        or has_company_permission(
-            profile,
-            "can_view_integrations",
-        )
-        or has_company_permission(
-            profile,
-            "can_manage_integrations",
-        )
-    )
-
-    if not can_view:
-        return Response(
-            {
-                "success": False,
-                "error": (
-                    "You are not allowed to view integrations."
-                ),
-            },
-            status=status.HTTP_403_FORBIDDEN,
-        )
-
-    try:
-        integration = (
-            CompanyIntegration.objects
-            .get(
-                company=profile.company,
-                provider=(
-                    CompanyIntegration
-                    .PROVIDER_BAMBOOHR
-                ),
-            )
-        )
-
-    except CompanyIntegration.DoesNotExist:
-        return Response(
-            {
-                "success": False,
-                "error": (
-                    "BambooHR integration not found."
-                ),
-            },
-            status=status.HTTP_404_NOT_FOUND,
-        )
-
-    # Optional limit
-    try:
-        limit = int(
-            request.query_params.get(
-                "limit",
-                20,
-            )
-        )
-
-    except ValueError:
-        limit = 20
-
-    limit = max(
-        1,
-        min(
-            limit,
-            100,
-        ),
-    )
-
-    logs = (
-        IntegrationSyncLog.objects
-        .filter(
-            integration=integration,
-        )
-        .order_by(
-            "-started_at"
-        )[:limit]
-    )
-
-    serializer = IntegrationSyncLogSerializer(
-        logs,
-        many=True,
-    )
-
-    return Response(
-        {
-            "success": True,
-            "provider": "BAMBOOHR",
-            "count": len(
-                serializer.data
-            ),
-            "results": serializer.data,
-        },
-        status=status.HTTP_200_OK,
-    )
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def disconnect_bamboohr(request):
 
     profile = request.user.profile
 
@@ -1708,20 +1977,26 @@ def disconnect_bamboohr(request):
     # 2. PERMISSION CHECK
     # ==========================================================
 
-    if not (
+    can_view = (
         profile.role == "COMPANY_ADMIN"
+        or has_company_permission(
+            profile,
+            "can_view_integrations",
+        )
         or has_company_permission(
             profile,
             "can_manage_integrations",
         )
-    ):
+    )
+
+    if not can_view:
 
         return Response(
             {
                 "success": False,
                 "error": (
                     "You are not allowed to "
-                    "manage integrations."
+                    "view integrations."
                 ),
             },
             status=status.HTTP_403_FORBIDDEN,
@@ -1735,9 +2010,6 @@ def disconnect_bamboohr(request):
 
         integration = (
             CompanyIntegration.objects
-            .select_related(
-                "credential"
-            )
             .get(
                 company=profile.company,
                 provider=(
@@ -1761,75 +2033,238 @@ def disconnect_bamboohr(request):
         )
 
     # ==========================================================
-    # 4. REMOVE STORED CREDENTIALS
+    # 4. OPTIONAL RESOURCE FILTER
+    # ==========================================================
+
+    resource = (
+        request.query_params.get(
+            "resource",
+            "",
+        )
+        or ""
+    ).strip().upper()
+
+    allowed_resources = {
+        "DEPARTMENTS",
+        "EMPLOYEES",
+        "MANAGERS",
+        "ALL",
+    }
+
+    if (
+        resource
+        and resource
+        not in allowed_resources
+    ):
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Invalid resource. "
+                    "Allowed values are: "
+                    "DEPARTMENTS, EMPLOYEES, "
+                    "MANAGERS, ALL."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 5. OPTIONAL STATUS FILTER
+    # ==========================================================
+
+    sync_status = (
+        request.query_params.get(
+            "status",
+            "",
+        )
+        or ""
+    ).strip().upper()
+
+    allowed_statuses = {
+        IntegrationSyncLog.STATUS_RUNNING,
+        IntegrationSyncLog.STATUS_SUCCESS,
+        IntegrationSyncLog.STATUS_FAILED,
+    }
+
+    if (
+        sync_status
+        and sync_status
+        not in allowed_statuses
+    ):
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Invalid status. "
+                    "Allowed values are: "
+                    "RUNNING, SUCCESS, FAILED."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 6. OPTIONAL TRIGGER FILTER
+    # ==========================================================
+
+    trigger = (
+        request.query_params.get(
+            "trigger",
+            "",
+        )
+        or ""
+    ).strip().upper()
+
+    allowed_triggers = {
+        IntegrationSyncLog.TRIGGER_MANUAL,
+        IntegrationSyncLog.TRIGGER_SCHEDULED,
+    }
+
+    if (
+        trigger
+        and trigger
+        not in allowed_triggers
+    ):
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Invalid trigger. "
+                    "Allowed values are: "
+                    "MANUAL, SCHEDULED."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 7. LIMIT
     # ==========================================================
 
     try:
 
-        credential = (
-            integration.credential
+        limit = int(
+            request.query_params.get(
+                "limit",
+                20,
+            )
         )
 
-    except Exception:
+    except (
+        TypeError,
+        ValueError,
+    ):
 
-        credential = None
+        limit = 20
 
-    if credential:
-
-        credential.delete()
-
-    # ==========================================================
-    # 5. MARK INTEGRATION DISCONNECTED
-    # ==========================================================
-
-    integration.is_connected = False
-    integration.is_active = False
-
-    integration.last_sync_status = None
-    integration.last_sync_error = None
-
-    integration.save(
-        update_fields=[
-            "is_connected",
-            "is_active",
-            "last_sync_status",
-            "last_sync_error",
-            "updated_at",
-        ]
-    )
-
-    # ==========================================================
-    # 6. AUDIT LOG
-    # ==========================================================
-
-    create_integration_audit_log(
-        company=profile.company,
-        integration=integration,
-        provider="BAMBOOHR",
-        action="BAMBOOHR_DISCONNECTED",
-        action_by=profile,
-        message=(
-            "BambooHR disconnected successfully."
+    limit = max(
+        1,
+        min(
+            limit,
+            100,
         ),
-        metadata={
-            "integration_id": str(
-                integration.id
-            ),
-        },
     )
 
     # ==========================================================
-    # 7. RESPONSE
+    # 8. BASE QUERY
+    # ==========================================================
+
+    logs = (
+        IntegrationSyncLog.objects
+        .filter(
+            integration=integration,
+        )
+    )
+
+    # ==========================================================
+    # 9. APPLY RESOURCE FILTER
+    # ==========================================================
+
+    if resource:
+
+        logs = logs.filter(
+            stats__resource=resource,
+        )
+
+    # ==========================================================
+    # 10. APPLY STATUS FILTER
+    # ==========================================================
+
+    if sync_status:
+
+        logs = logs.filter(
+            status=sync_status,
+        )
+
+    # ==========================================================
+    # 11. APPLY TRIGGER FILTER
+    # ==========================================================
+
+    if trigger:
+
+        logs = logs.filter(
+            trigger=trigger,
+        )
+
+    # ==========================================================
+    # 12. ORDER + LIMIT
+    # ==========================================================
+
+    logs = (
+        logs
+        .order_by(
+            "-started_at"
+        )[:limit]
+    )
+
+    # ==========================================================
+    # 13. SERIALIZE
+    # ==========================================================
+
+    serializer = (
+        IntegrationSyncLogSerializer(
+            logs,
+            many=True,
+        )
+    )
+
+    # ==========================================================
+    # 14. RESPONSE
     # ==========================================================
 
     return Response(
         {
             "success": True,
-            "message": (
-                "BambooHR disconnected successfully."
-            ),
+
             "provider": "BAMBOOHR",
-            "connected": False,
+
+            "filters": {
+                "resource": (
+                    resource
+                    or None
+                ),
+                "status": (
+                    sync_status
+                    or None
+                ),
+                "trigger": (
+                    trigger
+                    or None
+                ),
+                "limit": limit,
+            },
+
+            "count": len(
+                serializer.data
+            ),
+
+            "results": (
+                serializer.data
+            ),
         },
         status=status.HTTP_200_OK,
     )
@@ -2805,6 +3240,10 @@ def quickbooks_accounts(request):
 
     profile = request.user.profile
 
+    # ==========================================================
+    # 1. PERMISSION CHECK
+    # ==========================================================
+
     can_view = (
         profile.role == "COMPANY_ADMIN"
         or has_company_permission(
@@ -2818,6 +3257,7 @@ def quickbooks_accounts(request):
     )
 
     if not can_view:
+
         return Response(
             {
                 "success": False,
@@ -2828,6 +3268,26 @@ def quickbooks_accounts(request):
             },
             status=status.HTTP_403_FORBIDDEN,
         )
+
+    # ==========================================================
+    # 2. COMPANY CHECK
+    # ==========================================================
+
+    if not profile.company:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Company is not assigned."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 3. FIND CONNECTED QUICKBOOKS INTEGRATION
+    # ==========================================================
 
     try:
 
@@ -2859,6 +3319,10 @@ def quickbooks_accounts(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    # ==========================================================
+    # 4. GET VALID ACCESS TOKEN
+    # ==========================================================
+
     try:
 
         token_result = (
@@ -2867,22 +3331,47 @@ def quickbooks_accounts(request):
             )
         )
 
-        config = token_result["config"]
+        config = token_result[
+            "config"
+        ]
+
+        access_token = token_result[
+            "access_token"
+        ]
+
+        realm_id = config.get(
+            "realm_id"
+        )
+
+        if not realm_id:
+
+            return Response(
+                {
+                    "success": False,
+                    "error": (
+                        "QuickBooks realm ID "
+                        "is missing."
+                    ),
+                },
+                status=(
+                    status.HTTP_400_BAD_REQUEST
+                ),
+            )
+
+        # ======================================================
+        # 5. FETCH EXPENSE ACCOUNTS
+        # ======================================================
 
         client = QuickBooksClient()
 
-        accounts = client.get_expense_accounts(
-            realm_id=config.get(
-                "realm_id"
-            ),
-            access_token=(
-                token_result[
-                    "access_token"
-                ]
-            ),
+        accounts = (
+            client.get_expense_accounts(
+                realm_id=realm_id,
+                access_token=access_token,
+            )
         )
 
-    except Exception as exc:
+    except QuickBooksIntegrationError as exc:
 
         return Response(
             {
@@ -2892,47 +3381,40 @@ def quickbooks_accounts(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    results = []
+    except Exception as exc:
 
-    for account in accounts:
-
-        results.append(
-            {
-                "id": account.get("Id"),
-                "name": account.get("Name"),
-                "fully_qualified_name": (
-                    account.get(
-                        "FullyQualifiedName"
-                    )
-                ),
-                "account_type": (
-                    account.get(
-                        "AccountType"
-                    )
-                ),
-                "account_sub_type": (
-                    account.get(
-                        "AccountSubType"
-                    )
-                ),
-                "active": (
-                    account.get(
-                        "Active"
-                    )
-                ),
-            }
+        logger.exception(
+            "Unexpected QuickBooks accounts error."
         )
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Unable to fetch QuickBooks "
+                    "expense accounts."
+                ),
+            },
+            status=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+        )
+
+    # ==========================================================
+    # 6. RESPONSE
+    # ==========================================================
 
     return Response(
         {
             "success": True,
             "provider": "QUICKBOOKS",
-            "count": len(results),
-            "accounts": results,
+            "count": len(
+                accounts
+            ),
+            "accounts": accounts,
         },
         status=status.HTTP_200_OK,
     )
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def quickbooks_category_mappings(request):
@@ -3034,7 +3516,7 @@ def save_quickbooks_category_mapping(request):
     profile = request.user.profile
 
     # ==========================================================
-    # PERMISSION
+    # 1. PERMISSION
     # ==========================================================
 
     if not (
@@ -3044,7 +3526,6 @@ def save_quickbooks_category_mapping(request):
             "can_manage_integrations",
         )
     ):
-
         return Response(
             {
                 "success": False,
@@ -3057,7 +3538,20 @@ def save_quickbooks_category_mapping(request):
         )
 
     # ==========================================================
-    # INTEGRATION
+    # 2. COMPANY CHECK
+    # ==========================================================
+
+    if not profile.company:
+        return Response(
+            {
+                "success": False,
+                "error": "Company is not assigned.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 3. FIND QUICKBOOKS INTEGRATION
     # ==========================================================
 
     integration = (
@@ -3075,25 +3569,20 @@ def save_quickbooks_category_mapping(request):
     )
 
     if not integration:
-
         return Response(
             {
                 "success": False,
-                "error": (
-                    "QuickBooks is not connected."
-                ),
+                "error": "QuickBooks is not connected.",
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     # ==========================================================
-    # REQUEST DATA
+    # 4. REQUEST DATA
     # ==========================================================
 
     zepex_category = (
-        request.data.get(
-            "zepex_category"
-        )
+        request.data.get("zepex_category")
         or ""
     ).strip().lower()
 
@@ -3105,19 +3594,15 @@ def save_quickbooks_category_mapping(request):
     ).strip()
 
     if not zepex_category:
-
         return Response(
             {
                 "success": False,
-                "error": (
-                    "zepex_category is required."
-                ),
+                "error": "zepex_category is required.",
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     if not account_id:
-
         return Response(
             {
                 "success": False,
@@ -3130,7 +3615,7 @@ def save_quickbooks_category_mapping(request):
         )
 
     # ==========================================================
-    # VERIFY ACCOUNT WITH QUICKBOOKS
+    # 5. FETCH QUICKBOOKS EXPENSE ACCOUNTS
     # ==========================================================
 
     try:
@@ -3141,17 +3626,27 @@ def save_quickbooks_category_mapping(request):
             )
         )
 
-        config = token_result[
-            "config"
-        ]
+        config = token_result["config"]
+
+        realm_id = config.get("realm_id")
+
+        if not realm_id:
+            return Response(
+                {
+                    "success": False,
+                    "error": (
+                        "QuickBooks realm ID "
+                        "is missing."
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         client = QuickBooksClient()
 
         accounts = (
             client.get_expense_accounts(
-                realm_id=config.get(
-                    "realm_id"
-                ),
+                realm_id=realm_id,
                 access_token=(
                     token_result[
                         "access_token"
@@ -3160,7 +3655,7 @@ def save_quickbooks_category_mapping(request):
             )
         )
 
-    except Exception as exc:
+    except QuickBooksIntegrationError as exc:
 
         return Response(
             {
@@ -3170,8 +3665,36 @@ def save_quickbooks_category_mapping(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    except Exception:
+        logger.exception(
+            "Unable to fetch QuickBooks accounts "
+            "while saving category mapping."
+        )
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Unable to fetch QuickBooks "
+                    "expense accounts."
+                ),
+            },
+            status=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+        )
+
     # ==========================================================
-    # FIND SELECTED ACCOUNT
+    # 6. FIND SELECTED ACCOUNT
+    #
+    # get_expense_accounts() already returns:
+    #
+    # {
+    #     "id": "...",
+    #     "name": "...",
+    #     "account_type": "...",
+    #     ...
+    # }
     # ==========================================================
 
     selected_account = next(
@@ -3179,14 +3702,13 @@ def save_quickbooks_category_mapping(request):
             account
             for account in accounts
             if str(
-                account.get("Id")
+                account.get("id")
             ) == account_id
         ),
         None,
     )
 
     if not selected_account:
-
         return Response(
             {
                 "success": False,
@@ -3199,7 +3721,7 @@ def save_quickbooks_category_mapping(request):
         )
 
     # ==========================================================
-    # SAVE / UPDATE
+    # 7. SAVE / UPDATE MAPPING
     # ==========================================================
 
     mapping, created = (
@@ -3208,33 +3730,31 @@ def save_quickbooks_category_mapping(request):
             integration=integration,
             zepex_category=zepex_category,
             defaults={
-                "quickbooks_account_id": (
-                    str(
-                        selected_account.get(
-                            "Id"
-                        )
-                    )
+                "quickbooks_account_id": str(
+                    selected_account.get("id")
                 ),
                 "quickbooks_account_name": (
-                    selected_account.get(
-                        "Name"
-                    )
+                    selected_account.get("name")
                     or ""
                 ),
                 "quickbooks_account_type": (
                     selected_account.get(
-                        "AccountType"
+                        "account_type"
                     )
                 ),
                 "quickbooks_account_sub_type": (
                     selected_account.get(
-                        "AccountSubType"
+                        "account_sub_type"
                     )
                 ),
                 "is_active": True,
             },
         )
     )
+
+    # ==========================================================
+    # 8. RESPONSE
+    # ==========================================================
 
     serializer = (
         QuickBooksCategoryMappingSerializer(
@@ -3511,33 +4031,55 @@ def export_report_quickbooks(
 
     if pending_export:
 
-        return Response(
-            {
-                "success": True,
+        # ======================================================
+        # ACTIVE PENDING JOB
+        # ======================================================
 
-                "message": (
-                    "QuickBooks export is already "
-                    "being processed."
-                ),
+        if not is_quickbooks_export_stale(
+            pending_export
+        ):
 
-                "report_id": str(
-                    report.id
-                ),
+            return Response(
+                {
+                    "success": True,
+                    "message": (
+                        "QuickBooks export is already "
+                        "being processed."
+                    ),
+                    "report_id": str(
+                        report.id
+                    ),
+                    "export_status": "PENDING",
+                    "export_record_id": str(
+                        pending_export.id
+                    ),
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
 
-                "export_status": "PENDING",
+        # ======================================================
+        # STALE PENDING JOB
+        # ======================================================
 
-                "export_record_id": str(
-                    pending_export.id
-                ),
-            },
-            status=status.HTTP_202_ACCEPTED,
+        logger.warning(
+            (
+                "Stale QuickBooks export found. "
+                "It will be queued again. "
+                "export_record=%s report=%s"
+            ),
+            pending_export.id,
+            report.id,
         )
 
-    # ==========================================================
-    # 8. CREATE PENDING EXPORT RECORD
-    # ==========================================================
+        export_record = pending_export
 
-    external_reference = (
+    else:
+
+    # ======================================================
+    # CREATE / REUSE EXPORT RECORD
+    # ======================================================
+
+        external_reference = (
         f"ZEP-RPT-{report.id}"
     )
 
@@ -3560,7 +4102,6 @@ def export_report_quickbooks(
             },
         )
     )
-
     # A previous FAILED record can be reused.
 
     export_record.status = (
@@ -4493,24 +5034,45 @@ def retry_quickbooks_export(
         export_record.status
         == QuickBooksExportRecord.STATUS_PENDING
     ):
-        return Response(
-            {
-                "success": True,
-                "message": (
-                    "QuickBooks export is already "
-                    "being processed."
-                ),
-                "report_id": str(
-                    report.id
-                ),
-                "export_status": "PENDING",
-                "export_record_id": str(
-                    export_record.id
-                ),
-            },
-            status=status.HTTP_202_ACCEPTED,
-        )
 
+        # ======================================================
+        # RECENT PENDING — DON'T CREATE DUPLICATE TASK
+        # ======================================================
+
+        if not is_quickbooks_export_stale(
+            export_record
+        ):
+
+            return Response(
+                {
+                    "success": True,
+                    "message": (
+                        "QuickBooks export is already "
+                        "being processed."
+                    ),
+                    "report_id": str(
+                        report.id
+                    ),
+                    "export_status": "PENDING",
+                    "export_record_id": str(
+                        export_record.id
+                    ),
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+    # ======================================================
+    # STALE PENDING — ALLOW RETRY
+    # ======================================================
+
+    logger.warning(
+        (
+            "Retrying stale QuickBooks export. "
+            "export_record=%s report=%s"
+        ),
+        export_record.id,
+        report.id,
+    )
     # ==========================================================
     # 9. ONLY FAILED EXPORTS REACH HERE
     # ==========================================================
@@ -5331,6 +5893,448 @@ def integration_dashboard_summary(request):
             "recent_activity": (
                 recent_activity
             ),
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def quickbooks_payment_accounts(request):
+
+    profile = request.user.profile
+
+    # ==========================================================
+    # 1. PERMISSION
+    # ==========================================================
+
+    can_view = (
+        profile.role == "COMPANY_ADMIN"
+        or has_company_permission(
+            profile,
+            "can_view_integrations",
+        )
+        or has_company_permission(
+            profile,
+            "can_manage_integrations",
+        )
+    )
+
+    if not can_view:
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "You are not allowed to "
+                    "view integrations."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # ==========================================================
+    # 2. COMPANY
+    # ==========================================================
+
+    if not profile.company:
+        return Response(
+            {
+                "success": False,
+                "error": "Company is not assigned.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 3. QUICKBOOKS INTEGRATION
+    # ==========================================================
+
+    try:
+        integration = (
+            CompanyIntegration.objects
+            .select_related("credential")
+            .get(
+                company=profile.company,
+                provider=(
+                    CompanyIntegration
+                    .PROVIDER_QUICKBOOKS
+                ),
+                is_connected=True,
+                is_active=True,
+            )
+        )
+
+    except CompanyIntegration.DoesNotExist:
+        return Response(
+            {
+                "success": False,
+                "error": "QuickBooks is not connected.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 4. FETCH PAYMENT ACCOUNTS
+    # ==========================================================
+
+    try:
+
+        token_result = (
+            get_valid_quickbooks_access_token(
+                integration=integration,
+            )
+        )
+
+        config = token_result["config"]
+
+        realm_id = config.get("realm_id")
+
+        if not realm_id:
+            return Response(
+                {
+                    "success": False,
+                    "error": (
+                        "QuickBooks realm ID "
+                        "is missing."
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        client = QuickBooksClient()
+
+        accounts = (
+            client.get_payment_accounts(
+                realm_id=realm_id,
+                access_token=(
+                    token_result["access_token"]
+                ),
+            )
+        )
+
+    except QuickBooksIntegrationError as exc:
+        return Response(
+            {
+                "success": False,
+                "error": str(exc),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    except Exception:
+        logger.exception(
+            "Unable to fetch QuickBooks payment accounts."
+        )
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Unable to fetch QuickBooks "
+                    "payment accounts."
+                ),
+            },
+            status=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+        )
+
+    # ==========================================================
+    # 5. RESPONSE
+    # ==========================================================
+
+    return Response(
+        {
+            "success": True,
+            "provider": "QUICKBOOKS",
+
+            "selected_account": {
+                "id": (
+                    integration
+                    .quickbooks_payment_account_id
+                ),
+                "name": (
+                    integration
+                    .quickbooks_payment_account_name
+                ),
+                "account_type": (
+                    integration
+                    .quickbooks_payment_account_type
+                ),
+            },
+
+            "count": len(accounts),
+
+            "accounts": accounts,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def save_quickbooks_payment_account(request):
+
+    profile = request.user.profile
+
+    # ==========================================================
+    # 1. PERMISSION
+    # ==========================================================
+
+    if not (
+        profile.role == "COMPANY_ADMIN"
+        or has_company_permission(
+            profile,
+            "can_manage_integrations",
+        )
+    ):
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "You are not allowed to "
+                    "manage integrations."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # ==========================================================
+    # 2. COMPANY
+    # ==========================================================
+
+    if not profile.company:
+        return Response(
+            {
+                "success": False,
+                "error": "Company is not assigned.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 3. QUICKBOOKS INTEGRATION
+    # ==========================================================
+
+    try:
+        integration = (
+            CompanyIntegration.objects
+            .select_related("credential")
+            .get(
+                company=profile.company,
+                provider=(
+                    CompanyIntegration
+                    .PROVIDER_QUICKBOOKS
+                ),
+                is_connected=True,
+                is_active=True,
+            )
+        )
+
+    except CompanyIntegration.DoesNotExist:
+        return Response(
+            {
+                "success": False,
+                "error": "QuickBooks is not connected.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 4. REQUEST DATA
+    # ==========================================================
+
+    account_id = (
+        request.data.get(
+            "quickbooks_account_id"
+        )
+        or ""
+    ).strip()
+
+    if not account_id:
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "quickbooks_account_id "
+                    "is required."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 5. FETCH VALID QUICKBOOKS PAYMENT ACCOUNTS
+    # ==========================================================
+
+    try:
+
+        token_result = (
+            get_valid_quickbooks_access_token(
+                integration=integration,
+            )
+        )
+
+        config = token_result["config"]
+
+        realm_id = config.get("realm_id")
+
+        if not realm_id:
+            return Response(
+                {
+                    "success": False,
+                    "error": (
+                        "QuickBooks realm ID "
+                        "is missing."
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        client = QuickBooksClient()
+
+        accounts = (
+            client.get_payment_accounts(
+                realm_id=realm_id,
+                access_token=(
+                    token_result["access_token"]
+                ),
+            )
+        )
+
+    except QuickBooksIntegrationError as exc:
+        return Response(
+            {
+                "success": False,
+                "error": str(exc),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    except Exception:
+        logger.exception(
+            "Unable to validate QuickBooks payment account."
+        )
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Unable to validate QuickBooks "
+                    "payment account."
+                ),
+            },
+            status=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+        )
+
+    # ==========================================================
+    # 6. FIND SELECTED ACCOUNT
+    # ==========================================================
+
+    selected_account = next(
+        (
+            account
+            for account in accounts
+            if str(
+                account.get("id")
+            ) == account_id
+        ),
+        None,
+    )
+
+    if not selected_account:
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Selected QuickBooks payment "
+                    "account was not found."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 7. SAVE
+    # ==========================================================
+
+    integration.quickbooks_payment_account_id = str(
+        selected_account.get("id")
+    )
+
+    integration.quickbooks_payment_account_name = (
+        selected_account.get("name")
+        or ""
+    )
+
+    integration.quickbooks_payment_account_type = (
+        selected_account.get("account_type")
+    )
+
+    integration.save(
+        update_fields=[
+            "quickbooks_payment_account_id",
+            "quickbooks_payment_account_name",
+            "quickbooks_payment_account_type",
+            "updated_at",
+        ]
+    )
+
+    # ==========================================================
+    # 8. AUDIT LOG
+    # ==========================================================
+
+    create_integration_audit_log(
+        company=profile.company,
+        integration=integration,
+        provider="QUICKBOOKS",
+        action="QUICKBOOKS_PAYMENT_ACCOUNT_UPDATED",
+        action_by=profile,
+        message=(
+            "QuickBooks payment account updated."
+        ),
+        metadata={
+            "quickbooks_account_id": (
+                integration
+                .quickbooks_payment_account_id
+            ),
+            "quickbooks_account_name": (
+                integration
+                .quickbooks_payment_account_name
+            ),
+            "quickbooks_account_type": (
+                integration
+                .quickbooks_payment_account_type
+            ),
+        },
+    )
+
+    # ==========================================================
+    # 9. RESPONSE
+    # ==========================================================
+
+    return Response(
+        {
+            "success": True,
+            "message": (
+                "QuickBooks payment account "
+                "saved successfully."
+            ),
+            "provider": "QUICKBOOKS",
+            "payment_account": {
+                "id": (
+                    integration
+                    .quickbooks_payment_account_id
+                ),
+                "name": (
+                    integration
+                    .quickbooks_payment_account_name
+                ),
+                "account_type": (
+                    integration
+                    .quickbooks_payment_account_type
+                ),
+            },
         },
         status=status.HTTP_200_OK,
     )

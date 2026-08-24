@@ -28,11 +28,32 @@ from integrations.services.bamboohr import (
 )
 
 from integrations.services.bamboohr_sync import (
-    sync_bamboohr_employees,
+    sync_bamboohr_departments,
+    sync_bamboohr_employees_only,
+    sync_bamboohr_managers,
+    sync_bamboohr_all,
 )
 
 
 logger = logging.getLogger(__name__)
+
+
+# ==============================================================
+# BAMBOOHR SYNC RESOURCES
+# ==============================================================
+
+RESOURCE_DEPARTMENTS = "DEPARTMENTS"
+RESOURCE_EMPLOYEES = "EMPLOYEES"
+RESOURCE_MANAGERS = "MANAGERS"
+RESOURCE_ALL = "ALL"
+
+
+VALID_BAMBOOHR_SYNC_RESOURCES = {
+    RESOURCE_DEPARTMENTS,
+    RESOURCE_EMPLOYEES,
+    RESOURCE_MANAGERS,
+    RESOURCE_ALL,
+}
 
 
 class IntegrationSyncError(Exception):
@@ -41,41 +62,52 @@ class IntegrationSyncError(Exception):
     """
 
 
+# ==============================================================
+# MAIN BAMBOOHR SYNC RUNNER
+# ==============================================================
+
+
 def run_bamboohr_sync(
     *,
     integration,
     trigger=IntegrationSyncLog.TRIGGER_MANUAL,
+    resource=RESOURCE_ALL,
 ):
     """
-    Run complete BambooHR -> ZepEx synchronization.
+    Run BambooHR -> ZepEx synchronization.
 
-    Supports BambooHR OAuth 2.0.
+    Supported resources:
 
-    Flow:
+        DEPARTMENTS
+        EMPLOYEES
+        MANAGERS
+        ALL
 
-        Integration
-            ↓
+    OAuth flow:
+
         Read encrypted OAuth credentials
-            ↓
+                    ↓
         Create BambooHR client
-            ↓
-        Fetch employees
-            ↓
-        If access token expired
-            ↓
-        Refresh access token
-            ↓
-        Save refreshed tokens encrypted
-            ↓
+                    ↓
+        Fetch BambooHR employees
+                    ↓
+        Access token expired?
+              ↓             ↓
+             YES            NO
+              ↓             ↓
+        Refresh token       Continue
+              ↓
+        Save new encrypted tokens
+              ↓
         Retry BambooHR request
-            ↓
-        sync_bamboohr_employees()
-            ↓
+                    ↓
+        Run requested resource sync
+                    ↓
         Update CompanyIntegration
-            ↓
-        IntegrationSyncLog
-            ↓
-        AuditLog
+                    ↓
+        Update IntegrationSyncLog
+                    ↓
+        Create AuditLog
     """
 
     # ==========================================================
@@ -83,32 +115,65 @@ def run_bamboohr_sync(
     # ==========================================================
 
     if not integration:
+
         raise IntegrationSyncError(
             "Integration is required."
         )
 
     if not integration.is_active:
+
         raise IntegrationSyncError(
             "Integration is inactive."
         )
 
     if not integration.is_connected:
+
         raise IntegrationSyncError(
             "BambooHR integration is not connected."
         )
 
     # ==========================================================
-    # 2. CREATE SYNC LOG
+    # 2. VALIDATE RESOURCE
     # ==========================================================
 
-    sync_log = IntegrationSyncLog.objects.create(
-        integration=integration,
-        trigger=trigger,
-        status=IntegrationSyncLog.STATUS_RUNNING,
+    resource = str(
+        resource or RESOURCE_ALL
+    ).strip().upper()
+
+    if (
+        resource
+        not in VALID_BAMBOOHR_SYNC_RESOURCES
+    ):
+
+        raise IntegrationSyncError(
+            (
+                "Invalid BambooHR sync resource. "
+                "Allowed resources are: "
+                "DEPARTMENTS, EMPLOYEES, "
+                "MANAGERS, ALL."
+            )
+        )
+
+    # ==========================================================
+    # 3. CREATE SYNC LOG
+    # ==========================================================
+
+    sync_log = (
+        IntegrationSyncLog.objects.create(
+            integration=integration,
+            trigger=trigger,
+            status=(
+                IntegrationSyncLog
+                .STATUS_RUNNING
+            ),
+            stats={
+                "resource": resource,
+            },
+        )
     )
 
     # ==========================================================
-    # 3. AUDIT — SYNC STARTED
+    # 4. AUDIT — SYNC STARTED
     # ==========================================================
 
     create_integration_audit_log(
@@ -118,10 +183,12 @@ def run_bamboohr_sync(
         action="BAMBOOHR_SYNC_STARTED",
         action_by=None,
         message=(
-            "BambooHR synchronization started."
+            f"BambooHR {resource.lower()} "
+            "synchronization started."
         ),
         metadata={
             "trigger": trigger,
+            "resource": resource,
             "sync_log_id": str(
                 sync_log.id
             ),
@@ -131,7 +198,7 @@ def run_bamboohr_sync(
     try:
 
         # ======================================================
-        # 4. READ CREDENTIALS
+        # 5. READ CREDENTIALS
         # ======================================================
 
         try:
@@ -173,7 +240,7 @@ def run_bamboohr_sync(
             ) from exc
 
         # ======================================================
-        # 5. VALIDATE OAUTH CONFIG
+        # 6. VALIDATE OAUTH CONFIG
         # ======================================================
 
         company_domain = (
@@ -216,7 +283,7 @@ def run_bamboohr_sync(
             )
 
         # ======================================================
-        # 6. CREATE BAMBOOHR OAUTH CLIENT
+        # 7. CREATE BAMBOOHR CLIENT
         # ======================================================
 
         client = BambooHRClient(
@@ -228,15 +295,16 @@ def run_bamboohr_sync(
             (
                 "Starting BambooHR sync. "
                 "company=%s integration=%s "
-                "trigger=%s"
+                "trigger=%s resource=%s"
             ),
             integration.company_id,
             integration.id,
             trigger,
+            resource,
         )
 
         # ======================================================
-        # 7. FETCH BAMBOOHR EMPLOYEES
+        # 8. FETCH BAMBOOHR EMPLOYEES
         # ======================================================
 
         try:
@@ -271,19 +339,23 @@ def run_bamboohr_sync(
                 )
 
             # ==================================================
-            # 7A. REFRESH ACCESS TOKEN
+            # 8A. REFRESH ACCESS TOKEN
             # ==================================================
 
             oauth_service = (
                 BambooHROAuthService(
-                    company_domain=company_domain,
+                    company_domain=(
+                        company_domain
+                    ),
                 )
             )
 
             token_data = (
                 oauth_service
                 .refresh_access_token(
-                    refresh_token=refresh_token,
+                    refresh_token=(
+                        refresh_token
+                    ),
                 )
             )
 
@@ -296,16 +368,18 @@ def run_bamboohr_sync(
 
             if not new_access_token:
 
-                raise BambooHRAuthenticationError(
-                    (
-                        "BambooHR token refresh "
-                        "did not return an "
-                        "access token."
+                raise (
+                    BambooHRAuthenticationError(
+                        (
+                            "BambooHR token refresh "
+                            "did not return an "
+                            "access token."
+                        )
                     )
                 )
 
             # ==================================================
-            # 7B. REFRESH TOKEN ROTATION
+            # 8B. REFRESH TOKEN ROTATION
             # ==================================================
 
             new_refresh_token = (
@@ -322,7 +396,7 @@ def run_bamboohr_sync(
             )
 
             # ==================================================
-            # 7C. UPDATE ENCRYPTED CONFIG
+            # 8C. UPDATE ENCRYPTED CONFIG
             # ==================================================
 
             config[
@@ -380,13 +454,16 @@ def run_bamboohr_sync(
                 )
             )
 
-            IntegrationCredential.objects.update_or_create(
-                integration=integration,
-                defaults={
-                    "encrypted_config": (
-                        encrypted_config
-                    ),
-                },
+            (
+                IntegrationCredential.objects
+                .update_or_create(
+                    integration=integration,
+                    defaults={
+                        "encrypted_config": (
+                            encrypted_config
+                        ),
+                    },
+                )
             )
 
             logger.info(
@@ -399,16 +476,18 @@ def run_bamboohr_sync(
             )
 
             # ==================================================
-            # 7D. CREATE NEW CLIENT
+            # 8D. CREATE CLIENT WITH NEW TOKEN
             # ==================================================
 
             client = BambooHRClient(
                 company_domain=company_domain,
-                access_token=new_access_token,
+                access_token=(
+                    new_access_token
+                ),
             )
 
             # ==================================================
-            # 7E. RETRY EMPLOYEE FETCH
+            # 8E. RETRY FETCH
             # ==================================================
 
             employees = (
@@ -418,24 +497,66 @@ def run_bamboohr_sync(
         logger.info(
             (
                 "Fetched %s BambooHR employees "
-                "for company=%s."
+                "for company=%s resource=%s."
             ),
-            len(
-                employees
-            ),
+            len(employees),
             integration.company_id,
+            resource,
         )
 
         # ======================================================
-        # 8. SYNC INTO ZEPEX
+        # 9. RUN REQUESTED RESOURCE SYNC
         # ======================================================
 
-        sync_result = (
-            sync_bamboohr_employees(
-                integration=integration,
-                employees=employees,
+        if resource == RESOURCE_DEPARTMENTS:
+
+            sync_result = (
+                sync_bamboohr_departments(
+                    integration=integration,
+                    employees=employees,
+                )
             )
-        )
+
+        elif resource == RESOURCE_EMPLOYEES:
+
+            sync_result = (
+                sync_bamboohr_employees_only(
+                    integration=integration,
+                    employees=employees,
+                )
+            )
+
+        elif resource == RESOURCE_MANAGERS:
+
+            sync_result = (
+                sync_bamboohr_managers(
+                    integration=integration,
+                    employees=employees,
+                )
+            )
+
+        elif resource == RESOURCE_ALL:
+
+            sync_result = (
+                sync_bamboohr_all(
+                    integration=integration,
+                    employees=employees,
+                )
+            )
+
+        else:
+
+            # Defensive fallback.
+            raise IntegrationSyncError(
+                (
+                    "Unsupported BambooHR "
+                    "sync resource."
+                )
+            )
+
+        # ======================================================
+        # 10. READ RESULT
+        # ======================================================
 
         stats = (
             sync_result.get(
@@ -452,7 +573,25 @@ def run_bamboohr_sync(
         )
 
         # ======================================================
-        # 9. UPDATE COMPANY INTEGRATION
+        # 11. CHECK SERVICE RESULT
+        # ======================================================
+
+        if not sync_result.get(
+            "success",
+            False,
+        ):
+
+            raise IntegrationSyncError(
+                (
+                    "BambooHR "
+                    f"{resource.lower()} "
+                    "synchronization did not "
+                    "complete successfully."
+                )
+            )
+
+        # ======================================================
+        # 12. UPDATE COMPANY INTEGRATION
         # ======================================================
 
         now = timezone.now()
@@ -475,12 +614,16 @@ def run_bamboohr_sync(
         )
 
         # ======================================================
-        # 10. CALCULATE SUMMARY COUNTS
+        # 13. CALCULATE CREATED COUNT
         # ======================================================
 
         records_created = (
             stats.get(
                 "users_created",
+                0,
+            )
+            + stats.get(
+                "profiles_created",
                 0,
             )
             + stats.get(
@@ -491,7 +634,19 @@ def run_bamboohr_sync(
                 "mappings_created",
                 0,
             )
+            + stats.get(
+                "managers_mapped",
+                0,
+            )
+            + stats.get(
+                "department_managers_mapped",
+                0,
+            )
         )
+
+        # ======================================================
+        # 14. CALCULATE UPDATED COUNT
+        # ======================================================
 
         records_updated = (
             stats.get(
@@ -516,6 +671,10 @@ def run_bamboohr_sync(
             )
         )
 
+        # ======================================================
+        # 15. CALCULATE SKIPPED COUNT
+        # ======================================================
+
         records_skipped = (
             stats.get(
                 "skipped",
@@ -524,15 +683,16 @@ def run_bamboohr_sync(
         )
 
         # ======================================================
-        # 11. UPDATE SYNC LOG
+        # 16. UPDATE SYNC LOG
         # ======================================================
 
         sync_log.status = (
-            IntegrationSyncLog.STATUS_SUCCESS
+            IntegrationSyncLog
+            .STATUS_SUCCESS
         )
 
-        sync_log.records_received = len(
-            employees
+        sync_log.records_received = (
+            len(employees)
         )
 
         sync_log.records_created = (
@@ -547,7 +707,10 @@ def run_bamboohr_sync(
             records_skipped
         )
 
-        sync_log.stats = stats
+        sync_log.stats = {
+            "resource": resource,
+            **stats,
+        }
 
         sync_log.errors = errors
 
@@ -570,7 +733,7 @@ def run_bamboohr_sync(
         )
 
         # ======================================================
-        # 12. AUDIT — SYNC COMPLETED
+        # 17. AUDIT — SYNC COMPLETED
         # ======================================================
 
         create_integration_audit_log(
@@ -580,11 +743,13 @@ def run_bamboohr_sync(
             action="BAMBOOHR_SYNC_COMPLETED",
             action_by=None,
             message=(
-                "BambooHR synchronization "
-                "completed successfully."
+                f"BambooHR {resource.lower()} "
+                "synchronization completed "
+                "successfully."
             ),
             metadata={
                 "trigger": trigger,
+                "resource": resource,
 
                 "sync_log_id": str(
                     sync_log.id
@@ -594,8 +759,8 @@ def run_bamboohr_sync(
                     company_domain
                 ),
 
-                "records_received": len(
-                    employees
+                "records_received": (
+                    len(employees)
                 ),
 
                 "records_created": (
@@ -618,21 +783,21 @@ def run_bamboohr_sync(
             (
                 "BambooHR sync completed. "
                 "company=%s integration=%s "
-                "received=%s created=%s "
-                "updated=%s skipped=%s"
+                "resource=%s received=%s "
+                "created=%s updated=%s "
+                "skipped=%s"
             ),
             integration.company_id,
             integration.id,
-            len(
-                employees
-            ),
+            resource,
+            len(employees),
             records_created,
             records_updated,
             records_skipped,
         )
 
         # ======================================================
-        # 13. RETURN RESULT
+        # 18. RESPONSE
         # ======================================================
 
         return {
@@ -646,11 +811,28 @@ def run_bamboohr_sync(
                 integration.provider
             ),
 
+            "resource": resource,
+
             "trigger": trigger,
 
             "last_synced_at": (
                 integration.last_synced_at
             ),
+
+            "records": {
+                "received": len(
+                    employees
+                ),
+                "created": (
+                    records_created
+                ),
+                "updated": (
+                    records_updated
+                ),
+                "skipped": (
+                    records_skipped
+                ),
+            },
 
             "stats": stats,
 
@@ -677,6 +859,7 @@ def run_bamboohr_sync(
                 "AUTHENTICATION_ERROR"
             ),
             trigger=trigger,
+            resource=resource,
         )
 
     # ==========================================================
@@ -695,6 +878,7 @@ def run_bamboohr_sync(
                 "PERMISSION_ERROR"
             ),
             trigger=trigger,
+            resource=resource,
         )
 
     # ==========================================================
@@ -713,6 +897,7 @@ def run_bamboohr_sync(
                 "CONNECTION_ERROR"
             ),
             trigger=trigger,
+            resource=resource,
         )
 
     # ==========================================================
@@ -731,10 +916,11 @@ def run_bamboohr_sync(
                 "BAMBOOHR_ERROR"
             ),
             trigger=trigger,
+            resource=resource,
         )
 
     # ==========================================================
-    # ZEPEX / CONFIGURATION FAILURE
+    # CONFIGURATION / SYNC FAILURE
     # ==========================================================
 
     except IntegrationSyncError as exc:
@@ -749,6 +935,7 @@ def run_bamboohr_sync(
                 "CONFIGURATION_ERROR"
             ),
             trigger=trigger,
+            resource=resource,
         )
 
     # ==========================================================
@@ -760,10 +947,12 @@ def run_bamboohr_sync(
         logger.exception(
             (
                 "Unexpected BambooHR sync failure. "
-                "integration=%s company=%s"
+                "integration=%s company=%s "
+                "resource=%s"
             ),
             integration.id,
             integration.company_id,
+            resource,
         )
 
         return _handle_sync_failure(
@@ -776,7 +965,14 @@ def run_bamboohr_sync(
                 "INTERNAL_ERROR"
             ),
             trigger=trigger,
+            resource=resource,
         )
+
+
+# ==============================================================
+# FAILURE HANDLER
+# ==============================================================
+
 
 def _handle_sync_failure(
     *,
@@ -785,16 +981,14 @@ def _handle_sync_failure(
     error,
     error_type,
     trigger=None,
+    resource=None,
 ):
     """
-    Store a failed synchronization result in:
+    Store failed synchronization result in:
 
     - CompanyIntegration
     - IntegrationSyncLog
     - AuditLog
-
-    This keeps manual and scheduled sync behaviour
-    consistent.
     """
 
     now = timezone.now()
@@ -803,10 +997,12 @@ def _handle_sync_failure(
         (
             "Integration sync failed. "
             "company=%s integration=%s "
-            "error_type=%s error=%s"
+            "resource=%s error_type=%s "
+            "error=%s"
         ),
         integration.company_id,
         integration.id,
+        resource,
         error_type,
         error,
     )
@@ -836,31 +1032,40 @@ def _handle_sync_failure(
     # ==========================================================
 
     sync_log.status = (
-        IntegrationSyncLog.STATUS_FAILED
+        IntegrationSyncLog
+        .STATUS_FAILED
     )
 
     sync_log.error_message = (
         error
     )
 
+    sync_log.stats = {
+        **(
+            sync_log.stats
+            if isinstance(
+                sync_log.stats,
+                dict,
+            )
+            else {}
+        ),
+        "resource": resource,
+    }
+
     sync_log.errors = [
         {
-            "type": (
-                error_type
-            ),
-            "message": (
-                error
-            ),
+            "type": error_type,
+            "resource": resource,
+            "message": error,
         }
     ]
 
-    sync_log.completed_at = (
-        now
-    )
+    sync_log.completed_at = now
 
     sync_log.save(
         update_fields=[
             "status",
+            "stats",
             "error_message",
             "errors",
             "completed_at",
@@ -878,16 +1083,22 @@ def _handle_sync_failure(
         action="BAMBOOHR_SYNC_FAILED",
         action_by=None,
         message=(
-            "BambooHR synchronization failed."
+            f"BambooHR "
+            f"{str(resource or 'ALL').lower()} "
+            "synchronization failed."
         ),
         metadata={
             "trigger": trigger,
+            "resource": resource,
+
             "sync_log_id": str(
                 sync_log.id
             ),
+
             "error_type": (
                 error_type
             ),
+
             "error": (
                 error
             ),
@@ -908,6 +1119,8 @@ def _handle_sync_failure(
         "provider": (
             integration.provider
         ),
+
+        "resource": resource,
 
         "error_type": (
             error_type

@@ -9,14 +9,15 @@ from .views import (
     
     connect_bamboohr,
     preview_bamboohr_employees,
-    sync_bamboohr,
+    
     bamboohr_status,
     bamboohr_sync_history,
-    disconnect_bamboohr,
+    
 
     # QuickBooks
     connect_quickbooks,
     quickbooks_callback,
+    quickbooks_payment_accounts,
     quickbooks_status,
     quickbooks_accounts,
     quickbooks_category_mappings,
@@ -31,6 +32,11 @@ from .views import (
     # Integration dashboard/activity
     integration_activity,
     integration_dashboard_summary,
+    save_quickbooks_payment_account,
+    sync_bamboohr_all_view,
+    sync_bamboohr_departments_view,
+    sync_bamboohr_employees_view,
+    sync_bamboohr_managers_view,
 )
 
 
@@ -68,7 +74,29 @@ urlpatterns = [
     # BAMBOOHR
     # ==========================================================
 
-    
+    path(
+    "bamboohr/sync/departments/",
+    sync_bamboohr_departments_view,
+    name="sync-bamboohr-departments",
+),
+
+    path(
+    "bamboohr/sync/employees/",
+    sync_bamboohr_employees_view,
+    name="sync-bamboohr-employees",
+),
+
+    path(
+    "bamboohr/sync/managers/",
+    sync_bamboohr_managers_view,
+    name="sync-bamboohr-managers",
+),
+
+    path(
+    "bamboohr/sync/all/",
+    sync_bamboohr_all_view,
+    name="sync-bamboohr-all",
+),
 
     path(
         "bamboohr/connect/",
@@ -82,12 +110,7 @@ urlpatterns = [
         name="preview-bamboohr-employees",
     ),
 
-    path(
-        "bamboohr/sync/",
-        sync_bamboohr,
-        name="sync-bamboohr",
-    ),
-
+   
     path(
         "bamboohr/status/",
         bamboohr_status,
@@ -100,11 +123,6 @@ urlpatterns = [
         name="bamboohr-sync-history",
     ),
 
-    path(
-        "bamboohr/disconnect/",
-        disconnect_bamboohr,
-        name="disconnect-bamboohr",
-    ),
 
     # ==========================================================
     # QUICKBOOKS CONNECTION
@@ -193,5 +211,16 @@ urlpatterns = [
     "bamboohr/callback/",
     bamboohr_callback,
     name="bamboohr-callback",
+),
+ path(
+    "quickbooks/payment-accounts/",
+    quickbooks_payment_accounts,
+    name="quickbooks-payment-accounts",
+),
+
+path(
+    "quickbooks/payment-account/",
+    save_quickbooks_payment_account,
+    name="save-quickbooks-payment-account",
 ),
 ]

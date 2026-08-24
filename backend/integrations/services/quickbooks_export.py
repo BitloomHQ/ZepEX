@@ -925,12 +925,67 @@ def export_report_to_quickbooks(
         f"{external_reference}"
     )
 
+    # ======================================================
+    # 11A. QUICKBOOKS PAYMENT ACCOUNT
+    # ======================================================
+
+    payment_account_id = (
+        integration.quickbooks_payment_account_id
+        or ""
+    ).strip()
+
+    payment_account_name = (
+        integration.quickbooks_payment_account_name
+        or ""
+    ).strip()
+
+    payment_account_type = (
+        integration.quickbooks_payment_account_type
+        or ""
+    ).strip()
+
+    if not payment_account_id:
+        raise QuickBooksExportError(
+            (
+                "QuickBooks payment account is not configured. "
+                "Select a Bank or Credit Card account before "
+                "exporting expense reports."
+            )
+        )
+
+    if payment_account_type not in (
+        "Bank",
+        "Credit Card",
+    ):
+        raise QuickBooksExportError(
+            (
+                "Configured QuickBooks payment account "
+                "must be a Bank or Credit Card account."
+            )
+        )
+
+    # ======================================================
+    # 11B. BUILD QUICKBOOKS PURCHASE
+    # ======================================================
+
+    payment_type = (
+        "CreditCard"
+        if payment_account_type == "Credit Card"
+        else "Cash"
+    )
+
     purchase_data = {
-        "PaymentType": "Cash",
+        "PaymentType": payment_type,
+
+        "AccountRef": {
+            "value": payment_account_id,
+            "name": payment_account_name,
+        },
+
         "Line": purchase_lines,
+
         "PrivateNote": memo[:4000],
     }
-
     # ------------------------------------------------------
     # Paid date becomes QuickBooks transaction date
     # ------------------------------------------------------
@@ -1062,6 +1117,12 @@ def export_report_to_quickbooks(
         "line_count": len(
             purchase_lines
         ),
+        "payment_account": {
+            "id": payment_account_id,
+            "name": payment_account_name,
+            "account_type": payment_account_type,
+            "payment_type": payment_type,
+        },
     }
 
     export_record.exported_at = (
@@ -1082,28 +1143,40 @@ def export_report_to_quickbooks(
         ]
     )
     create_integration_audit_log(
-    company=company,
-    integration=integration,
-    provider="QUICKBOOKS",
-    action="QUICKBOOKS_EXPORT_FAILED",
-    action_by=None,
-    message=(
-        "Expense report export to "
-        "QuickBooks failed."
-    ),
-    metadata={
-        "report_id": str(
-            report.id
+        company=company,
+        integration=integration,
+        provider="QUICKBOOKS",
+        action="QUICKBOOKS_EXPORT_SUCCESS",
+        action_by=None,
+        message=(
+            "Expense report exported to "
+            "QuickBooks successfully."
         ),
-        "export_record_id": str(
-            export_record.id
-        ),
-        "stage": "QUICKBOOKS_API",
-        "error": str(
-            exc
-        ),
-    },
-)
+        metadata={
+            "report_id": str(
+                report.id
+            ),
+            "export_record_id": str(
+                export_record.id
+            ),
+            "quickbooks_transaction_id": str(
+                transaction_id
+            ),
+            "amount": str(
+                export_total
+            ),
+            "currency": export_currency,
+            "payment_account_id": (
+                payment_account_id
+            ),
+            "payment_account_name": (
+                payment_account_name
+            ),
+            "payment_account_type": (
+                payment_account_type
+            ),
+        },
+    )
     logger.info(
         (
             "QuickBooks export completed. "

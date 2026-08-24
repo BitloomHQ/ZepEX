@@ -370,21 +370,6 @@ elif EMAIL_BACKEND is None:
 
 
 
-CELERY_TASK_ALWAYS_EAGER = os.getenv(
-    "CELERY_TASK_ALWAYS_EAGER",
-    "True" if DEBUG else "False",
-) == "True"
-
-CELERY_TASK_EAGER_PROPAGATES = True
-from celery.schedules import crontab
-
-CELERY_BEAT_SCHEDULE = {
-    "scheduled-external-database-sync-every-night": {
-        "task": "tenants.tasks.scheduled_external_database_sync",
-        "schedule": crontab(hour=2, minute=0),
-    },
-}
-
 SPECTACULAR_SETTINGS = {
     "TITLE": "ZepEx API",
     "DESCRIPTION": (
@@ -399,16 +384,6 @@ SPECTACULAR_SETTINGS = {
         "persistAuthorization": True,
     },
 }
-
-CELERY_BROKER_URL = os.getenv(
-    "CELERY_BROKER_URL",
-    "redis://localhost:6379/0"
-)
-
-CELERY_RESULT_BACKEND = os.getenv(
-    "CELERY_RESULT_BACKEND",
-    "redis://localhost:6379/0"
-)
 
 FRONTEND_LOGIN_URL = os.getenv(
     "FRONTEND_LOGIN_URL",
@@ -538,6 +513,11 @@ CELERY_BEAT_SCHEDULE = {
         "task": "tenants.tasks.scheduled_external_database_sync",
         "schedule": crontab(hour=2, minute=0),
     },
+
+    "scheduled-bamboohr-sync-every-night": {
+        "task": "integrations.tasks.sync_all_bamboohr_integrations",
+        "schedule": crontab(hour=3, minute=0),
+    },
 }
 
 # ==========================================================
@@ -569,9 +549,6 @@ ADP_CLIENT_SECRET = os.getenv("ADP_CLIENT_SECRET")
 WORKDAY_CLIENT_ID = os.getenv("WORKDAY_CLIENT_ID")
 WORKDAY_CLIENT_SECRET = os.getenv("WORKDAY_CLIENT_SECRET")
 
-QUICKBOOKS_CLIENT_ID = os.getenv("QUICKBOOKS_CLIENT_ID")
-QUICKBOOKS_CLIENT_SECRET = os.getenv("QUICKBOOKS_CLIENT_SECRET")
-
 IMAP_ENCRYPTION_KEY = os.getenv(
     "IMAP_ENCRYPTION_KEY"
 )
@@ -579,11 +556,6 @@ IMAP_ENCRYPTION_KEY = os.getenv(
 INTEGRATION_ENCRYPTION_KEY = os.getenv(
     "INTEGRATION_ENCRYPTION_KEY"
 )
-CELERY_BEAT_SCHEDULER = (
-    "django_celery_beat.schedulers:"
-    "DatabaseScheduler"
-)
-
 QUICKBOOKS_CLIENT_ID = os.getenv(
     "QUICKBOOKS_CLIENT_ID"
 )

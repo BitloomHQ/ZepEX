@@ -552,6 +552,81 @@ class QuickBooksClient:
                 "minorversion": "75",
             },
         )
+    def get_expense_accounts(
+        self,
+        *,
+        realm_id,
+        access_token,
+    ):
+        """
+        Fetch active QuickBooks expense accounts that can
+        be used for ZepEx category-to-account mapping.
+
+        Examples:
+        - Travel
+        - Meals and Entertainment
+        - Office Expenses
+        - Automobile
+        """
+
+        if not realm_id:
+            raise ValueError(
+                "QuickBooks realm ID is required."
+            )
+
+        query = (
+            "select * from Account "
+            "where Active = true "
+            "and AccountType = 'Expense' "
+            "order by Name"
+        )
+
+        response = self.request(
+            "GET",
+            f"v3/company/{realm_id}/query",
+            access_token=access_token,
+            params={
+                "query": query,
+                "minorversion": "75",
+            },
+        )
+
+        accounts = (
+            response
+            .get("QueryResponse", {})
+            .get("Account", [])
+        )
+
+        results = []
+
+        for account in accounts:
+            results.append(
+                {
+                    "id": account.get("Id"),
+                    "name": account.get("Name"),
+                    "fully_qualified_name": (
+                        account.get(
+                            "FullyQualifiedName"
+                        )
+                    ),
+                    "account_type": (
+                        account.get(
+                            "AccountType"
+                        )
+                    ),
+                    "account_sub_type": (
+                        account.get(
+                            "AccountSubType"
+                        )
+                    ),
+                    "active": account.get(
+                        "Active",
+                        True,
+                    ),
+                }
+            )
+
+        return results
 
     def create_purchase(
         self,
@@ -581,3 +656,79 @@ class QuickBooksClient:
             access_token=access_token,
             json=purchase_data,
         )
+
+    def get_payment_accounts(
+        self,
+        *,
+        realm_id,
+        access_token,
+    ):
+        """
+        Fetch active QuickBooks payment accounts
+        that can be used as the source account
+        for Purchase transactions.
+
+        Includes:
+        - Bank
+        - Credit Card
+        """
+
+        if not realm_id:
+            raise ValueError(
+                "QuickBooks realm ID is required."
+            )
+
+        query = (
+            "select * from Account "
+            "where Active = true "
+            "and AccountType in ('Bank', 'Credit Card') "
+            "order by Name"
+        )
+
+        response = self.request(
+            "GET",
+            f"v3/company/{realm_id}/query",
+            access_token=access_token,
+            params={
+                "query": query,
+                "minorversion": "75",
+            },
+        )
+
+        accounts = (
+            response
+            .get("QueryResponse", {})
+            .get("Account", [])
+        )
+
+        results = []
+
+        for account in accounts:
+
+            results.append(
+                {
+                    "id": account.get("Id"),
+                    "name": account.get("Name"),
+                    "fully_qualified_name": (
+                        account.get(
+                            "FullyQualifiedName"
+                        )
+                    ),
+                    "account_type": (
+                        account.get(
+                            "AccountType"
+                        )
+                    ),
+                    "account_sub_type": (
+                        account.get(
+                            "AccountSubType"
+                        )
+                    ),
+                    "active": account.get(
+                        "Active",
+                        True,
+                    ),
+                }
+            )
+
+        return results

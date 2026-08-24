@@ -2,6 +2,8 @@ import logging
 
 from celery import shared_task
 
+from tenants.models import Company
+
 from integrations.models import (
     CompanyIntegration,
     IntegrationSyncLog,
@@ -9,15 +11,27 @@ from integrations.models import (
 
 from integrations.services.integration_sync import (
     run_bamboohr_sync,
+    RESOURCE_ALL,
+)
+
+from .services.quickbooks_export import (
+    export_report_to_quickbooks,
+    QuickBooksExportError,
 )
 
 
 logger = logging.getLogger(__name__)
 
 
+# ==============================================================
+# BAMBOOHR TASKS
+# ==============================================================
+
+
 @shared_task(
     bind=True,
     max_retries=3,
+    default_retry_delay=60,
 )
 def sync_single_bamboohr_integration(
     self,
@@ -26,8 +40,21 @@ def sync_single_bamboohr_integration(
     """
     Synchronize one BambooHR integration.
 
-    Used by the scheduled company-wide BambooHR sync.
+    Scheduled sync always performs a complete sync:
+
+        Departments
+            ↓
+        Employees
+            ↓
+        Managers
+
+    OAuth token refresh is handled inside
+    run_bamboohr_sync().
     """
+
+    # ==========================================================
+    # 1. FIND ACTIVE BAMBOOHR INTEGRATION
+    # ==========================================================
 
     try:
 
@@ -68,6 +95,10 @@ def sync_single_bamboohr_integration(
             ),
         }
 
+    # ==========================================================
+    # 2. RUN COMPLETE BAMBOOHR SYNC
+    # ==========================================================
+
     try:
 
         result = run_bamboohr_sync(
@@ -76,18 +107,28 @@ def sync_single_bamboohr_integration(
                 IntegrationSyncLog
                 .TRIGGER_SCHEDULED
             ),
+            resource=RESOURCE_ALL,
         )
 
         logger.info(
             (
                 "Scheduled BambooHR sync finished. "
-                "integration=%s success=%s"
+                "integration=%s "
+                "resource=%s "
+                "success=%s"
             ),
             integration.id,
-            result.get("success"),
+            RESOURCE_ALL,
+            result.get(
+                "success"
+            ),
         )
 
         return result
+
+    # ==========================================================
+    # 3. UNEXPECTED FAILURE
+    # ==========================================================
 
     except Exception as exc:
 
@@ -101,15 +142,21 @@ def sync_single_bamboohr_integration(
 
         raise self.retry(
             exc=exc,
-            countdown=60,
         )
+
+
+# ==============================================================
+# BAMBOOHR — QUEUE ALL CONNECTED COMPANIES
+# ==============================================================
 
 
 @shared_task
 def sync_all_bamboohr_integrations():
     """
-    Queue synchronization for every active,
-    connected BambooHR integration.
+    Queue complete BambooHR synchronization for
+    every connected and active BambooHR integration.
+
+    Each integration is queued independently.
     """
 
     integrations = (
@@ -137,35 +184,31 @@ def sync_all_bamboohr_integrations():
     for integration_id in integration_ids:
 
         sync_single_bamboohr_integration.delay(
-            str(integration_id)
+            str(
+                integration_id
+            )
         )
 
         queued += 1
 
     logger.info(
-        "Queued %s BambooHR integration sync(s).",
+        (
+            "Queued %s BambooHR "
+            "integration sync(s)."
+        ),
         queued,
     )
 
     return {
         "success": True,
+        "resource": RESOURCE_ALL,
         "queued": queued,
     }
 
 
-import logging
-
-from celery import shared_task
-
-from tenants.models import Company
-
-from .services.quickbooks_export import (
-    export_report_to_quickbooks,
-    QuickBooksExportError,
-)
-
-
-logger = logging.getLogger(__name__)
+# ==============================================================
+# QUICKBOOKS TASKS
+# ==============================================================
 
 
 @shared_task(
@@ -182,8 +225,8 @@ def export_report_to_quickbooks_task(
     Background Celery task for exporting a PAID
     ZepEx ExpenseReport to QuickBooks.
 
-    The actual QuickBooks business logic remains
-    inside export_report_to_quickbooks().
+    Business logic remains inside
+    export_report_to_quickbooks().
     """
 
     logger.info(
@@ -196,13 +239,15 @@ def export_report_to_quickbooks_task(
     )
 
     # ==========================================================
-    # 1. COMPANY
+    # 1. FIND COMPANY
     # ==========================================================
 
     try:
 
-        company = Company.objects.get(
-            id=company_id,
+        company = (
+            Company.objects.get(
+                id=company_id,
+            )
         )
 
     except Company.DoesNotExist:
@@ -219,18 +264,22 @@ def export_report_to_quickbooks_task(
 
         return {
             "success": False,
-            "error": "Company not found.",
+            "error": (
+                "Company not found."
+            ),
         }
 
     # ==========================================================
-    # 2. RUN EXISTING EXPORT SERVICE
+    # 2. RUN QUICKBOOKS EXPORT
     # ==========================================================
 
     try:
 
-        result = export_report_to_quickbooks(
-            report_id=report_id,
-            company=company,
+        result = (
+            export_report_to_quickbooks(
+                report_id=report_id,
+                company=company,
+            )
         )
 
         logger.info(
@@ -254,23 +303,28 @@ def export_report_to_quickbooks_task(
         logger.warning(
             (
                 "QuickBooks export rejected. "
-                "company=%s report=%s error=%s"
+                "company=%s report=%s "
+                "error=%s"
             ),
             company_id,
             report_id,
-            str(exc),
+            str(
+                exc
+            ),
         )
 
-        # Do NOT retry business errors such as:
+        # Do not retry business errors such as:
         #
-        # - report not PAID
-        # - missing mappings
-        # - already exported
+        # - Report is not PAID
+        # - Missing category mappings
+        # - Already exported
         # - QuickBooks disconnected
 
         return {
             "success": False,
-            "error": str(exc),
+            "error": str(
+                exc
+            ),
         }
 
     # ==========================================================
@@ -281,15 +335,14 @@ def export_report_to_quickbooks_task(
 
         logger.exception(
             (
-                "Unexpected QuickBooks background "
-                "export error. "
+                "Unexpected QuickBooks "
+                "background export error. "
                 "company=%s report=%s"
             ),
             company_id,
             report_id,
         )
 
-        # Retry unexpected/network-type failures.
         try:
 
             raise self.retry(
@@ -311,7 +364,7 @@ def export_report_to_quickbooks_task(
             return {
                 "success": False,
                 "error": (
-                    "QuickBooks export failed after "
-                    "multiple attempts."
+                    "QuickBooks export failed "
+                    "after multiple attempts."
                 ),
             }
