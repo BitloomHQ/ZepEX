@@ -1,4 +1,5 @@
 from .models import CompanyRole
+from .role_schema import company_role_flag
 
 DEFAULT_COMPANY_ROLE_TEMPLATES = [
     {
@@ -66,18 +67,18 @@ def permissions_for_profile(profile):
         "can_submit_expense": role.can_submit_expense,
         "can_approve_expense": role.can_approve_expense,
         "can_mark_paid": role.can_mark_paid,
-        "can_manage_company": role.can_manage_company,
-        "can_manage_roles": role.can_manage_roles,
-        "can_manage_employees": role.can_manage_employees,
-        "can_manage_departments": role.can_manage_departments,
-        "can_manage_users": role.can_manage_employees,
-        "can_manage_policy": role.can_manage_policy,
-        "can_manage_workflow": role.can_manage_workflow,
-        "can_view_company_reports": role.can_view_company_reports,
-        "can_view_all_reports": role.can_view_company_reports,
+        "can_manage_company": company_role_flag(role, "can_manage_company"),
+        "can_manage_roles": company_role_flag(role, "can_manage_roles"),
+        "can_manage_employees": company_role_flag(role, "can_manage_employees"),
+        "can_manage_departments": company_role_flag(role, "can_manage_departments"),
+        "can_manage_users": company_role_flag(role, "can_manage_employees"),
+        "can_manage_policy": company_role_flag(role, "can_manage_policy"),
+        "can_manage_workflow": company_role_flag(role, "can_manage_workflow"),
+        "can_view_company_reports": company_role_flag(role, "can_view_company_reports"),
+        "can_view_all_reports": company_role_flag(role, "can_view_company_reports"),
         "can_view_audit_logs": False,
-        "can_manage_integrations": role.can_manage_integrations,
-        "can_view_integrations": role.can_view_integrations,
+        "can_manage_integrations": company_role_flag(role, "can_manage_integrations"),
+        "can_view_integrations": company_role_flag(role, "can_view_integrations"),
     }
 
 

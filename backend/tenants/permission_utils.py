@@ -1,3 +1,6 @@
+from tenants.role_schema import company_role_flag
+
+
 def has_company_permission(
     profile,
     permission_name,
@@ -15,13 +18,4 @@ def has_company_permission(
     if profile.role == "COMPANY_ADMIN":
         return True
 
-    if not profile.company_role:
-        return False
-
-    return bool(
-        getattr(
-            profile.company_role,
-            permission_name,
-            False,
-        )
-    )
+    return company_role_flag(profile.company_role, permission_name)

@@ -81,6 +81,12 @@ from .encryption_services import (
     decrypt_integration_config,
 )
 
+from .schema import (
+    get_company_integration,
+    integration_has_credentials,
+    list_company_integrations,
+)
+
 
 # ==========================================================
 # BAMBOOHR
@@ -225,17 +231,8 @@ def integration_list(request):
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    integrations = (
-        CompanyIntegration.objects
-        .filter(
-            company=profile.company,
-        )
-        .select_related(
-            "company",
-        )
-        .order_by(
-            "provider",
-        )
+    integrations = list_company_integrations(
+        profile.company,
     )
 
     serializer = CompanyIntegrationSerializer(
@@ -246,7 +243,7 @@ def integration_list(request):
     return Response(
         {
             "success": True,
-            "count": integrations.count(),
+            "count": len(integrations),
             "results": serializer.data,
         },
         status=status.HTTP_200_OK,
@@ -271,11 +268,8 @@ def integration_provider_catalog(request):
 
     connected_map = {
         integration.provider: integration
-        for integration in (
-            CompanyIntegration.objects
-            .filter(
-                company=profile.company,
-            )
+        for integration in list_company_integrations(
+            profile.company,
         )
     }
 
@@ -292,13 +286,8 @@ def integration_provider_catalog(request):
                 "provider": value,
                 "provider_name": label,
 
-                "configured": bool(
+                "configured": integration_has_credentials(
                     integration
-                    and hasattr(
-                        integration,
-                        "credential",
-                    )
-                    and integration.credential.encrypted_config
                 ),
 
                 "is_connected": (
@@ -2349,17 +2338,13 @@ def connect_quickbooks(request):
     # 3. CHECK EXISTING CONNECTION
     # ==========================================================
 
-    existing = (
-        CompanyIntegration.objects
-        .filter(
-            company=profile.company,
-            provider=(
-                CompanyIntegration
-                .PROVIDER_QUICKBOOKS
-            ),
-            is_connected=True,
-        )
-        .first()
+    existing = get_company_integration(
+        profile.company,
+        provider=(
+            CompanyIntegration
+            .PROVIDER_QUICKBOOKS
+        ),
+        is_connected=True,
     )
 
     if existing:
@@ -3153,19 +3138,12 @@ def quickbooks_status(request):
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    integration = (
-        CompanyIntegration.objects
-        .filter(
-            company=profile.company,
-            provider=(
-                CompanyIntegration
-                .PROVIDER_QUICKBOOKS
-            ),
-        )
-        .select_related(
-            "credential"
-        )
-        .first()
+    integration = get_company_integration(
+        profile.company,
+        provider=(
+            CompanyIntegration
+            .PROVIDER_QUICKBOOKS
+        ),
     )
 
     if not integration:

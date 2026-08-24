@@ -32,13 +32,13 @@ from tenants.models import (
 )
 
 from expenses.models import ApprovalWorkflow, ApprovalWorkflowStep, ExpenseReport
+from tenants.role_schema import defer_missing_company_role_fields
 from tenants.serializers import (
     CompanySerializer,
     DepartmentSerializer,
     UserProfileSerializer,
     CompanyRoleSerializer,
     PolicyCategoryRuleSerializer,
-    
 )
 from .serializers import CompanyRegistrationRequestSerializer, PlatformSettingsSerializer
 from expenses.serializers import ApprovalWorkflowSerializer, ExpenseReportSerializer
@@ -948,12 +948,15 @@ def platform_company_details(request, company_id):
         )
 
     if section in ["all", "employees"]:
-        employees = UserProfile.objects.select_related(
+        employees = defer_missing_company_role_fields(
+            UserProfile.objects.select_related(
             "user",
             "department",
             "company_role"
         ).filter(
             company=company
+        ),
+            prefix="company_role__",
         )
 
         if search:
@@ -988,8 +991,10 @@ def platform_company_details(request, company_id):
         )
 
     if section in ["all", "roles"]:
-        roles = CompanyRole.objects.filter(
+        roles = defer_missing_company_role_fields(
+            CompanyRole.objects.filter(
             company=company
+        )
         )
 
         if search:

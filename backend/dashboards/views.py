@@ -393,6 +393,7 @@ def approver_dashboard(request):
 from expenses.report_utils import get_reports_awaiting_payment
 from expenses.models import ExpenseReport, ApprovalWorkflow
 from tenants.models import CompanyRole
+from tenants.role_schema import defer_missing_company_role_fields
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -643,12 +644,15 @@ def company_admin_dashboard(request):
 
     departments = Department.objects.filter(company=company)
 
-    users = UserProfile.objects.select_related(
-        "user",
-        "department",
-        "company_role",
-    ).filter(
-        company=company
+    users = defer_missing_company_role_fields(
+        UserProfile.objects.select_related(
+            "user",
+            "department",
+            "company_role",
+        ).filter(
+            company=company
+        ),
+        prefix="company_role__",
     )
 
     employees = users.filter(
@@ -667,8 +671,10 @@ def company_admin_dashboard(request):
         company=company
     )
 
-    company_roles = CompanyRole.objects.filter(
-        company=company
+    company_roles = defer_missing_company_role_fields(
+        CompanyRole.objects.filter(
+            company=company
+        )
     )
 
     workflows = ApprovalWorkflow.objects.filter(
@@ -748,13 +754,17 @@ def company_admin_dashboard(request):
         total=Sum("total_amount")
     ).order_by("-total")
 
-    category_wise_spend = ExpenseLineItem.objects.filter(
-        receipt__report__company=company
-    ).values(
-        "category"
-    ).annotate(
-        total=Sum("amount")
-    ).order_by("-total")
+    try:
+        category_wise_spend = ExpenseLineItem.objects.filter(
+            receipt__report__company=company
+        ).values(
+            "category"
+        ).annotate(
+            total=Sum("amount")
+        ).order_by("-total")
+        list(category_wise_spend)
+    except Exception:
+        category_wise_spend = []
 
     recent_reports = reports.select_related(
         "employee",

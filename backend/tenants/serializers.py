@@ -3,6 +3,7 @@ from rest_framework import serializers
 import uuid
 
 from .media_utils import profile_picture_url
+from .role_schema import missing_company_role_columns
 from .models import (
     Company,
     CompanyExchangeRate,
@@ -102,6 +103,11 @@ class CompanyRoleSerializer(serializers.ModelSerializer):
             "id",
             "created_at",
         ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for name in missing_company_role_columns():
+            self.fields.pop(name, None)
 
     def validate_name(self, value):
         name = value.strip()
@@ -1042,6 +1048,12 @@ class CompanyRoleUpdateSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id",
         ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for name in missing_company_role_columns():
+            self.fields.pop(name, None)
+
 
 class EmployeeUpdateSerializer(serializers.ModelSerializer):
 

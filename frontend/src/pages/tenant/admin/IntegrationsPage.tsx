@@ -75,14 +75,33 @@ export function IntegrationsPage() {
     setLoading(true)
     setError('')
     try {
-      const [catalogRes, statusRes] = await Promise.all([
+      const [catalogResult, statusResult] = await Promise.allSettled([
         listIntegrationProviders(),
         getQuickBooksStatus(),
       ])
-      setProviders(catalogRes.data.providers ?? [])
-      setStatus(statusRes.data)
 
-      if (!statusRes.data.connected) {
+      if (catalogResult.status === 'fulfilled') {
+        setProviders(catalogResult.value.data.providers ?? [])
+      } else {
+        setProviders([])
+        setError(getApiErrorMessage(catalogResult.reason))
+      }
+
+      if (statusResult.status === 'fulfilled') {
+        setStatus(statusResult.value.data)
+      } else {
+        setStatus({
+          success: false,
+          provider: 'QUICKBOOKS',
+          connected: false,
+        })
+        setError((current) => current || getApiErrorMessage(statusResult.reason))
+      }
+
+      const connected =
+        statusResult.status === 'fulfilled' && Boolean(statusResult.value.data.connected)
+
+      if (!connected) {
         setAccounts([])
         setMappings([])
         setPaymentAccounts([])

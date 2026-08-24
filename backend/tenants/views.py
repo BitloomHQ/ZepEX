@@ -38,6 +38,7 @@ from .serializers import (
     EmployeeCreateSerializer,
     CompanyRoleSerializer,
 )
+from .role_schema import defer_missing_company_role_fields
 from .permissions import IsCompanyAdmin
 from .models import ExternalDatabaseConfig
 from .serializers import ExternalDatabaseConfigSerializer
@@ -378,12 +379,15 @@ def list_employees(request):
     role = request.GET.get("role")
     company_role_id = request.GET.get("company_role_id")
 
-    employees = UserProfile.objects.select_related(
-        "user",
-        "department",
-        "company_role"
-    ).filter(
-        company=request.user.profile.company
+    employees = defer_missing_company_role_fields(
+        UserProfile.objects.select_related(
+            "user",
+            "department",
+            "company_role"
+        ).filter(
+            company=request.user.profile.company
+        ),
+        prefix="company_role__",
     )
 
     if search:
@@ -1807,9 +1811,11 @@ def company_roles(request):
     search = request.GET.get("search")
     can_approve_expense = request.GET.get("can_approve_expense")
 
-    roles = CompanyRole.objects.filter(
-        company=profile.company,
-        is_active=True
+    roles = defer_missing_company_role_fields(
+        CompanyRole.objects.filter(
+            company=profile.company,
+            is_active=True
+        )
     )
 
     if search:
