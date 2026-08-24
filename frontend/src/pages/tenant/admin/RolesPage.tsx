@@ -179,6 +179,8 @@ export function RolesPage() {
       can_manage_policy: Boolean(role.can_manage_policy),
       can_manage_workflow: Boolean(role.can_manage_workflow),
       can_view_company_reports: Boolean(role.can_view_company_reports),
+      can_manage_integrations: Boolean(role.can_manage_integrations),
+      can_view_integrations: Boolean(role.can_view_integrations),
     })
     setError('')
     setEditOpen(true)
