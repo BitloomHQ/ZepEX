@@ -8,6 +8,7 @@ import {
   ScrollText,
   Settings,
   Shield,
+  Plug,
   UserCog,
   Users,
 } from 'lucide-react'
@@ -23,6 +24,7 @@ export const adminNavBase: NavItem[] = [
   { label: 'Reports', to: '/admin/reports', icon: ClipboardList },
   { label: 'Expense reports', to: '/expense-reports', icon: PieChart },
   { label: 'Settings', to: '/admin/settings', icon: Settings },
+  { label: 'Integrations', to: '/admin/integrations', icon: Plug },
   { label: 'Audit Logs', to: '/admin/audit-logs', icon: ScrollText },
 ]
 
@@ -57,6 +59,8 @@ function canSeeAdminNavItem(user: User | null, to: string) {
       )
     case '/admin/settings':
       return hasFlag(user, 'can_manage_company') || hasFlag(user, 'can_manage_policy')
+    case '/admin/integrations':
+      return hasFlag(user, 'can_manage_integrations') || hasFlag(user, 'can_view_integrations')
     case '/admin/audit-logs':
       return hasFlag(user, 'can_view_audit_logs')
     default:

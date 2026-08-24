@@ -225,6 +225,8 @@ export const createCompanyRole = (data: {
   can_manage_policy?: boolean
   can_manage_workflow?: boolean
   can_view_company_reports?: boolean
+  can_manage_integrations?: boolean
+  can_view_integrations?: boolean
 }) => api.post('/tenants/roles/create/', data)
 
 export const updateCompanyRole = (
@@ -242,6 +244,8 @@ export const updateCompanyRole = (
     can_manage_policy?: boolean
     can_manage_workflow?: boolean
     can_view_company_reports?: boolean
+    can_manage_integrations?: boolean
+    can_view_integrations?: boolean
   },
 ) => api.patch(`/tenants/roles/${roleId}/`, data)
 
@@ -940,6 +944,84 @@ export const getPaymentCategorySummary = (params?: { month?: string }) =>
     success: boolean
     results: import('@/types').PaymentCategorySummaryRow[]
   }>('/expenses/payments/category-summary/', { params })
+
+// Integrations
+export const listIntegrationProviders = () =>
+  api.get<{ success: boolean; providers: import('@/types').IntegrationProviderCatalogItem[] }>(
+    '/integrations/providers/',
+  )
+
+export const connectQuickBooks = () =>
+  api.get<{
+    success: boolean
+    provider: 'QUICKBOOKS'
+    authorization_url: string
+    expires_in: number
+  }>('/integrations/quickbooks/connect/')
+
+export const getQuickBooksStatus = () =>
+  api.get<import('@/types').QuickBooksStatusResponse>('/integrations/quickbooks/status/')
+
+export const disconnectQuickBooks = () =>
+  api.post<{ success: boolean; message: string }>('/integrations/quickbooks/disconnect/')
+
+export const getQuickBooksAccounts = () =>
+  api.get<{
+    success: boolean
+    provider: 'QUICKBOOKS'
+    count: number
+    accounts: import('@/types').QuickBooksAccount[]
+  }>('/integrations/quickbooks/accounts/')
+
+export const getQuickBooksCategoryMappings = () =>
+  api.get<{
+    success: boolean
+    provider: 'QUICKBOOKS'
+    count: number
+    mappings: import('@/types').QuickBooksCategoryMapping[]
+  }>('/integrations/quickbooks/category-mappings/')
+
+export const saveQuickBooksCategoryMapping = (data: {
+  zepex_category: string
+  quickbooks_account_id: string
+}) =>
+  api.post<{
+    success: boolean
+    message: string
+    created: boolean
+    mapping: import('@/types').QuickBooksCategoryMapping
+  }>('/integrations/quickbooks/category-mappings/save/', data)
+
+export const deleteQuickBooksCategoryMapping = (mappingId: number) =>
+  api.delete<{ success: boolean; message: string }>(
+    `/integrations/quickbooks/category-mappings/${mappingId}/`,
+  )
+
+export const getQuickBooksPaymentAccounts = () =>
+  api.get<import('@/types').QuickBooksPaymentAccountResponse>(
+    '/integrations/quickbooks/payment-accounts/',
+  )
+
+export const saveQuickBooksPaymentAccount = (quickbooks_account_id: string) =>
+  api.post<{
+    success: boolean
+    message: string
+    payment_account: { id: string | null; name: string | null; account_type?: string | null }
+  }>('/integrations/quickbooks/payment-account/', { quickbooks_account_id })
+
+export const getQuickBooksExportHistory = (params?: { status?: string }) =>
+  api.get<{
+    success: boolean
+    provider: 'QUICKBOOKS'
+    connected: boolean
+    count: number
+    results: import('@/types').QuickBooksExportHistoryItem[]
+  }>('/integrations/quickbooks/export-history/', { params })
+
+export const retryQuickBooksExport = (reportId: string) =>
+  api.post<{ success: boolean; message: string }>(
+    `/integrations/quickbooks/export-report/${reportId}/retry/`,
+  )
 
 // Dashboards
 export const getDashboard = () => api.get('/dashboard/')

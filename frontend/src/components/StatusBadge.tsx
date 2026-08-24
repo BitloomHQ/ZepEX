@@ -22,6 +22,8 @@ const statusVariant: Record<string, 'default' | 'success' | 'warning' | 'destruc
   EMPLOYEE: 'secondary',
   ACCOUNTS: 'secondary',
   COMPANY_ADMIN: 'default',
+  SUCCESS: 'success',
+  FAILED: 'destructive',
 }
 
 export function StatusBadge({ status }: { status: string }) {

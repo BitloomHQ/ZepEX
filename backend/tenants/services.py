@@ -17,7 +17,7 @@ from tenants.models import (
 
 from audit_logs.utils import create_audit_log
 
-from tenants.views import get_external_db_connection
+from tenants.db_utils import get_external_db_connection
 
 
 def sync_company_external_database(company, action_by=None):

@@ -15,6 +15,8 @@ export const COMPANY_ADMIN_PERMISSIONS: UserPermissions = {
   can_view_company_reports: true,
   can_view_all_reports: true,
   can_view_audit_logs: true,
+  can_manage_integrations: true,
+  can_view_integrations: true,
 }
 
 const EMPTY_PERMISSIONS: UserPermissions = {
@@ -32,6 +34,8 @@ const EMPTY_PERMISSIONS: UserPermissions = {
   can_view_company_reports: false,
   can_view_all_reports: false,
   can_view_audit_logs: false,
+  can_manage_integrations: false,
+  can_view_integrations: false,
 }
 
 export function resolveUserPermissions(

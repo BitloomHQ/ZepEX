@@ -18,6 +18,7 @@ import { AdminDashboard } from '@/pages/tenant/admin/AdminDashboard'
 import { DepartmentsPage } from '@/pages/tenant/admin/DepartmentsPage'
 import { EmployeesPage } from '@/pages/tenant/admin/EmployeesPage'
 import { PolicyPage } from '@/pages/tenant/admin/PolicyPage'
+import { IntegrationsPage } from '@/pages/tenant/admin/IntegrationsPage'
 import { SettingsPage } from '@/pages/tenant/admin/SettingsPage'
 import { AuditLogsPage } from '@/pages/tenant/admin/AuditLogsPage'
 import { EmployeeDashboard } from '@/pages/tenant/employee/EmployeeDashboard'
@@ -174,6 +175,21 @@ export default function App() {
             }
           >
             <Route path="/admin/settings" element={<SettingsPage />} />
+          </Route>
+
+          <Route
+            element={
+              <ProtectedRoute
+                allowedRoles={['COMPANY_ADMIN']}
+                anyPermissions={['can_manage_integrations', 'can_view_integrations']}
+              />
+            }
+          >
+            <Route path="/admin/integrations" element={<IntegrationsPage />} />
+            <Route
+              path="/admin/integrations/third-party"
+              element={<Navigate to="/admin/integrations" replace />}
+            />
           </Route>
 
           <Route

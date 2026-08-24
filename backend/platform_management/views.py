@@ -54,6 +54,9 @@ from platform_management.domain_validator import (
     validate_registration_admin_email,
 )
 from platform_access.decorators import platform_permission_required
+from django.db import IntegrityError, transaction
+from .utils import generate_inbound_email_code
+from tenants.role_utils import ensure_default_company_roles
 
 
 def _resolve_platform_owner(user):
@@ -206,11 +209,8 @@ def list_company_requests(request):
     )
 
     return Response(serializer.data)
-from django.conf import settings
-from .utils import generate_inbound_email_code
-from tenants.views import generate_employee_password
-from django.db import IntegrityError, transaction
-from tenants.role_utils import ensure_default_company_roles
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 @platform_permission_required("approve_company")

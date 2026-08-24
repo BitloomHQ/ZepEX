@@ -2,7 +2,11 @@ import logging
 import secrets
 
 from datetime import timedelta
+from functools import wraps
+from urllib.parse import urlencode
 
+from django.conf import settings
+from django.shortcuts import redirect
 from django.utils import timezone
 
 from rest_framework.decorators import (
@@ -44,11 +48,14 @@ from tenants.permission_utils import (
 # INTEGRATION MODELS
 # ==========================================================
 
+from expenses.models import ExpenseReport
+
 from .models import (
     CompanyIntegration,
     IntegrationCredential,
     IntegrationSyncLog,
     QuickBooksCategoryMapping,
+    QuickBooksExportRecord,
     QuickBooksOAuthState,
 )
 
@@ -125,6 +132,29 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 QUICKBOOKS_PENDING_STALE_MINUTES = 5
+
+
+def redirect_quickbooks_oauth_to_frontend(view_func):
+    """Send Intuit's browser callback back to the admin integrations page."""
+
+    @wraps(view_func)
+    def wrapped(request, *args, **kwargs):
+        result = view_func(request, *args, **kwargs)
+        frontend = (getattr(settings, "FRONTEND_URL", "") or "").rstrip("/")
+        if not frontend or not isinstance(result, Response):
+            return result
+        data = result.data if isinstance(result.data, dict) else {}
+        params = {}
+        if data.get("success"):
+            params["quickbooks"] = "connected"
+        else:
+            params["quickbooks"] = "error"
+            error = data.get("error")
+            if error:
+                params["quickbooks_error"] = str(error)[:400]
+        return redirect(f"{frontend}/admin/integrations?{urlencode(params)}")
+
+    return wrapped
 
 
 def is_quickbooks_export_stale(
@@ -2411,6 +2441,7 @@ def connect_quickbooks(request):
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
+@redirect_quickbooks_oauth_to_frontend
 def quickbooks_callback(request):
     """
     Handle Intuit OAuth callback.
@@ -3851,10 +3882,6 @@ def delete_quickbooks_category_mapping(
         },
         status=status.HTTP_200_OK,
     )
-from .services.quickbooks_export import (
-    export_report_to_quickbooks,
-    QuickBooksExportError,
-)
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def export_report_quickbooks(
@@ -4221,17 +4248,6 @@ def export_report_quickbooks(
         },
         status=status.HTTP_202_ACCEPTED,
     )
-
-from expenses.models import ExpenseReport
-
-from integrations.models import (
-    CompanyIntegration,
-    QuickBooksExportRecord,
-)
-
-from tenants.permission_utils import (
-    has_company_permission,
-)
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])

@@ -47,6 +47,8 @@ const defaultPermissions = {
   can_manage_policy: false,
   can_manage_workflow: false,
   can_view_company_reports: false,
+  can_manage_integrations: false,
+  can_view_integrations: false,
 }
 
 const permissionFields: Array<{ key: keyof typeof defaultPermissions; label: string }> = [
@@ -61,6 +63,8 @@ const permissionFields: Array<{ key: keyof typeof defaultPermissions; label: str
   { key: 'can_manage_policy', label: 'Manage policy' },
   { key: 'can_manage_workflow', label: 'Manage workflow' },
   { key: 'can_view_company_reports', label: 'View company reports' },
+  { key: 'can_view_integrations', label: 'View integrations' },
+  { key: 'can_manage_integrations', label: 'Manage integrations' },
 ]
 
 function PermissionCheck({
@@ -242,6 +246,8 @@ export function RolesPage() {
     if (role.can_manage_policy) parts.push('Policy')
     if (role.can_manage_workflow) parts.push('Workflow')
     if (role.can_view_company_reports) parts.push('Reports')
+    if (role.can_view_integrations) parts.push('View integrations')
+    if (role.can_manage_integrations) parts.push('Integrations')
     return parts.join(', ') || '—'
   }
 

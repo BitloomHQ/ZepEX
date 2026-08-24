@@ -47,6 +47,8 @@ def permissions_for_profile(profile):
         "can_view_company_reports": False,
         "can_view_all_reports": False,
         "can_view_audit_logs": False,
+        "can_manage_integrations": False,
+        "can_view_integrations": False,
     }
 
     if not profile:
@@ -74,6 +76,8 @@ def permissions_for_profile(profile):
         "can_view_company_reports": role.can_view_company_reports,
         "can_view_all_reports": role.can_view_company_reports,
         "can_view_audit_logs": False,
+        "can_manage_integrations": role.can_manage_integrations,
+        "can_view_integrations": role.can_view_integrations,
     }
 
 

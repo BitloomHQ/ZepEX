@@ -92,6 +92,8 @@ class CompanyRoleSerializer(serializers.ModelSerializer):
             "can_manage_policy",
             "can_manage_workflow",
             "can_view_company_reports",
+            "can_manage_integrations",
+            "can_view_integrations",
             "is_active",
             "created_at",
         ]
@@ -1033,6 +1035,8 @@ class CompanyRoleUpdateSerializer(serializers.ModelSerializer):
             "can_manage_policy",
             "can_manage_workflow",
             "can_view_company_reports",
+            "can_manage_integrations",
+            "can_view_integrations",
         ]
 
         read_only_fields = [

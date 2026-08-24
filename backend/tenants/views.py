@@ -1925,10 +1925,7 @@ def deactivate_company_role(request, role_id):
         "message": "Role deactivated successfully."
     })
 
-import psycopg2
-import pymysql
-import pyodbc
-import oracledb
+from .db_utils import get_external_db_connection
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsCompanyAdmin])
@@ -1944,58 +1941,7 @@ def test_database_connection(request):
         )
 
     try:
-        if config.db_engine == "postgresql":
-            conn = psycopg2.connect(
-                host=config.db_host,
-                port=config.db_port,
-                dbname=config.db_name,
-                user=config.db_user,
-                password=config.db_password,
-                connect_timeout=10,
-            )
-
-        elif config.db_engine == "mysql":
-            conn = pymysql.connect(
-                host=config.db_host,
-                port=config.db_port,
-                database=config.db_name,
-                user=config.db_user,
-                password=config.db_password,
-                connect_timeout=10,
-            )
-
-        elif config.db_engine == "mssql":
-            conn = pyodbc.connect(
-                (
-                    "DRIVER={ODBC Driver 17 for SQL Server};"
-                    f"SERVER={config.db_host},{config.db_port};"
-                    f"DATABASE={config.db_name};"
-                    f"UID={config.db_user};"
-                    f"PWD={config.db_password};"
-                    "TrustServerCertificate=yes;"
-                ),
-                timeout=10
-            )
-
-        elif config.db_engine == "oracle":
-            dsn = oracledb.makedsn(
-                config.db_host,
-                config.db_port,
-                service_name=config.db_name
-            )
-
-            conn = oracledb.connect(
-                user=config.db_user,
-                password=config.db_password,
-                dsn=dsn
-            )
-
-        else:
-            return Response(
-                {"error": "Unsupported database engine."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
+        conn = get_external_db_connection(config)
         conn.close()
 
         create_audit_log(
@@ -2039,60 +1985,10 @@ def test_database_connection(request):
 from django.utils import timezone
 from .models import DatabaseSyncLog
 
-def get_external_db_connection(config):
-    if config.db_engine == "postgresql":
-        return psycopg2.connect(
-            host=config.db_host,
-            port=config.db_port,
-            dbname=config.db_name,
-            user=config.db_user,
-            password=config.db_password,
-            connect_timeout=10,
-        )
-
-    if config.db_engine == "mysql":
-        return pymysql.connect(
-            host=config.db_host,
-            port=config.db_port,
-            database=config.db_name,
-            user=config.db_user,
-            password=config.db_password,
-            connect_timeout=10,
-        )
-
-    if config.db_engine == "mssql":
-        return pyodbc.connect(
-            (
-                "DRIVER={ODBC Driver 17 for SQL Server};"
-                f"SERVER={config.db_host},{config.db_port};"
-                f"DATABASE={config.db_name};"
-                f"UID={config.db_user};"
-                f"PWD={config.db_password};"
-                "TrustServerCertificate=yes;"
-            ),
-            timeout=10
-        )
-
-    if config.db_engine == "oracle":
-        dsn = oracledb.makedsn(
-            config.db_host,
-            config.db_port,
-            service_name=config.db_name
-        )
-
-        return oracledb.connect(
-            user=config.db_user,
-            password=config.db_password,
-            dsn=dsn
-        )
-
-    raise Exception("Unsupported database engine.")
-
-from tenants.services import sync_company_external_database
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsCompanyAdmin])
 def sync_external_database(request):
+    from tenants.services import sync_company_external_database
 
     result = sync_company_external_database(
         company=request.user.profile.company,
@@ -6372,13 +6268,13 @@ def company_imap_config(request):
         status=status.HTTP_200_OK,
     )
 
-from expenses.email_fetcher import (
-    test_imap_connection,
-    ImapAuthError,
-)
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def test_company_imap_connection(request):
+    from expenses.email_fetcher import (
+        test_imap_connection,
+        ImapAuthError,
+    )
 
     profile = request.user.profile
 
@@ -6638,6 +6534,7 @@ def company_imap_config(request):
     if imap_password:
 
         try:
+            from expenses.email_fetcher import test_imap_connection, ImapAuthError
 
             test_imap_connection(
                 host=imap_host,

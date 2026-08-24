@@ -21,6 +21,8 @@ export interface UserPermissions {
   can_view_company_reports?: boolean
   can_view_all_reports?: boolean
   can_view_audit_logs?: boolean
+  can_manage_integrations?: boolean
+  can_view_integrations?: boolean
 }
 
 export interface Company {
@@ -96,6 +98,8 @@ export interface CompanyRole {
   can_manage_policy?: boolean
   can_manage_workflow?: boolean
   can_view_company_reports?: boolean
+  can_manage_integrations?: boolean
+  can_view_integrations?: boolean
   is_active: boolean
   created_at: string
 }
@@ -1223,4 +1227,75 @@ export interface FinanceSettings {
   last_exchange_sync: string | null
   created_at: string
   updated_at: string
+}
+
+export interface IntegrationProviderCatalogItem {
+  provider: string
+  provider_name: string
+  configured: boolean
+  is_connected: boolean
+  is_active: boolean
+  last_synced_at: string | null
+}
+
+export interface QuickBooksStatusResponse {
+  success: boolean
+  provider: 'QUICKBOOKS'
+  connected: boolean
+  healthy?: boolean
+  integration_id?: string
+  error?: string
+  company?: {
+    realm_id?: string | null
+    name?: string | null
+  }
+  integration?: null
+}
+
+export interface QuickBooksAccount {
+  id: string
+  name: string
+  account_type?: string | null
+  account_sub_type?: string | null
+}
+
+export interface QuickBooksCategoryMapping {
+  id: number
+  zepex_category: string
+  quickbooks_account_id: string
+  quickbooks_account_name: string
+  quickbooks_account_type?: string | null
+  quickbooks_account_sub_type?: string | null
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface QuickBooksPaymentAccountResponse {
+  success: boolean
+  provider: 'QUICKBOOKS'
+  selected_account: {
+    id: string | null
+    name: string | null
+    account_type?: string | null
+  }
+  count: number
+  accounts: QuickBooksAccount[]
+}
+
+export interface QuickBooksExportHistoryItem {
+  status: string
+  error_message?: string | null
+  exported_amount?: string | null
+  exported_at?: string | null
+  created_at?: string | null
+  quickbooks_transaction_id?: string | null
+  report: {
+    id: string
+    month?: string | null
+    status?: string
+    total_amount?: string
+    employee?: { id: string; name: string; email: string }
+    department?: string | null
+  }
 }
