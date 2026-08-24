@@ -82,10 +82,10 @@ class EmailFetcher:
 
         except Exception as exc:
 
-            logger.exception(
-                "Unable to decrypt IMAP password "
-                "for company=%s.",
+            logger.error(
+                "Unable to decrypt IMAP password for company=%s: %s",
                 self.company.id,
+                exc,
             )
 
             raise RuntimeError(

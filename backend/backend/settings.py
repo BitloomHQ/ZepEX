@@ -562,6 +562,35 @@ IMAP_ENCRYPTION_KEY = os.getenv(
 INTEGRATION_ENCRYPTION_KEY = os.getenv(
     "INTEGRATION_ENCRYPTION_KEY"
 )
+
+def _sanitize_fernet_key(name, value):
+    """Accept only real Fernet keys; otherwise derive a stable valid key."""
+    import base64
+    import hashlib
+
+    from cryptography.fernet import Fernet
+
+    raw = (value or "").strip()
+    if raw:
+        try:
+            Fernet(raw.encode("utf-8"))
+            return raw
+        except (ValueError, TypeError):
+            pass
+    secret = os.getenv("DJANGO_SECRET_KEY") or os.getenv("SECRET_KEY") or "zepex-dev"
+    return base64.urlsafe_b64encode(
+        hashlib.sha256(f"{name}:{secret}".encode("utf-8")).digest()
+    ).decode("ascii")
+
+
+IMAP_ENCRYPTION_KEY = _sanitize_fernet_key(
+    "IMAP_ENCRYPTION_KEY",
+    IMAP_ENCRYPTION_KEY,
+)
+INTEGRATION_ENCRYPTION_KEY = _sanitize_fernet_key(
+    "INTEGRATION_ENCRYPTION_KEY",
+    INTEGRATION_ENCRYPTION_KEY,
+)
 CELERY_BEAT_SCHEDULER = (
     "django_celery_beat.schedulers:"
     "DatabaseScheduler"

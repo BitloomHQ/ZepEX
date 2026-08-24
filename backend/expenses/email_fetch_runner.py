@@ -140,9 +140,10 @@ def run_email_fetch_once():
 
         except Exception as exc:
 
-            logger.exception(
-                "Email fetch failed for company %s.",
+            logger.error(
+                "Email fetch failed for company %s: %s",
                 company.name,
+                exc,
             )
 
             all_results.append(
