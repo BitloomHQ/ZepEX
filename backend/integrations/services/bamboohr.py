@@ -318,6 +318,10 @@ class BambooHROAuthService:
     ):
         """
         Refresh BambooHR access token.
+
+        Allows ZepEx to obtain a new access token
+        without requiring the Company Admin to
+        authorize BambooHR again.
         """
 
         if not refresh_token:
@@ -355,6 +359,19 @@ class BambooHROAuthService:
         self,
         payload,
     ):
+        """
+        Send a token request to BambooHR.
+
+        Used for both:
+
+        1. Authorization code exchange
+        2. Refresh token exchange
+
+        IMPORTANT:
+        OAuth response bodies are intentionally
+        not logged because they contain sensitive
+        access and refresh tokens.
+        """
 
         try:
 
@@ -391,16 +408,23 @@ class BambooHROAuthService:
                 "BambooHR OAuth request failed."
             ) from exc
 
+        # ==================================================
+        # AUTHENTICATION ERROR
+        # ==================================================
+
         if response.status_code in (
             400,
             401,
         ):
 
             try:
+
                 error_data = (
                     response.json()
                 )
+
             except ValueError:
+
                 error_data = {}
 
             error_description = (
@@ -420,24 +444,58 @@ class BambooHROAuthService:
                 error_description
             )
 
+        # ==================================================
+        # PERMISSION ERROR
+        # ==================================================
+
         if response.status_code == 403:
 
             raise BambooHRPermissionError(
                 "BambooHR OAuth access was denied."
             )
 
+        # ==================================================
+        # RATE LIMIT
+        # ==================================================
+
         if response.status_code == 429:
+
+            retry_after = (
+                response.headers.get(
+                    "Retry-After"
+                )
+            )
+
+            if retry_after:
+
+                raise BambooHRConnectionError(
+                    (
+                        "BambooHR OAuth rate limit "
+                        f"reached. Retry after "
+                        f"{retry_after} seconds."
+                    )
+                )
 
             raise BambooHRConnectionError(
                 "BambooHR OAuth rate limit reached."
             )
 
+        # ==================================================
+        # BAMBOOHR SERVER ERROR
+        # ==================================================
+
         if response.status_code >= 500:
 
             raise BambooHRConnectionError(
-                "BambooHR OAuth service is "
-                "temporarily unavailable."
+                (
+                    "BambooHR OAuth service is "
+                    "temporarily unavailable."
+                )
             )
+
+        # ==================================================
+        # OTHER HTTP ERROR
+        # ==================================================
 
         if not response.ok:
 
@@ -448,6 +506,10 @@ class BambooHROAuthService:
                     f"{response.status_code}."
                 )
             )
+
+        # ==================================================
+        # PARSE TOKEN RESPONSE
+        # ==================================================
 
         try:
 
@@ -463,6 +525,10 @@ class BambooHROAuthService:
                     "invalid JSON."
                 )
             ) from exc
+
+        # ==================================================
+        # VALIDATE ACCESS TOKEN
+        # ==================================================
 
         access_token = (
             token_data.get(
@@ -495,15 +561,32 @@ class BambooHRClient:
 
         Authorization: Bearer <access_token>
 
-    Example:
+    Employee synchronization strategy:
 
-        BambooHRClient(
-            company_domain="bitloom",
-            access_token="...",
-        )
+        1. Fetch BambooHR employee roster using /v1/employees
+        2. Collect employee IDs
+        3. Fetch each employee's detailed record
+        4. Return enriched employee records containing:
+
+            - employeeId
+            - firstName
+            - lastName
+            - workEmail
+            - department
+            - supervisor
+            - supervisorEId
+            - status
+
+    BambooHR's bulk employee endpoint may not return
+    department/supervisor fields even when explicitly
+    requested, so individual employee records are fetched.
     """
 
     BASE_DOMAIN = "bamboohr.com"
+
+    # ==========================================================
+    # INITIALIZATION
+    # ==========================================================
 
     def __init__(
         self,
@@ -529,10 +612,7 @@ class BambooHRClient:
                 "BambooHR access token is required."
             )
 
-        self.access_token = (
-            access_token
-        )
-
+        self.access_token = access_token
         self.timeout = timeout
 
         self.base_url = (
@@ -544,29 +624,23 @@ class BambooHRClient:
         # HTTP SESSION
         # ======================================================
 
-        self.session = (
-            requests.Session()
-        )
+        self.session = requests.Session()
 
         self.session.headers.update(
             {
                 "Authorization": (
-                    f"Bearer "
-                    f"{self.access_token}"
+                    f"Bearer {self.access_token}"
                 ),
-                "Accept": (
-                    "application/json"
-                ),
+                "Accept": "application/json",
                 "User-Agent": (
-                    "ZepEx-BambooHR-"
-                    "Integration/2.0"
+                    "ZepEx-BambooHR-Integration/2.0"
                 ),
             }
         )
 
-    # ======================================================
+    # ==========================================================
     # INTERNAL REQUEST
-    # ======================================================
+    # ==========================================================
 
     def _request(
         self,
@@ -577,7 +651,9 @@ class BambooHRClient:
         json=None,
     ):
         """
-        Make authenticated BambooHR API request.
+        Make an authenticated BambooHR API request.
+
+        OAuth credentials are never written to logs.
         """
 
         url = (
@@ -587,15 +663,41 @@ class BambooHRClient:
 
         try:
 
-            response = (
-                self.session.request(
-                    method=method,
-                    url=url,
-                    params=params,
-                    json=json,
-                    timeout=self.timeout,
-                )
+            response = self.session.request(
+                method=method,
+                url=url,
+                params=params,
+                json=json,
+                timeout=self.timeout,
             )
+
+            # ==================================================
+            # SAFE ERROR LOGGING
+            # ==================================================
+
+            if not response.ok:
+
+                logger.error(
+                    (
+                        "BambooHR API response. "
+                        "method=%s "
+                        "url=%s "
+                        "status=%s "
+                        "error_header=%s "
+                        "retry_after=%s "
+                        "body=%s"
+                    ),
+                    method,
+                    url,
+                    response.status_code,
+                    response.headers.get(
+                        "x-bamboohr-error-message"
+                    ),
+                    response.headers.get(
+                        "Retry-After"
+                    ),
+                    response.text[:1000],
+                )
 
         except requests.Timeout as exc:
 
@@ -615,8 +717,8 @@ class BambooHRClient:
 
             logger.exception(
                 (
-                    "Unable to connect to "
-                    "BambooHR. url=%s"
+                    "Unable to connect to BambooHR. "
+                    "url=%s"
                 ),
                 url,
             )
@@ -639,9 +741,9 @@ class BambooHRClient:
                 "BambooHR request failed."
             ) from exc
 
-        # ==================================================
-        # AUTHENTICATION
-        # ==================================================
+        # ======================================================
+        # AUTHENTICATION ERROR
+        # ======================================================
 
         if response.status_code == 401:
 
@@ -652,9 +754,9 @@ class BambooHRClient:
                 )
             )
 
-        # ==================================================
-        # PERMISSION
-        # ==================================================
+        # ======================================================
+        # PERMISSION ERROR
+        # ======================================================
 
         if response.status_code == 403:
 
@@ -667,16 +769,15 @@ class BambooHRClient:
             raise BambooHRPermissionError(
                 error_message
                 or (
-                    "BambooHR authentication "
-                    "succeeded but ZepEx does not "
-                    "have permission to access "
-                    "this resource."
+                    "BambooHR authentication succeeded "
+                    "but ZepEx does not have permission "
+                    "to access this resource."
                 )
             )
 
-        # ==================================================
+        # ======================================================
         # RATE LIMIT
-        # ==================================================
+        # ======================================================
 
         if response.status_code == 429:
 
@@ -690,8 +791,8 @@ class BambooHRClient:
 
                 raise BambooHRConnectionError(
                     (
-                        "BambooHR rate limit "
-                        "reached. Retry after "
+                        "BambooHR rate limit reached. "
+                        f"Retry after "
                         f"{retry_after} seconds."
                     )
                 )
@@ -703,22 +804,38 @@ class BambooHRClient:
                 )
             )
 
-        # ==================================================
-        # SERVER ERROR
-        # ==================================================
+        # ======================================================
+        # BAMBOOHR SERVER ERROR
+        # ======================================================
 
         if response.status_code >= 500:
+
+            error_message = (
+                response.headers.get(
+                    "x-bamboohr-error-message"
+                )
+            )
+
+            if error_message:
+
+                raise BambooHRConnectionError(
+                    (
+                        "BambooHR server error: "
+                        f"{error_message}"
+                    )
+                )
 
             raise BambooHRConnectionError(
                 (
                     "BambooHR is temporarily "
-                    "unavailable."
+                    "unavailable "
+                    f"(HTTP {response.status_code})."
                 )
             )
 
-        # ==================================================
+        # ======================================================
         # OTHER API ERROR
-        # ==================================================
+        # ======================================================
 
         if not response.ok:
 
@@ -737,15 +854,37 @@ class BambooHRClient:
                 )
             )
 
-        # ==================================================
+        # ======================================================
+        # EMPTY RESPONSE
+        # ======================================================
+
+        if response.status_code == 204:
+            return {}
+
+        if not response.content:
+            return {}
+
+        # ======================================================
         # JSON RESPONSE
-        # ==================================================
+        # ======================================================
 
         try:
 
             return response.json()
 
         except ValueError as exc:
+
+            logger.error(
+                (
+                    "BambooHR returned invalid JSON. "
+                    "method=%s "
+                    "url=%s "
+                    "status=%s"
+                ),
+                method,
+                url,
+                response.status_code,
+            )
 
             raise BambooHRIntegrationError(
                 (
@@ -754,39 +893,189 @@ class BambooHRClient:
                 )
             ) from exc
 
-    # ======================================================
+    # ==========================================================
     # TEST CONNECTION
-    # ======================================================
+    # ==========================================================
 
     def test_connection(self):
         """
-        Test OAuth token and retrieve the
-        authenticated employee record.
+        Verify that the BambooHR OAuth access token works.
+
+        Metadata fields are used so verification does not
+        depend on any specific employee.
         """
 
         result = self._request(
             "GET",
-            "v1/employees/0",
-            params={
-                "fields": (
-                    "firstName,"
-                    "lastName,"
-                    "workEmail"
-                ),
-            },
+            "v1/meta/fields",
         )
+
+        field_count = 0
+
+        if isinstance(
+            result,
+            list,
+        ):
+
+            field_count = len(
+                result
+            )
+
+        elif isinstance(
+            result,
+            dict,
+        ):
+
+            fields = (
+                result.get("fields")
+                or result.get("data")
+                or []
+            )
+
+            if isinstance(
+                fields,
+                list,
+            ):
+
+                field_count = len(
+                    fields
+                )
 
         return {
             "success": True,
             "company_domain": (
                 self.company_domain
             ),
-            "employee": result,
+            "field_count": (
+                field_count
+            ),
         }
 
-    # ======================================================
+    # ==========================================================
+    # LIST BAMBOOHR FIELDS
+    # ==========================================================
+
+    def list_fields(self):
+        """
+        Fetch BambooHR employee field metadata.
+        """
+
+        result = self._request(
+            "GET",
+            "v1/meta/fields",
+        )
+
+        if isinstance(
+            result,
+            list,
+        ):
+
+            return result
+
+        if isinstance(
+            result,
+            dict,
+        ):
+
+            fields = (
+                result.get("fields")
+                or result.get("data")
+                or []
+            )
+
+            if isinstance(
+                fields,
+                list,
+            ):
+
+                return fields
+
+        return []
+
+    # ==========================================================
+    # GET SINGLE EMPLOYEE
+    # ==========================================================
+
+    def get_employee(
+        self,
+        employee_id,
+        *,
+        fields=None,
+    ):
+        """
+        Fetch detailed information for one BambooHR employee.
+
+        The single employee endpoint provides organization
+        fields that may be absent from the bulk employee API.
+        """
+
+        if not employee_id:
+
+            raise ValueError(
+                "BambooHR employee ID is required."
+            )
+
+        if fields is None:
+
+            fields = [
+                "firstName",
+                "lastName",
+                "workEmail",
+                "department",
+                "supervisor",
+                "supervisorEId",
+                "status",
+            ]
+
+        params = {
+            "fields": ",".join(
+                fields
+            ),
+        }
+
+        result = self._request(
+            "GET",
+            (
+                f"v1/employees/"
+                f"{employee_id}"
+            ),
+            params=params,
+        )
+
+        if not isinstance(
+            result,
+            dict,
+        ):
+
+            return {}
+
+        # ======================================================
+        # NORMALIZE BAMBOOHR EMPLOYEE ID
+        # ======================================================
+
+        bamboohr_id = (
+            result.get(
+                "employeeId"
+            )
+            or result.get(
+                "id"
+            )
+            or str(
+                employee_id
+            )
+        )
+
+        result[
+            "employeeId"
+        ] = str(
+            bamboohr_id
+        )
+
+        return result
+
+    # ==========================================================
     # LIST EMPLOYEES
-    # ======================================================
+    # ==========================================================
 
     def list_employees(
         self,
@@ -797,15 +1086,16 @@ class BambooHRClient:
     ):
         """
         Fetch one page of BambooHR employees.
+
+        The bulk endpoint is mainly used to obtain
+        employee IDs. Detailed organization information
+        is fetched afterward.
         """
 
         if fields is None:
 
             fields = [
                 "workEmail",
-                "department",
-                "supervisor",
-                "supervisorEId",
                 "status",
             ]
 
@@ -828,20 +1118,19 @@ class BambooHRClient:
             params=params,
         )
 
-    # ======================================================
-    # GET ALL EMPLOYEES
-    # ======================================================
+    # ==========================================================
+    # GET EMPLOYEE ROSTER
+    # ==========================================================
 
-    def get_all_employees(self):
+    def get_employee_roster(self):
         """
-        Fetch every BambooHR employee using
-        BambooHR cursor pagination.
+        Fetch every BambooHR employee using cursor pagination.
+
+        This returns the lightweight employee roster.
         """
 
         employees = []
-
         after = None
-
         seen_cursors = set()
 
         while True:
@@ -853,12 +1142,38 @@ class BambooHRClient:
                 )
             )
 
+            if not isinstance(
+                response,
+                dict,
+            ):
+
+                raise BambooHRIntegrationError(
+                    (
+                        "BambooHR employee list "
+                        "returned an unexpected "
+                        "response."
+                    )
+                )
+
             page_employees = (
                 response.get(
                     "data"
                 )
                 or []
             )
+
+            if not isinstance(
+                page_employees,
+                list,
+            ):
+
+                raise BambooHRIntegrationError(
+                    (
+                        "BambooHR employee list "
+                        "did not contain a valid "
+                        "data array."
+                    )
+                )
 
             employees.extend(
                 page_employees
@@ -887,6 +1202,9 @@ class BambooHRClient:
             if not next_cursor:
                 break
 
+            # Protect against an accidental BambooHR
+            # pagination loop.
+
             if (
                 next_cursor
                 in seen_cursors
@@ -894,9 +1212,9 @@ class BambooHRClient:
 
                 logger.warning(
                     (
-                        "BambooHR returned "
-                        "duplicate pagination "
-                        "cursor for company=%s."
+                        "BambooHR returned duplicate "
+                        "pagination cursor. "
+                        "company_domain=%s"
                     ),
                     self.company_domain,
                 )
@@ -913,9 +1231,9 @@ class BambooHRClient:
 
         logger.info(
             (
-                "Fetched %s BambooHR "
-                "employee(s) for "
-                "company_domain=%s."
+                "Fetched %s BambooHR employee "
+                "roster record(s). "
+                "company_domain=%s"
             ),
             len(
                 employees
@@ -924,3 +1242,231 @@ class BambooHRClient:
         )
 
         return employees
+
+    # ==========================================================
+    # ENRICH SINGLE EMPLOYEE
+    # ==========================================================
+
+    def enrich_employee(
+        self,
+        employee,
+    ):
+        """
+        Fetch detailed BambooHR information for one employee
+        and merge it into the bulk employee record.
+        """
+
+        if not isinstance(
+            employee,
+            dict,
+        ):
+
+            return None
+
+        employee_id = (
+            employee.get(
+                "employeeId"
+            )
+            or employee.get(
+                "id"
+            )
+        )
+
+        if not employee_id:
+
+            logger.warning(
+                (
+                    "Skipping BambooHR employee "
+                    "without employee ID."
+                )
+            )
+
+            return None
+
+        detail = (
+            self.get_employee(
+                employee_id
+            )
+        )
+
+        # Start with bulk employee data.
+
+        enriched = dict(
+            employee
+        )
+
+        # Detailed employee data wins where the
+        # same field exists in both responses.
+
+        if isinstance(
+            detail,
+            dict,
+        ):
+
+            enriched.update(
+                detail
+            )
+
+        # ZepEx uses employeeId consistently for
+        # BambooHR mapping.
+
+        enriched[
+            "employeeId"
+        ] = str(
+            employee_id
+        )
+
+        return enriched
+
+    # ==========================================================
+    # GET ALL EMPLOYEES
+    # ==========================================================
+
+    def get_all_employees(self):
+        """
+        Fetch and enrich all BambooHR employees.
+
+        Flow:
+
+            employee roster
+                ↓
+            employee IDs
+                ↓
+            individual employee detail
+                ↓
+            department + supervisor
+                ↓
+            enriched employee list
+
+        Authentication errors are intentionally propagated
+        so the outer integration synchronization service
+        can refresh the OAuth token and retry.
+        """
+
+        roster = (
+            self.get_employee_roster()
+        )
+
+        enriched_employees = []
+
+        total = len(
+            roster
+        )
+
+        logger.info(
+            (
+                "Starting BambooHR employee "
+                "detail enrichment. "
+                "company_domain=%s "
+                "total=%s"
+            ),
+            self.company_domain,
+            total,
+        )
+
+        for index, employee in enumerate(
+            roster,
+            start=1,
+        ):
+
+            employee_id = (
+                employee.get(
+                    "employeeId"
+                )
+                or employee.get(
+                    "id"
+                )
+            )
+
+            try:
+
+                enriched_employee = (
+                    self.enrich_employee(
+                        employee
+                    )
+                )
+
+                if enriched_employee:
+
+                    enriched_employees.append(
+                        enriched_employee
+                    )
+
+            # ==================================================
+            # IMPORTANT:
+            #
+            # These errors MUST reach run_bamboohr_sync().
+            #
+            # Especially 401 -> BambooHRAuthenticationError,
+            # because the sync layer can then refresh the
+            # OAuth token automatically.
+            # ==================================================
+
+            except BambooHRAuthenticationError:
+                raise
+
+            except BambooHRPermissionError:
+                raise
+
+            except BambooHRConnectionError:
+                raise
+
+            except BambooHRIntegrationError:
+                raise
+
+            except Exception as exc:
+
+                logger.exception(
+                    (
+                        "Unexpected error while "
+                        "enriching BambooHR employee. "
+                        "employee_id=%s "
+                        "company_domain=%s"
+                    ),
+                    employee_id,
+                    self.company_domain,
+                )
+
+                # Do not expose unnecessary employee
+                # information through the public API.
+
+                raise BambooHRIntegrationError(
+                    (
+                        "Unable to complete BambooHR "
+                        "employee synchronization."
+                    )
+                ) from exc
+
+            # ==================================================
+            # SAFE PROGRESS LOGGING
+            # ==================================================
+
+            if (
+                index % 25 == 0
+                or index == total
+            ):
+
+                logger.info(
+                    (
+                        "BambooHR employee enrichment "
+                        "progress: %s/%s "
+                        "company_domain=%s"
+                    ),
+                    index,
+                    total,
+                    self.company_domain,
+                )
+
+        logger.info(
+            (
+                "Fetched and enriched %s "
+                "BambooHR employee(s). "
+                "company_domain=%s"
+            ),
+            len(
+                enriched_employees
+            ),
+            self.company_domain,
+        )
+
+        return enriched_employees

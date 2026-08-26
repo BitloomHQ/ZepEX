@@ -1,6 +1,7 @@
 import logging
 
 from celery import shared_task
+from celery.exceptions import MaxRetriesExceededError
 
 from tenants.models import Company
 
@@ -24,7 +25,17 @@ logger = logging.getLogger(__name__)
 
 
 # ==============================================================
-# BAMBOOHR TASKS
+# BAMBOOHR CONFIG
+# ==============================================================
+
+BAMBOOHR_RETRYABLE_ERROR_TYPES = {
+    "CONNECTION_ERROR",
+    "INTERNAL_ERROR",
+}
+
+
+# ==============================================================
+# BAMBOOHR — SYNC SINGLE INTEGRATION
 # ==============================================================
 
 
@@ -38,9 +49,9 @@ def sync_single_bamboohr_integration(
     integration_id,
 ):
     """
-    Synchronize one BambooHR integration.
+    Synchronize one connected BambooHR integration.
 
-    Scheduled sync always performs a complete sync:
+    Scheduled synchronization always performs:
 
         Departments
             ↓
@@ -48,8 +59,17 @@ def sync_single_bamboohr_integration(
             ↓
         Managers
 
-    OAuth token refresh is handled inside
+    OAuth access-token refresh is handled inside
     run_bamboohr_sync().
+
+    Celery retries only transient failures such as:
+
+        CONNECTION_ERROR
+        INTERNAL_ERROR
+
+    Authentication, permission and configuration errors
+    are returned without repeated retries because they
+    usually require administrator intervention.
     """
 
     # ==========================================================
@@ -79,9 +99,9 @@ def sync_single_bamboohr_integration(
 
         logger.warning(
             (
-                "BambooHR integration not found "
-                "or no longer active. "
-                "integration_id=%s"
+                "Scheduled BambooHR sync skipped. "
+                "Integration not found, disconnected, "
+                "or inactive. integration_id=%s"
             ),
             integration_id,
         )
@@ -89,6 +109,12 @@ def sync_single_bamboohr_integration(
         return {
             "success": False,
             "skipped": True,
+            "integration_id": str(
+                integration_id
+            ),
+            "error_type": (
+                "INTEGRATION_NOT_AVAILABLE"
+            ),
             "error": (
                 "BambooHR integration not found "
                 "or inactive."
@@ -101,48 +127,264 @@ def sync_single_bamboohr_integration(
 
     try:
 
-        result = run_bamboohr_sync(
-            integration=integration,
-            trigger=(
-                IntegrationSyncLog
-                .TRIGGER_SCHEDULED
-            ),
-            resource=RESOURCE_ALL,
+        result = (
+            run_bamboohr_sync(
+                integration=integration,
+                trigger=(
+                    IntegrationSyncLog
+                    .TRIGGER_SCHEDULED
+                ),
+                resource=RESOURCE_ALL,
+            )
         )
 
-        logger.info(
-            (
-                "Scheduled BambooHR sync finished. "
-                "integration=%s "
-                "resource=%s "
-                "success=%s"
-            ),
-            integration.id,
-            RESOURCE_ALL,
+        # ======================================================
+        # 3. VALIDATE RESULT TYPE
+        # ======================================================
+
+        if not isinstance(
+            result,
+            dict,
+        ):
+
+            raise RuntimeError(
+                (
+                    "BambooHR synchronization "
+                    "returned an invalid result."
+                )
+            )
+
+        # ======================================================
+        # 4. SUCCESS
+        # ======================================================
+
+        if result.get(
+            "success"
+        ):
+
+            logger.info(
+                (
+                    "Scheduled BambooHR sync "
+                    "completed successfully. "
+                    "company=%s "
+                    "integration=%s "
+                    "received=%s "
+                    "created=%s "
+                    "updated=%s "
+                    "skipped=%s"
+                ),
+                integration.company_id,
+                integration.id,
+                (
+                    result.get(
+                        "records",
+                        {},
+                    )
+                    .get(
+                        "received",
+                        0,
+                    )
+                ),
+                (
+                    result.get(
+                        "records",
+                        {},
+                    )
+                    .get(
+                        "created",
+                        0,
+                    )
+                ),
+                (
+                    result.get(
+                        "records",
+                        {},
+                    )
+                    .get(
+                        "updated",
+                        0,
+                    )
+                ),
+                (
+                    result.get(
+                        "records",
+                        {},
+                    )
+                    .get(
+                        "skipped",
+                        0,
+                    )
+                ),
+            )
+
+            return result
+
+        # ======================================================
+        # 5. FAILED RESULT
+        # ======================================================
+
+        error_type = (
             result.get(
-                "success"
-            ),
+                "error_type"
+            )
+            or "UNKNOWN_ERROR"
         )
+
+        error_message = (
+            result.get(
+                "error"
+            )
+            or (
+                "BambooHR synchronization "
+                "failed."
+            )
+        )
+
+        logger.warning(
+            (
+                "Scheduled BambooHR sync failed. "
+                "company=%s "
+                "integration=%s "
+                "error_type=%s "
+                "error=%s"
+            ),
+            integration.company_id,
+            integration.id,
+            error_type,
+            error_message,
+        )
+
+        # ======================================================
+        # 6. RETRY TRANSIENT FAILURE
+        # ======================================================
+
+        if (
+            error_type
+            in BAMBOOHR_RETRYABLE_ERROR_TYPES
+        ):
+
+            try:
+
+                raise self.retry(
+                    exc=RuntimeError(
+                        error_message
+                    ),
+                )
+
+            except MaxRetriesExceededError:
+
+                logger.error(
+                    (
+                        "BambooHR scheduled sync "
+                        "reached maximum retry attempts. "
+                        "company=%s "
+                        "integration=%s"
+                    ),
+                    integration.company_id,
+                    integration.id,
+                )
+
+                return {
+                    **result,
+                    "retry_exhausted": True,
+                }
+
+        # ======================================================
+        # 7. NON-RETRYABLE FAILURE
+        # ======================================================
+        #
+        # Examples:
+        #
+        # AUTHENTICATION_ERROR
+        # PERMISSION_ERROR
+        # CONFIGURATION_ERROR
+        # BAMBOOHR_ERROR
+        #
+        # These should not repeatedly hammer BambooHR.
+        # ======================================================
 
         return result
 
     # ==========================================================
-    # 3. UNEXPECTED FAILURE
+    # 8. UNEXPECTED CELERY/TASK FAILURE
     # ==========================================================
+
+    except MaxRetriesExceededError:
+
+        logger.error(
+            (
+                "Scheduled BambooHR sync reached "
+                "maximum retry attempts. "
+                "company=%s "
+                "integration=%s"
+            ),
+            integration.company_id,
+            integration.id,
+        )
+
+        return {
+            "success": False,
+            "integration_id": str(
+                integration.id
+            ),
+            "provider": "BAMBOOHR",
+            "resource": RESOURCE_ALL,
+            "error_type": (
+                "RETRY_EXHAUSTED"
+            ),
+            "error": (
+                "BambooHR scheduled sync failed "
+                "after multiple attempts."
+            ),
+        }
 
     except Exception as exc:
 
         logger.exception(
             (
                 "Scheduled BambooHR sync crashed. "
+                "company=%s "
                 "integration=%s"
             ),
+            integration.company_id,
             integration.id,
         )
 
-        raise self.retry(
-            exc=exc,
-        )
+        try:
+
+            raise self.retry(
+                exc=exc,
+            )
+
+        except MaxRetriesExceededError:
+
+            logger.error(
+                (
+                    "Scheduled BambooHR sync "
+                    "reached maximum retry attempts "
+                    "after unexpected failure. "
+                    "company=%s "
+                    "integration=%s"
+                ),
+                integration.company_id,
+                integration.id,
+            )
+
+            return {
+                "success": False,
+                "integration_id": str(
+                    integration.id
+                ),
+                "provider": "BAMBOOHR",
+                "resource": RESOURCE_ALL,
+                "error_type": (
+                    "RETRY_EXHAUSTED"
+                ),
+                "error": (
+                    "BambooHR scheduled sync failed "
+                    "after multiple attempts."
+                ),
+            }
 
 
 # ==============================================================
@@ -153,13 +395,30 @@ def sync_single_bamboohr_integration(
 @shared_task
 def sync_all_bamboohr_integrations():
     """
-    Queue complete BambooHR synchronization for
-    every connected and active BambooHR integration.
+    Queue a complete BambooHR synchronization for every
+    connected and active BambooHR integration.
 
-    Each integration is queued independently.
+    Each company gets its own independent Celery task.
+
+    This provides tenant isolation:
+
+        Company A
+            ↓
+        Task A
+
+        Company B
+            ↓
+        Task B
+
+        Company C
+            ↓
+        Task C
+
+    Failure in one company's sync does not stop another
+    company's BambooHR synchronization.
     """
 
-    integrations = (
+    integration_ids = list(
         CompanyIntegration.objects
         .filter(
             provider=(
@@ -175,13 +434,35 @@ def sync_all_bamboohr_integrations():
         )
     )
 
-    integration_ids = list(
-        integrations
-    )
+    # ==========================================================
+    # NO CONNECTED INTEGRATIONS
+    # ==========================================================
+
+    if not integration_ids:
+
+        logger.info(
+            (
+                "Scheduled BambooHR sync found "
+                "no connected integrations."
+            )
+        )
+
+        return {
+            "success": True,
+            "resource": RESOURCE_ALL,
+            "found": 0,
+            "queued": 0,
+        }
+
+    # ==========================================================
+    # QUEUE EACH COMPANY INDEPENDENTLY
+    # ==========================================================
 
     queued = 0
 
-    for integration_id in integration_ids:
+    for integration_id in (
+        integration_ids
+    ):
 
         sync_single_bamboohr_integration.delay(
             str(
@@ -202,6 +483,9 @@ def sync_all_bamboohr_integrations():
     return {
         "success": True,
         "resource": RESOURCE_ALL,
+        "found": len(
+            integration_ids
+        ),
         "queued": queued,
     }
 
@@ -349,9 +633,9 @@ def export_report_to_quickbooks_task(
                 exc=exc,
             )
 
-        except self.MaxRetriesExceededError:
+        except MaxRetriesExceededError:
 
-            logger.exception(
+            logger.error(
                 (
                     "QuickBooks export reached "
                     "maximum retry attempts. "

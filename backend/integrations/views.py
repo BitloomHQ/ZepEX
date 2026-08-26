@@ -1443,7 +1443,14 @@ def preview_bamboohr_employees(request):
     )
 from django.utils import timezone
 
-from .models import CompanyIntegration
+from .models import (
+    CompanyIntegration,
+    IntegrationCredential,
+    IntegrationSyncLog,
+    IntegrationChangeLog,
+    QuickBooksCategoryMapping,
+    QuickBooksOAuthState,
+)
 
 from .encryption_services import (
     decrypt_integration_config,
@@ -1457,9 +1464,11 @@ from .services.bamboohr import (
 )
 
 from .services.bamboohr_sync import (
-    sync_bamboohr_employees,
+    sync_bamboohr_departments,
+    sync_bamboohr_employees_only,
+    sync_bamboohr_managers,
+    sync_bamboohr_all,
 )
-
 
 from .services.integration_sync import (
     run_bamboohr_sync,
@@ -4419,6 +4428,391 @@ def quickbooks_report_export_status(
                     export_record.created_at
                 ),
             },
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+# ==============================================================
+# BAMBOOHR — CHANGE HISTORY
+# ==============================================================
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def bamboohr_change_history(request):
+    """
+    Return individual changes made in ZepEx by BambooHR sync.
+
+    Examples:
+
+        Employee created
+        Employee activated/deactivated
+        Department changed
+        Manager changed
+        Employee details updated
+        Department created
+
+    Optional query params:
+
+        resource_type=EMPLOYEE
+        resource_type=DEPARTMENT
+
+        change_type=CREATED
+        change_type=UPDATED
+        change_type=ACTIVATED
+        change_type=DEACTIVATED
+        change_type=MANAGER_CHANGED
+        change_type=DEPARTMENT_CHANGED
+
+        sync_log_id=<id>
+
+        limit=50
+    """
+
+    profile = request.user.profile
+
+    # ==========================================================
+    # 1. COMPANY CHECK
+    # ==========================================================
+
+    if not profile.company:
+
+        return Response(
+            {
+                "success": False,
+                "error": "Company is not assigned.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 2. PERMISSION CHECK
+    # ==========================================================
+
+    can_view = (
+        profile.role == "COMPANY_ADMIN"
+        or has_company_permission(
+            profile,
+            "can_view_integrations",
+        )
+        or has_company_permission(
+            profile,
+            "can_manage_integrations",
+        )
+    )
+
+    if not can_view:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "You are not allowed to "
+                    "view integration changes."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # ==========================================================
+    # 3. FIND BAMBOOHR INTEGRATION
+    # ==========================================================
+
+    try:
+
+        integration = (
+            CompanyIntegration.objects
+            .get(
+                company=profile.company,
+                provider=(
+                    CompanyIntegration
+                    .PROVIDER_BAMBOOHR
+                ),
+            )
+        )
+
+    except CompanyIntegration.DoesNotExist:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BambooHR integration "
+                    "not found."
+                ),
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    # ==========================================================
+    # 4. READ FILTERS
+    # ==========================================================
+
+    resource_type = (
+        request.query_params.get(
+            "resource_type",
+            "",
+        )
+        or ""
+    ).strip().upper()
+
+    change_type = (
+        request.query_params.get(
+            "change_type",
+            "",
+        )
+        or ""
+    ).strip().upper()
+
+    sync_log_id = (
+        request.query_params.get(
+            "sync_log_id",
+            "",
+        )
+        or ""
+    ).strip()
+
+    # ==========================================================
+    # 5. VALIDATE RESOURCE TYPE
+    # ==========================================================
+
+    allowed_resource_types = {
+        IntegrationChangeLog.RESOURCE_EMPLOYEE,
+        IntegrationChangeLog.RESOURCE_DEPARTMENT,
+    }
+
+    if (
+        resource_type
+        and resource_type
+        not in allowed_resource_types
+    ):
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Invalid resource_type. "
+                    "Allowed values are: "
+                    "EMPLOYEE, DEPARTMENT."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 6. VALIDATE CHANGE TYPE
+    # ==========================================================
+
+    allowed_change_types = {
+        IntegrationChangeLog.CHANGE_CREATED,
+        IntegrationChangeLog.CHANGE_UPDATED,
+        IntegrationChangeLog.CHANGE_ACTIVATED,
+        IntegrationChangeLog.CHANGE_DEACTIVATED,
+        IntegrationChangeLog.CHANGE_MANAGER_CHANGED,
+        IntegrationChangeLog.CHANGE_DEPARTMENT_CHANGED,
+    }
+
+    if (
+        change_type
+        and change_type
+        not in allowed_change_types
+    ):
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Invalid change_type. "
+                    "Allowed values are: "
+                    "CREATED, UPDATED, ACTIVATED, "
+                    "DEACTIVATED, MANAGER_CHANGED, "
+                    "DEPARTMENT_CHANGED."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 7. LIMIT
+    # ==========================================================
+
+    try:
+
+        limit = int(
+            request.query_params.get(
+                "limit",
+                50,
+            )
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        limit = 50
+
+    limit = max(
+        1,
+        min(
+            limit,
+            200,
+        ),
+    )
+
+    # ==========================================================
+    # 8. BASE QUERY
+    # ==========================================================
+
+    changes = (
+        IntegrationChangeLog.objects
+        .filter(
+            integration=integration,
+        )
+        .select_related(
+            "sync_log",
+        )
+    )
+
+    # ==========================================================
+    # 9. APPLY FILTERS
+    # ==========================================================
+
+    if resource_type:
+
+        changes = changes.filter(
+            resource_type=resource_type,
+        )
+
+    if change_type:
+
+        changes = changes.filter(
+            change_type=change_type,
+        )
+
+    if sync_log_id:
+
+        changes = changes.filter(
+            sync_log_id=sync_log_id,
+        )
+
+    # ==========================================================
+    # 10. TOTAL BEFORE LIMIT
+    # ==========================================================
+
+    total = changes.count()
+
+    # ==========================================================
+    # 11. ORDER + LIMIT
+    # ==========================================================
+
+    changes = (
+        changes
+        .order_by(
+            "-created_at",
+        )[:limit]
+    )
+
+    # ==========================================================
+    # 12. BUILD RESPONSE
+    # ==========================================================
+
+    results = []
+
+    for change in changes:
+
+        results.append(
+            {
+                "id": str(
+                    change.id
+                ),
+
+                "resource_type": (
+                    change.resource_type
+                ),
+
+                "external_resource_id": (
+                    change.external_resource_id
+                ),
+
+                "resource_name": (
+                    change.resource_name
+                ),
+
+                "change_type": (
+                    change.change_type
+                ),
+
+                "field_name": (
+                    change.field_name
+                ),
+
+                "old_value": (
+                    change.old_value
+                ),
+
+                "new_value": (
+                    change.new_value
+                ),
+
+                "details": (
+                    change.details
+                    or {}
+                ),
+
+                "sync_log_id": (
+                    str(change.sync_log_id)
+                    if change.sync_log_id
+                    else None
+                ),
+
+                "created_at": (
+                    change.created_at
+                ),
+            }
+        )
+
+    # ==========================================================
+    # 13. RESPONSE
+    # ==========================================================
+
+    return Response(
+        {
+            "success": True,
+
+            "provider": "BAMBOOHR",
+
+            "integration_id": str(
+                integration.id
+            ),
+
+            "filters": {
+                "resource_type": (
+                    resource_type
+                    or None
+                ),
+
+                "change_type": (
+                    change_type
+                    or None
+                ),
+
+                "sync_log_id": (
+                    sync_log_id
+                    or None
+                ),
+
+                "limit": limit,
+            },
+
+            "total": total,
+
+            "count": len(
+                results
+            ),
+
+            "results": results,
         },
         status=status.HTTP_200_OK,
     )

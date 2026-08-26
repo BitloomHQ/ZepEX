@@ -330,6 +330,210 @@ class IntegrationSyncLog(models.Model):
             f"{self.integration.provider} - "
             f"{self.status}"
         )
+
+class IntegrationChangeLog(models.Model):
+    """
+    Stores individual changes made in ZepEx because of an
+    external integration such as BambooHR.
+
+    Examples:
+
+        Employee created
+        Department created
+        Department changed
+        Manager changed
+        Employee activated
+        Employee deactivated
+        Name changed
+        Email changed
+
+    IntegrationSyncLog answers:
+        "Did the synchronization succeed?"
+
+    IntegrationChangeLog answers:
+        "What exactly changed?"
+    """
+
+    # ==========================================================
+    # RESOURCE TYPES
+    # ==========================================================
+
+    RESOURCE_EMPLOYEE = "EMPLOYEE"
+    RESOURCE_DEPARTMENT = "DEPARTMENT"
+
+    RESOURCE_CHOICES = (
+        (
+            RESOURCE_EMPLOYEE,
+            "Employee",
+        ),
+        (
+            RESOURCE_DEPARTMENT,
+            "Department",
+        ),
+    )
+
+    # ==========================================================
+    # CHANGE TYPES
+    # ==========================================================
+
+    CHANGE_CREATED = "CREATED"
+    CHANGE_UPDATED = "UPDATED"
+    CHANGE_ACTIVATED = "ACTIVATED"
+    CHANGE_DEACTIVATED = "DEACTIVATED"
+    CHANGE_MANAGER_CHANGED = "MANAGER_CHANGED"
+    CHANGE_DEPARTMENT_CHANGED = "DEPARTMENT_CHANGED"
+
+    CHANGE_CHOICES = (
+        (
+            CHANGE_CREATED,
+            "Created",
+        ),
+        (
+            CHANGE_UPDATED,
+            "Updated",
+        ),
+        (
+            CHANGE_ACTIVATED,
+            "Activated",
+        ),
+        (
+            CHANGE_DEACTIVATED,
+            "Deactivated",
+        ),
+        (
+            CHANGE_MANAGER_CHANGED,
+            "Manager Changed",
+        ),
+        (
+            CHANGE_DEPARTMENT_CHANGED,
+            "Department Changed",
+        ),
+    )
+
+    # ==========================================================
+    # INTEGRATION
+    # ==========================================================
+
+    integration = models.ForeignKey(
+        CompanyIntegration,
+        on_delete=models.CASCADE,
+        related_name="change_logs",
+    )
+
+    # ==========================================================
+    # SYNC LOG
+    # ==========================================================
+
+    sync_log = models.ForeignKey(
+        IntegrationSyncLog,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="change_logs",
+    )
+
+    # ==========================================================
+    # RESOURCE
+    # ==========================================================
+
+    resource_type = models.CharField(
+        max_length=30,
+        choices=RESOURCE_CHOICES,
+    )
+
+    external_resource_id = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+
+    # ==========================================================
+    # DISPLAY INFORMATION
+    # ==========================================================
+
+    resource_name = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+    )
+
+    # ==========================================================
+    # CHANGE INFORMATION
+    # ==========================================================
+
+    change_type = models.CharField(
+        max_length=50,
+        choices=CHANGE_CHOICES,
+    )
+
+    field_name = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True,
+    )
+
+    old_value = models.TextField(
+        null=True,
+        blank=True,
+    )
+
+    new_value = models.TextField(
+        null=True,
+        blank=True,
+    )
+
+    # ==========================================================
+    # OPTIONAL DETAILS
+    # ==========================================================
+
+    details = models.JSONField(
+        default=dict,
+        blank=True,
+    )
+
+    # ==========================================================
+    # TIMESTAMP
+    # ==========================================================
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        db_index=True,
+    )
+
+    class Meta:
+        ordering = [
+            "-created_at",
+        ]
+
+        indexes = [
+            models.Index(
+                fields=[
+                    "integration",
+                    "created_at",
+                ],
+            ),
+            models.Index(
+                fields=[
+                    "integration",
+                    "resource_type",
+                ],
+            ),
+            models.Index(
+                fields=[
+                    "integration",
+                    "change_type",
+                ],
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.integration.provider} | "
+            f"{self.resource_type} | "
+            f"{self.resource_name or self.external_resource_id} | "
+            f"{self.change_type}"
+        )
     
 
 import uuid

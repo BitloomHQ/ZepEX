@@ -492,26 +492,34 @@ EMAIL_IMAP_POLL_INTERVAL_SECONDS = int(
 # CELERY
 # --------------------------------------------------
 
+# --------------------------------------------------
+# CELERY
+# --------------------------------------------------
+
 from celery.schedules import crontab
+
 
 CELERY_BROKER_URL = os.getenv(
     "CELERY_BROKER_URL",
-    os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+    os.getenv(
+        "REDIS_URL",
+        "redis://localhost:6379/0",
+    ),
 )
 
 CELERY_RESULT_BACKEND = os.getenv(
     "CELERY_RESULT_BACKEND",
-    os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+    os.getenv(
+        "REDIS_URL",
+        "redis://localhost:6379/0",
+    ),
 )
 
 CELERY_ACCEPT_CONTENT = ["json"]
-
 CELERY_TASK_SERIALIZER = "json"
-
 CELERY_RESULT_SERIALIZER = "json"
 
 CELERY_TIMEZONE = "Asia/Kolkata"
-
 CELERY_ENABLE_UTC = True
 
 CELERY_TASK_ALWAYS_EAGER = (
@@ -524,19 +532,29 @@ CELERY_TASK_ALWAYS_EAGER = (
 
 CELERY_TASK_EAGER_PROPAGATES = True
 
-CELERY_BEAT_SCHEDULER = (
-    "django_celery_beat.schedulers:DatabaseScheduler"
-)
+
+# --------------------------------------------------
+# CELERY BEAT SCHEDULE
+# --------------------------------------------------
 
 CELERY_BEAT_SCHEDULE = {
+
+    # Check reimbursement mailbox every minute
     "fetch-reimbursement-emails": {
         "task": "expenses.tasks.fetch_emails_task",
         "schedule": 60.0,
     },
 
+    # External database synchronization - 2:00 AM IST
     "scheduled-external-database-sync-every-night": {
-        "task": "tenants.tasks.scheduled_external_database_sync",
-        "schedule": crontab(hour=2, minute=0),
+        "task": (
+            "tenants.tasks."
+            "scheduled_external_database_sync"
+        ),
+        "schedule": crontab(
+            hour=2,
+            minute=0,
+        ),
     },
 }
 

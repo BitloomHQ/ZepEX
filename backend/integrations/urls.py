@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     bamboohr_callback,
+    bamboohr_change_history,
     integration_list,
     integration_provider_catalog,
 
@@ -222,5 +223,10 @@ path(
     "quickbooks/payment-account/",
     save_quickbooks_payment_account,
     name="save-quickbooks-payment-account",
+),
+path(
+    "bamboohr/changes/",
+    bamboohr_change_history,
+    name="bamboohr-change-history",
 ),
 ]
