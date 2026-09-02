@@ -22,7 +22,24 @@ from rest_framework.permissions import (
 from rest_framework.response import Response
 
 from rest_framework import status
+from rest_framework.decorators import (
+    api_view,
+    permission_classes,
+)
 
+from rest_framework.permissions import (
+    IsAuthenticated,
+)
+from .services.quickbooks_export import (
+    QuickBooksExportError,
+    reconcile_quickbooks_export,
+)
+from rest_framework.response import Response
+from rest_framework import status
+
+from integrations.models import (
+    CompanyIntegration,
+)
 
 # ==========================================================
 # AUDIT LOGS
@@ -5306,9 +5323,12 @@ def retry_quickbooks_export(
     # ==========================================================
 
     try:
-        report = ExpenseReport.objects.get(
-            id=report_id,
-            company=profile.company,
+        report = (
+            ExpenseReport.objects
+            .get(
+                id=report_id,
+                company=profile.company,
+            )
         )
 
     except ExpenseReport.DoesNotExist:
@@ -5367,7 +5387,7 @@ def retry_quickbooks_export(
         )
 
     # ==========================================================
-    # 6. EXPORT RECORD
+    # 6. FIND EXISTING EXPORT RECORD
     # ==========================================================
 
     export_record = (
@@ -5379,20 +5399,117 @@ def retry_quickbooks_export(
         .first()
     )
 
+    # ==========================================================
+    # 7. NO EXPORT RECORD
+    # ==========================================================
+    #
+    # IMPORTANT:
+    #
+    # An export record may not exist when the previous export
+    # failed BEFORE export-record creation.
+    #
+    # Example:
+    #
+    #   PAID
+    #     ↓
+    #   Celery starts
+    #     ↓
+    #   validate category mappings
+    #     ↓
+    #   missing "gratuity"
+    #     ↓
+    #   QuickBooksExportError
+    #
+    # Because validation happens before export-record creation,
+    # there is nothing for the old retry endpoint to retry.
+    #
+    # Now that the configuration has been corrected, simply
+    # queue the export service again.
+    # ==========================================================
+
     if not export_record:
+
+        try:
+            task = (
+                export_report_to_quickbooks_task
+                .delay(
+                    str(report.id),
+                    str(profile.company.id),
+                )
+            )
+
+            create_integration_audit_log(
+                company=profile.company,
+                integration=integration,
+                provider="QUICKBOOKS",
+                action="QUICKBOOKS_EXPORT_RETRIED",
+                action_by=profile,
+                message=(
+                    "QuickBooks export retry queued "
+                    "after a pre-validation failure."
+                ),
+                metadata={
+                    "report_id": str(
+                        report.id
+                    ),
+                    "export_record_id": None,
+                    "task_id": str(
+                        task.id
+                    ),
+                    "amount": str(
+                        report.total_amount
+                    ),
+                    "retry_reason": (
+                        "NO_EXPORT_RECORD"
+                    ),
+                },
+            )
+
+        except Exception as exc:
+
+            logger.exception(
+                (
+                    "Unable to queue QuickBooks retry. "
+                    "report=%s"
+                ),
+                report.id,
+            )
+
+            return Response(
+                {
+                    "success": False,
+                    "error": (
+                        "Unable to queue QuickBooks "
+                        "retry."
+                    ),
+                    "detail": str(exc),
+                },
+                status=(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+            )
+
         return Response(
             {
-                "success": False,
-                "error": (
-                    "No QuickBooks export attempt "
-                    "exists for this report."
+                "success": True,
+                "message": (
+                    "QuickBooks export retry "
+                    "has been queued."
+                ),
+                "report_id": str(
+                    report.id
+                ),
+                "export_status": "QUEUED",
+                "export_record_id": None,
+                "task_id": str(
+                    task.id
                 ),
             },
-            status=status.HTTP_404_NOT_FOUND,
+            status=status.HTTP_202_ACCEPTED,
         )
 
     # ==========================================================
-    # 7. SUCCESS CANNOT BE RETRIED
+    # 8. SUCCESS CANNOT BE RETRIED
     # ==========================================================
 
     if (
@@ -5406,6 +5523,15 @@ def retry_quickbooks_export(
                     "This report has already been "
                     "successfully exported to QuickBooks."
                 ),
+                "report_id": str(
+                    report.id
+                ),
+                "export_status": (
+                    QuickBooksExportRecord.STATUS_SUCCESS
+                ),
+                "export_record_id": str(
+                    export_record.id
+                ),
                 "quickbooks_transaction_id": (
                     export_record
                     .quickbooks_transaction_id
@@ -5415,7 +5541,33 @@ def retry_quickbooks_export(
         )
 
     # ==========================================================
-    # 8. PENDING CANNOT BE RETRIED AGAIN
+    # 9. PROCESSING CANNOT BE RETRIED
+    # ==========================================================
+
+    if (
+        export_record.status
+        == QuickBooksExportRecord.STATUS_PROCESSING
+    ):
+        return Response(
+            {
+                "success": True,
+                "message": (
+                    "QuickBooks export is currently "
+                    "being processed."
+                ),
+                "report_id": str(
+                    report.id
+                ),
+                "export_status": "PROCESSING",
+                "export_record_id": str(
+                    export_record.id
+                ),
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    # ==========================================================
+    # 10. HANDLE PENDING
     # ==========================================================
 
     if (
@@ -5423,14 +5575,14 @@ def retry_quickbooks_export(
         == QuickBooksExportRecord.STATUS_PENDING
     ):
 
-        # ======================================================
-        # RECENT PENDING — DON'T CREATE DUPLICATE TASK
-        # ======================================================
+        # ------------------------------------------------------
+        # Recent PENDING:
+        # Don't create another Celery task.
+        # ------------------------------------------------------
 
         if not is_quickbooks_export_stale(
             export_record
         ):
-
             return Response(
                 {
                     "success": True,
@@ -5449,20 +5601,22 @@ def retry_quickbooks_export(
                 status=status.HTTP_202_ACCEPTED,
             )
 
-    # ======================================================
-    # STALE PENDING — ALLOW RETRY
-    # ======================================================
+        # ------------------------------------------------------
+        # Stale PENDING:
+        # It can safely be queued again.
+        # ------------------------------------------------------
 
-    logger.warning(
-        (
-            "Retrying stale QuickBooks export. "
-            "export_record=%s report=%s"
-        ),
-        export_record.id,
-        report.id,
-    )
+        logger.warning(
+            (
+                "Retrying stale QuickBooks export. "
+                "export_record=%s report=%s"
+            ),
+            export_record.id,
+            report.id,
+        )
+
     # ==========================================================
-    # 9. ONLY FAILED EXPORTS REACH HERE
+    # 11. FAILED OR STALE PENDING -> RESET TO PENDING
     # ==========================================================
 
     export_record.status = (
@@ -5480,7 +5634,7 @@ def retry_quickbooks_export(
     )
 
     # ==========================================================
-    # 10. QUEUE CELERY TASK
+    # 12. QUEUE CELERY TASK
     # ==========================================================
 
     try:
@@ -5491,33 +5645,43 @@ def retry_quickbooks_export(
                 str(profile.company.id),
             )
         )
+
         create_integration_audit_log(
-    company=profile.company,
-    integration=integration,
-    provider="QUICKBOOKS",
-    action="QUICKBOOKS_EXPORT_RETRIED",
-    action_by=profile,
-    message=(
-        "QuickBooks export retry queued."
-    ),
-    metadata={
-        "report_id": str(
-            report.id
-        ),
-        "export_record_id": str(
-            export_record.id
-        ),
-        "task_id": str(
-            task.id
-        ),
-        "amount": str(
-            report.total_amount
-        ),
-    },
-)
+            company=profile.company,
+            integration=integration,
+            provider="QUICKBOOKS",
+            action="QUICKBOOKS_EXPORT_RETRIED",
+            action_by=profile,
+            message=(
+                "QuickBooks export retry queued."
+            ),
+            metadata={
+                "report_id": str(
+                    report.id
+                ),
+                "export_record_id": str(
+                    export_record.id
+                ),
+                "task_id": str(
+                    task.id
+                ),
+                "amount": str(
+                    report.total_amount
+                ),
+                "previous_status": (
+                    export_record.status
+                ),
+            },
+        )
+
     except Exception:
+
         logger.exception(
-            "Unable to queue QuickBooks retry."
+            (
+                "Unable to queue QuickBooks retry. "
+                "report=%s"
+            ),
+            report.id,
         )
 
         export_record.status = (
@@ -5550,7 +5714,7 @@ def retry_quickbooks_export(
         )
 
     # ==========================================================
-    # 11. RESPONSE
+    # 13. RESPONSE
     # ==========================================================
 
     return Response(
@@ -6723,6 +6887,1086 @@ def save_quickbooks_payment_account(request):
                     .quickbooks_payment_account_type
                 ),
             },
+        },
+        status=status.HTTP_200_OK,
+    )
+
+# ==========================================================
+# QUICKBOOKS — INTEGRATION SETTINGS
+# ==========================================================
+
+
+@api_view(["GET", "PATCH"])
+@permission_classes([IsAuthenticated])
+def quickbooks_settings(request):
+    """
+    Get or update company-level QuickBooks settings.
+
+    GET:
+        Return current QuickBooks configuration.
+
+    PATCH:
+        Update QuickBooks automatic export setting.
+
+    Only Company Admin can modify the setting.
+    """
+
+    profile = request.user.profile
+
+    # ======================================================
+    # 1. COMPANY VALIDATION
+    # ======================================================
+
+    if not profile.company:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Your user is not assigned "
+                    "to a company."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ======================================================
+    # 2. FIND QUICKBOOKS INTEGRATION
+    # ======================================================
+
+    try:
+
+        integration = (
+            CompanyIntegration.objects
+            .get(
+                company=profile.company,
+                provider=(
+                    CompanyIntegration
+                    .PROVIDER_QUICKBOOKS
+                ),
+            )
+        )
+
+    except CompanyIntegration.DoesNotExist:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "QuickBooks integration "
+                    "is not configured."
+                ),
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    # ======================================================
+    # 3. GET SETTINGS
+    # ======================================================
+
+    if request.method == "GET":
+
+        return Response(
+            {
+                "success": True,
+
+                "quickbooks": {
+                    "is_connected": (
+                        integration.is_connected
+                    ),
+
+                    "is_active": (
+                        integration.is_active
+                    ),
+
+                    "auto_export": (
+                        integration.quickbooks_auto_export
+                    ),
+
+                    "payment_account": {
+                        "id": (
+                            integration
+                            .quickbooks_payment_account_id
+                        ),
+                        "name": (
+                            integration
+                            .quickbooks_payment_account_name
+                        ),
+                        "type": (
+                            integration
+                            .quickbooks_payment_account_type
+                        ),
+                    },
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    # ======================================================
+    # 4. PATCH PERMISSION
+    # ======================================================
+
+    if profile.role != "COMPANY_ADMIN":
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Only Company Admin can update "
+                    "QuickBooks settings."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # ======================================================
+    # 5. VALIDATE AUTO EXPORT
+    # ======================================================
+
+    if "auto_export" not in request.data:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "auto_export is required."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    auto_export = (
+        request.data.get(
+            "auto_export"
+        )
+    )
+
+    if not isinstance(
+        auto_export,
+        bool,
+    ):
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "auto_export must be "
+                    "true or false."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ======================================================
+    # 6. ENABLING AUTO EXPORT — SAFETY CHECKS
+    # ======================================================
+
+    if auto_export:
+
+        # QuickBooks must be connected.
+
+        if not integration.is_connected:
+
+            return Response(
+                {
+                    "success": False,
+                    "error": (
+                        "Connect QuickBooks before "
+                        "enabling automatic export."
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Integration must be active.
+
+        if not integration.is_active:
+
+            return Response(
+                {
+                    "success": False,
+                    "error": (
+                        "QuickBooks integration is "
+                        "currently inactive."
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Payment account must be configured.
+
+        if not (
+            integration
+            .quickbooks_payment_account_id
+        ):
+
+            return Response(
+                {
+                    "success": False,
+                    "error": (
+                        "Configure a QuickBooks payment "
+                        "account before enabling "
+                        "automatic export."
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Payment account must be Bank / Credit Card.
+
+        if (
+            integration.quickbooks_payment_account_type
+            not in (
+                "Bank",
+                "Credit Card",
+            )
+        ):
+
+            return Response(
+                {
+                    "success": False,
+                    "error": (
+                        "The QuickBooks payment account "
+                        "must be a Bank or Credit Card "
+                        "account."
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    # ======================================================
+    # 7. SAVE SETTING
+    # ======================================================
+
+    previous_value = (
+        integration.quickbooks_auto_export
+    )
+
+    integration.quickbooks_auto_export = (
+        auto_export
+    )
+
+    integration.save(
+        update_fields=[
+            "quickbooks_auto_export",
+            "updated_at",
+        ]
+    )
+
+    # ======================================================
+    # 8. RESPONSE
+    # ======================================================
+
+    return Response(
+        {
+            "success": True,
+
+            "message": (
+                "QuickBooks automatic export enabled."
+                if auto_export
+                else (
+                    "QuickBooks automatic "
+                    "export disabled."
+                )
+            ),
+
+            "previous_auto_export": (
+                previous_value
+            ),
+
+            "auto_export": (
+                integration.quickbooks_auto_export
+            ),
+
+            "quickbooks_connected": (
+                integration.is_connected
+            ),
+        },
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def reconcile_quickbooks_report(
+    request,
+    report_id,
+):
+    """
+    Verify an exported ZepEx expense report against
+    the actual Purchase transaction in QuickBooks.
+
+    The reconciliation compares the ZepEx export record
+    with the real QuickBooks Purchase transaction.
+    """
+
+    # ==========================================================
+    # 1. USER PROFILE
+    # ==========================================================
+
+    try:
+        profile = request.user.profile
+
+    except Exception:
+
+        return Response(
+            {
+                "success": False,
+                "error": "User profile not found.",
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # ==========================================================
+    # 2. COMPANY CHECK
+    # ==========================================================
+
+    if not profile.company:
+
+        return Response(
+            {
+                "success": False,
+                "error": "Company is not assigned.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 3. PERMISSION
+    # ==========================================================
+
+    if not (
+        profile.role == "COMPANY_ADMIN"
+        or has_company_permission(
+            profile,
+            "can_manage_integrations",
+        )
+    ):
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "You are not allowed to "
+                    "manage integrations."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # ==========================================================
+    # 4. RUN QUICKBOOKS RECONCILIATION
+    # ==========================================================
+
+    try:
+
+        result = reconcile_quickbooks_export(
+            report_id=report_id,
+            company=profile.company,
+        )
+
+    # ==========================================================
+    # 5. BUSINESS / VALIDATION ERROR
+    # ==========================================================
+
+    except QuickBooksExportError as exc:
+
+        return Response(
+            {
+                "success": False,
+                "error": str(exc),
+                "report_id": str(report_id),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 6. UNEXPECTED / QUICKBOOKS ERROR
+    # ==========================================================
+
+    except Exception as exc:
+
+        logger.exception(
+            (
+                "QuickBooks reconciliation failed. "
+                "company=%s report=%s"
+            ),
+            profile.company.id,
+            report_id,
+        )
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Unable to reconcile QuickBooks "
+                    "transaction."
+                ),
+                "detail": str(exc),
+                "report_id": str(report_id),
+            },
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    # ==========================================================
+    # 7. SUCCESS / RECONCILIATION RESULT
+    # ==========================================================
+
+    return Response(
+        {
+            "success": result.get(
+                "success",
+                False,
+            ),
+
+            "report_id": result.get(
+                "report_id",
+            ),
+
+            "export_record_id": result.get(
+                "export_record_id",
+            ),
+
+            "quickbooks_transaction_id": result.get(
+                "quickbooks_transaction_id",
+            ),
+
+            "reconciliation_status": result.get(
+                "reconciliation_status",
+            ),
+
+            "mismatches": result.get(
+                "mismatches",
+                [],
+            ),
+
+            # --------------------------------------------------
+            # QuickBooks transaction information
+            # --------------------------------------------------
+
+            "quickbooks_purchase": result.get(
+                "quickbooks_purchase",
+                {},
+            ),
+
+            "reconciled_at": result.get(
+                "reconciled_at",
+            ),
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+# ==========================================================
+# QUICKBOOKS — INTEGRATION HEALTH
+# ==========================================================
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def quickbooks_health(request):
+    """
+    Return the operational health of the company's
+    QuickBooks integration.
+
+    Checks:
+        - connection state
+        - OAuth/API reachability
+        - payment account configuration
+        - category mappings
+        - automatic export
+        - export status
+        - reconciliation status
+    """
+
+    # ======================================================
+    # 1. USER PROFILE
+    # ======================================================
+
+    try:
+        profile = request.user.profile
+
+    except Exception:
+        return Response(
+            {
+                "success": False,
+                "error": "User profile not found.",
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # ======================================================
+    # 2. COMPANY
+    # ======================================================
+
+    if not profile.company:
+        return Response(
+            {
+                "success": False,
+                "error": "Company is not assigned.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ======================================================
+    # 3. PERMISSION
+    # ======================================================
+
+    can_view = (
+        profile.role == "COMPANY_ADMIN"
+        or has_company_permission(
+            profile,
+            "can_view_integrations",
+        )
+        or has_company_permission(
+            profile,
+            "can_manage_integrations",
+        )
+    )
+
+    if not can_view:
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "You are not allowed to "
+                    "view integrations."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # ======================================================
+    # 4. FIND QUICKBOOKS INTEGRATION
+    # ======================================================
+
+    integration = (
+        CompanyIntegration.objects
+        .filter(
+            company=profile.company,
+            provider=(
+                CompanyIntegration
+                .PROVIDER_QUICKBOOKS
+            ),
+        )
+        .select_related(
+            "credential",
+        )
+        .first()
+    )
+
+    # ------------------------------------------------------
+    # Not configured
+    # ------------------------------------------------------
+
+    if not integration:
+        return Response(
+            {
+                "success": True,
+                "provider": "QUICKBOOKS",
+                "overall_status": "NOT_CONFIGURED",
+
+                "connection": {
+                    "connected": False,
+                    "active": False,
+                    "company_reachable": False,
+                },
+
+                "configuration": {
+                    "auto_export_enabled": False,
+                    "payment_account_configured": False,
+                    "payment_account": None,
+                    "category_mapping_count": 0,
+                },
+
+                "exports": {
+                    "total": 0,
+                    "successful": 0,
+                    "failed": 0,
+                    "pending": 0,
+                    "processing": 0,
+                },
+
+                "reconciliation": {
+                    "verified": 0,
+                    "mismatch": 0,
+                    "missing": 0,
+                    "error": 0,
+                    "not_checked": 0,
+                },
+
+                "issues": [
+                    {
+                        "type": "NOT_CONFIGURED",
+                        "message": (
+                            "QuickBooks integration "
+                            "is not configured."
+                        ),
+                    }
+                ],
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    # ======================================================
+    # 5. CONNECTION HEALTH
+    # ======================================================
+
+    company_reachable = False
+    connection_error = None
+    realm_id = None
+    quickbooks_company_name = None
+
+    if (
+        integration.is_connected
+        and integration.is_active
+    ):
+
+        try:
+
+            token_result = (
+                get_valid_quickbooks_access_token(
+                    integration=integration,
+                )
+            )
+
+            config = (
+                token_result.get("config")
+                or {}
+            )
+
+            realm_id = config.get(
+                "realm_id"
+            )
+
+            quickbooks_company_name = (
+                config.get(
+                    "quickbooks_company_name"
+                )
+            )
+
+            if not realm_id:
+                connection_error = (
+                    "QuickBooks realm ID is missing."
+                )
+
+            else:
+
+                client = QuickBooksClient()
+
+                # This performs a real API request and proves
+                # that the realm/token can access QuickBooks.
+                company_info = (
+                    client.get_company_info(
+                        realm_id=realm_id,
+                        access_token=(
+                            token_result[
+                                "access_token"
+                            ]
+                        ),
+                    )
+                )
+
+                company_reachable = True
+
+                if isinstance(
+                    company_info,
+                    dict,
+                ):
+                    quickbooks_company_name = (
+                        company_info.get(
+                            "CompanyName"
+                        )
+                        or quickbooks_company_name
+                    )
+
+        except QuickBooksIntegrationError as exc:
+
+            connection_error = str(exc)
+
+        except Exception as exc:
+
+            logger.exception(
+                "Unexpected QuickBooks health "
+                "connection check error."
+            )
+
+            connection_error = str(exc)
+
+    else:
+
+        if not integration.is_connected:
+            connection_error = (
+                "QuickBooks is not connected."
+            )
+
+        elif not integration.is_active:
+            connection_error = (
+                "QuickBooks integration is inactive."
+            )
+
+    # ======================================================
+    # 6. CONFIGURATION HEALTH
+    # ======================================================
+
+    payment_account_configured = bool(
+        integration.quickbooks_payment_account_id
+    )
+
+    mapping_count = (
+        QuickBooksCategoryMapping.objects
+        .filter(
+            integration=integration,
+        )
+        .count()
+    )
+
+    # ======================================================
+    # 7. EXPORT HEALTH
+    # ======================================================
+
+    exports = (
+        QuickBooksExportRecord.objects
+        .filter(
+            integration=integration,
+        )
+    )
+
+    export_total = exports.count()
+
+    export_success = exports.filter(
+        status=(
+            QuickBooksExportRecord
+            .STATUS_SUCCESS
+        ),
+    ).count()
+
+    export_failed = exports.filter(
+        status=(
+            QuickBooksExportRecord
+            .STATUS_FAILED
+        ),
+    ).count()
+
+    export_pending = exports.filter(
+        status=(
+            QuickBooksExportRecord
+            .STATUS_PENDING
+        ),
+    ).count()
+
+    export_processing = exports.filter(
+        status=(
+            QuickBooksExportRecord
+            .STATUS_PROCESSING
+        ),
+    ).count()
+
+    # ======================================================
+    # 8. RECONCILIATION HEALTH
+    # ======================================================
+
+    reconciliation_verified = (
+        exports.filter(
+            reconciliation_status=(
+                QuickBooksExportRecord
+                .RECONCILIATION_VERIFIED
+            ),
+        ).count()
+    )
+
+    reconciliation_mismatch = (
+        exports.filter(
+            reconciliation_status=(
+                QuickBooksExportRecord
+                .RECONCILIATION_MISMATCH
+            ),
+        ).count()
+    )
+
+    reconciliation_missing = (
+        exports.filter(
+            reconciliation_status=(
+                QuickBooksExportRecord
+                .RECONCILIATION_MISSING
+            ),
+        ).count()
+    )
+
+    reconciliation_error = (
+        exports.filter(
+            reconciliation_status=(
+                QuickBooksExportRecord
+                .RECONCILIATION_ERROR
+            ),
+        ).count()
+    )
+
+    reconciliation_not_checked = (
+        exports.filter(
+            reconciliation_status=(
+                QuickBooksExportRecord
+                .RECONCILIATION_NOT_CHECKED
+            ),
+        ).count()
+    )
+
+    # ======================================================
+    # 9. BUILD ISSUES
+    # ======================================================
+
+    issues = []
+
+    if not integration.is_connected:
+
+        issues.append(
+            {
+                "type": "DISCONNECTED",
+                "message": (
+                    "QuickBooks is not connected."
+                ),
+            }
+        )
+
+    elif not integration.is_active:
+
+        issues.append(
+            {
+                "type": "INACTIVE",
+                "message": (
+                    "QuickBooks integration "
+                    "is inactive."
+                ),
+            }
+        )
+
+    elif not company_reachable:
+
+        issues.append(
+            {
+                "type": "CONNECTION_ERROR",
+                "message": (
+                    connection_error
+                    or (
+                        "Unable to reach "
+                        "QuickBooks."
+                    )
+                ),
+            }
+        )
+
+    if not payment_account_configured:
+
+        issues.append(
+            {
+                "type": (
+                    "PAYMENT_ACCOUNT_MISSING"
+                ),
+                "message": (
+                    "QuickBooks payment account "
+                    "is not configured."
+                ),
+            }
+        )
+
+    if mapping_count == 0:
+
+        issues.append(
+            {
+                "type": "CATEGORY_MAPPING_MISSING",
+                "message": (
+                    "No QuickBooks category "
+                    "mappings are configured."
+                ),
+            }
+        )
+
+    if export_failed:
+
+        issues.append(
+            {
+                "type": "EXPORT_FAILURES",
+                "count": export_failed,
+                "message": (
+                    f"{export_failed} QuickBooks "
+                    "export(s) have failed."
+                ),
+            }
+        )
+
+    if reconciliation_mismatch:
+
+        issues.append(
+            {
+                "type": (
+                    "RECONCILIATION_MISMATCH"
+                ),
+                "count": (
+                    reconciliation_mismatch
+                ),
+                "message": (
+                    f"{reconciliation_mismatch} "
+                    "QuickBooks transaction(s) "
+                    "have reconciliation mismatches."
+                ),
+            }
+        )
+
+    if reconciliation_missing:
+
+        issues.append(
+            {
+                "type": "MISSING_TRANSACTION",
+                "count": (
+                    reconciliation_missing
+                ),
+                "message": (
+                    f"{reconciliation_missing} "
+                    "QuickBooks transaction(s) "
+                    "are missing."
+                ),
+            }
+        )
+
+    if reconciliation_error:
+
+        issues.append(
+            {
+                "type": "RECONCILIATION_ERROR",
+                "count": (
+                    reconciliation_error
+                ),
+                "message": (
+                    f"{reconciliation_error} "
+                    "QuickBooks reconciliation "
+                    "check(s) failed."
+                ),
+            }
+        )
+
+    # ======================================================
+    # 10. OVERALL STATUS
+    # ======================================================
+
+    critical_issue = (
+        not integration.is_connected
+        or not integration.is_active
+        or not company_reachable
+        or not payment_account_configured
+    )
+
+    warning_issue = (
+        mapping_count == 0
+        or export_failed > 0
+        or reconciliation_mismatch > 0
+        or reconciliation_missing > 0
+        or reconciliation_error > 0
+    )
+
+    if critical_issue:
+        overall_status = "UNHEALTHY"
+
+    elif warning_issue:
+        overall_status = "WARNING"
+
+    else:
+        overall_status = "HEALTHY"
+
+    # ======================================================
+    # 11. RESPONSE
+    # ======================================================
+
+    return Response(
+        {
+            "success": True,
+
+            "provider": "QUICKBOOKS",
+
+            "overall_status": (
+                overall_status
+            ),
+
+            "connection": {
+                "connected": (
+                    integration.is_connected
+                ),
+                "active": (
+                    integration.is_active
+                ),
+                "company_reachable": (
+                    company_reachable
+                ),
+                "realm_id": realm_id,
+                "quickbooks_company_name": (
+                    quickbooks_company_name
+                ),
+                "error": connection_error,
+            },
+
+            "configuration": {
+                "auto_export_enabled": (
+                    integration
+                    .quickbooks_auto_export
+                ),
+
+                "payment_account_configured": (
+                    payment_account_configured
+                ),
+
+                "payment_account": {
+                    "id": (
+                        integration
+                        .quickbooks_payment_account_id
+                    ),
+                    "name": (
+                        integration
+                        .quickbooks_payment_account_name
+                    ),
+                    "type": (
+                        integration
+                        .quickbooks_payment_account_type
+                    ),
+                }
+                if payment_account_configured
+                else None,
+
+                "category_mapping_count": (
+                    mapping_count
+                ),
+            },
+
+            "exports": {
+                "total": export_total,
+                "successful": export_success,
+                "failed": export_failed,
+                "pending": export_pending,
+                "processing": (
+                    export_processing
+                ),
+            },
+
+            "reconciliation": {
+                "verified": (
+                    reconciliation_verified
+                ),
+                "mismatch": (
+                    reconciliation_mismatch
+                ),
+                "missing": (
+                    reconciliation_missing
+                ),
+                "error": (
+                    reconciliation_error
+                ),
+                "not_checked": (
+                    reconciliation_not_checked
+                ),
+            },
+
+            "issues": issues,
+
+            "checked_at": (
+                timezone.now()
+            ),
         },
         status=status.HTTP_200_OK,
     )

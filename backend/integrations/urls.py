@@ -18,10 +18,13 @@ from .views import (
     # QuickBooks
     connect_quickbooks,
     quickbooks_callback,
+    quickbooks_health,
     quickbooks_payment_accounts,
+    quickbooks_settings,
     quickbooks_status,
     quickbooks_accounts,
     quickbooks_category_mappings,
+    reconcile_quickbooks_report,
     save_quickbooks_category_mapping,
     delete_quickbooks_category_mapping,
     export_report_quickbooks,
@@ -228,5 +231,20 @@ path(
     "bamboohr/changes/",
     bamboohr_change_history,
     name="bamboohr-change-history",
+),
+path(
+    "quickbooks/settings/",
+    quickbooks_settings,
+    name="quickbooks-settings",
+),
+path(
+    "quickbooks/reconcile/<uuid:report_id>/",
+    reconcile_quickbooks_report,
+    name="quickbooks-reconcile-report",
+),
+path(
+    "quickbooks/health/",
+    quickbooks_health,
+    name="quickbooks-health",
 ),
 ]

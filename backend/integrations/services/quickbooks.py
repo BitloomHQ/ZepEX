@@ -44,6 +44,17 @@ class QuickBooksPermissionError(
     """
 
 
+class QuickBooksNotFoundError(
+    QuickBooksIntegrationError
+):
+    """
+    Requested QuickBooks resource does not exist.
+
+    Used when a previously exported transaction
+    has been deleted or cannot be found in QuickBooks.
+    """
+
+
 # ==========================================================
 # QUICKBOOKS OAUTH CLIENT
 # ==========================================================
@@ -435,6 +446,17 @@ class QuickBooksClient:
             )
 
         # --------------------------------------------------
+        # Resource not found
+        # --------------------------------------------------
+
+        if response.status_code == 404:
+
+            raise QuickBooksNotFoundError(
+                "Requested QuickBooks resource "
+                "was not found."
+            )
+
+        # --------------------------------------------------
         # Rate limit
         # --------------------------------------------------
 
@@ -453,6 +475,81 @@ class QuickBooksClient:
             raise QuickBooksConnectionError(
                 "QuickBooks is temporarily unavailable."
             )
+
+        # --------------------------------------------------
+        # QuickBooks deleted / inactive Purchase
+        # --------------------------------------------------
+        #
+        # QuickBooks may return HTTP 400 with ValidationFault
+        # code 610 ("Object Not Found") when a Purchase that
+        # previously existed has been deleted/inactivated.
+        #
+        # We only classify this as NotFound for GET requests
+        # to a specific Purchase endpoint. Code 610 can also
+        # appear for unrelated inactive accounts/customers/items
+        # during other operations, so it must not be treated as
+        # a generic 404 everywhere.
+        # --------------------------------------------------
+
+        if response.status_code == 400:
+
+            try:
+                error_data = response.json()
+            except ValueError:
+                error_data = {}
+
+            fault = (
+                error_data.get("Fault", {})
+                if isinstance(error_data, dict)
+                else {}
+            )
+
+            errors = (
+                fault.get("Error", [])
+                if isinstance(fault, dict)
+                else []
+            )
+
+            is_purchase_lookup = (
+                str(method or "").upper() == "GET"
+                and "/purchase/" in (
+                    "/" + endpoint.lstrip("/")
+                )
+            )
+
+            object_not_found = False
+
+            for error in errors:
+
+                if not isinstance(error, dict):
+                    continue
+
+                error_code = str(
+                    error.get("code")
+                    or ""
+                ).strip()
+
+                error_message = str(
+                    error.get("Message")
+                    or ""
+                ).strip().lower()
+
+                if (
+                    error_code == "610"
+                    and error_message == "object not found"
+                ):
+                    object_not_found = True
+                    break
+
+            if (
+                is_purchase_lookup
+                and object_not_found
+            ):
+
+                raise QuickBooksNotFoundError(
+                    "Requested QuickBooks Purchase "
+                    "was not found."
+                )
 
         if not response.ok:
 
@@ -655,6 +752,42 @@ class QuickBooksClient:
             f"v3/company/{realm_id}/purchase",
             access_token=access_token,
             json=purchase_data,
+        )
+
+    def get_purchase(
+        self,
+        *,
+        realm_id,
+        access_token,
+        purchase_id,
+    ):
+        """
+        Fetch one Purchase transaction from QuickBooks Online.
+
+        Used by ZepEx to verify/reconcile an expense report
+        that was previously exported to QuickBooks.
+        """
+
+        if not realm_id:
+            raise ValueError(
+                "QuickBooks realm ID is required."
+            )
+
+        if not purchase_id:
+            raise ValueError(
+                "QuickBooks purchase ID is required."
+            )
+
+        return self.request(
+            "GET",
+            (
+                f"v3/company/{realm_id}/"
+                f"purchase/{purchase_id}"
+            ),
+            access_token=access_token,
+            params={
+                "minorversion": "75",
+            },
         )
 
     def get_payment_accounts(

@@ -21,6 +21,14 @@ from .models import (
     Department,
     
 )
+
+from django.db import transaction
+
+from integrations.models import CompanyIntegration
+
+from integrations.tasks import (
+    export_report_to_quickbooks_task,
+)
 from tenants.models import CompanyRole
 from expenses.workflow_engine import reorder_workflow_steps
 from .notification_services import notify_next_approver, notify_report_paid
@@ -47,6 +55,11 @@ from .report_utils import (
     get_pending_approval_reports_for,
     get_reports_awaiting_payment,
     is_payment_queue_role,
+)
+from django.db import transaction
+
+from integrations.tasks import (
+    export_report_to_quickbooks_task,
 )
 from audit_logs.utils import create_audit_log
 from .models import ExpenseLineItem
@@ -849,6 +862,7 @@ def current_month_report(request):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@transaction.atomic
 def accounts_mark_paid(request, report_id):
 
     profile = request.user.profile
@@ -857,16 +871,20 @@ def accounts_mark_paid(request, report_id):
     # 1. Permission check
     # --------------------------------------------------
 
-    is_company_admin = profile.role == "COMPANY_ADMIN"
+    is_company_admin = (
+        profile.role == "COMPANY_ADMIN"
+    )
 
     if not is_company_admin:
 
         if not profile.company_role:
             return Response(
                 {
-                    "error": "Your company role is not assigned."
+                    "error": (
+                        "Your company role is not assigned."
+                    )
                 },
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         if not profile.company_role.can_mark_paid:
@@ -877,8 +895,16 @@ def accounts_mark_paid(request, report_id):
                         "reports as paid."
                     )
                 },
-                status=status.HTTP_403_FORBIDDEN
+                status=status.HTTP_403_FORBIDDEN,
             )
+
+    if not profile.company:
+        return Response(
+            {
+                "error": "Company is not assigned."
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     actor_role = (
         "COMPANY_ADMIN"
@@ -887,32 +913,86 @@ def accounts_mark_paid(request, report_id):
     )
 
     # --------------------------------------------------
-    # 2. Get report from Accounts payment queue
+    # 2. Verify report is in Accounts payment queue
+    # --------------------------------------------------
+    #
+    # IMPORTANT:
+    #
+    # get_reports_awaiting_payment() uses DISTINCT.
+    #
+    # PostgreSQL does NOT allow:
+    #
+    # DISTINCT + SELECT FOR UPDATE
+    #
+    # Therefore:
+    #
+    # 1. First verify eligibility using .exists()
+    # 2. Then lock ExpenseReport directly
+    #
     # --------------------------------------------------
 
-    try:
-        report = get_reports_awaiting_payment(
+    is_eligible = (
+        get_reports_awaiting_payment(
             profile.company
-        ).get(
-            id=report_id,
-            company=profile.company,
         )
+        .filter(
+            id=report_id,
+        )
+        .exists()
+    )
 
-    except ExpenseReport.DoesNotExist:
+    if not is_eligible:
         return Response(
             {
                 "error": (
-                    "Report not found in accounts/payment queue."
+                    "Report not found in "
+                    "accounts/payment queue."
                 )
             },
-            status=status.HTTP_404_NOT_FOUND
+            status=status.HTTP_404_NOT_FOUND,
         )
 
     # --------------------------------------------------
-    # 3. Final safety check
+    # 3. Lock actual ExpenseReport row
+    # --------------------------------------------------
+    #
+    # This prevents two payment requests from processing
+    # the same report at the same time.
+    #
+    # This query does NOT use DISTINCT.
     # --------------------------------------------------
 
-    if report.status != ExpenseReport.STATUS_APPROVED:
+    try:
+
+        report = (
+            ExpenseReport.objects
+            .select_for_update()
+            .get(
+                id=report_id,
+                company=profile.company,
+            )
+        )
+
+    except ExpenseReport.DoesNotExist:
+
+        return Response(
+            {
+                "error": (
+                    "Expense report not found."
+                )
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    # --------------------------------------------------
+    # 4. Final safety check
+    # --------------------------------------------------
+
+    if (
+        report.status
+        != ExpenseReport.STATUS_APPROVED
+    ):
+
         return Response(
             {
                 "error": (
@@ -920,10 +1000,11 @@ def accounts_mark_paid(request, report_id):
                     "be marked as paid."
                 )
             },
-            status=status.HTTP_400_BAD_REQUEST
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
     if not report.workflow_completed:
+
         return Response(
             {
                 "error": (
@@ -931,46 +1012,61 @@ def accounts_mark_paid(request, report_id):
                     "the approval workflow."
                 )
             },
-            status=status.HTTP_400_BAD_REQUEST
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
     # --------------------------------------------------
-    # 4. Recalculate final receipt/report totals
+    # 5. Recalculate final receipt/report totals
     # --------------------------------------------------
     #
-    # This is important because an approver may have:
-    #
-    # - removed a category
-    # - removed a subcategory
-    # - restored a category/subcategory
-    #
-    # The Accounts amount must use the final state.
+    # Accounts and QuickBooks must use the final
+    # approved reimbursement amount.
     # --------------------------------------------------
 
     for receipt in report.receipts.all():
 
-        recalculate_receipt_from_line_items(receipt)
+        recalculate_receipt_from_line_items(
+            receipt
+        )
 
-    recalculate_report_total(report)
+    recalculate_report_total(
+        report
+    )
 
     report.refresh_from_db()
 
     # --------------------------------------------------
-    # 5. Payment notes
+    # 6. Payment notes
     # --------------------------------------------------
 
-    notes = request.data.get("notes", "").strip()
+    notes = (
+        request.data.get(
+            "notes",
+            "",
+        )
+        .strip()
+    )
 
-    previous_status = report.status
+    previous_status = (
+        report.status
+    )
 
     # --------------------------------------------------
-    # 6. Mark report as PAID
+    # 7. Mark report as PAID
     # --------------------------------------------------
 
-    report.status = ExpenseReport.STATUS_PAID
+    report.status = (
+        ExpenseReport.STATUS_PAID
+    )
+
     report.paid_notes = notes
-    report.paid_at = timezone.now()
+
+    report.paid_at = (
+        timezone.now()
+    )
+
     report.workflow_completed = True
+
     report.current_workflow_step = None
     report.current_approver = None
 
@@ -987,36 +1083,38 @@ def accounts_mark_paid(request, report_id):
     )
 
     # --------------------------------------------------
-    # 7. Mark only approved receipts as PAID
+    # 8. Mark approved receipts as PAID
     # --------------------------------------------------
     #
-    # IMPORTANT:
-    #
-    # APPROVED receipt  -> PAID
-    # REJECTED receipt  -> remains REJECTED
-    #
-    # We must NOT blindly update every receipt.
+    # APPROVED -> PAID
+    # REJECTED -> remains REJECTED
     # --------------------------------------------------
 
     report.receipts.filter(
-        status=ExpenseReceipt.STATUS_APPROVED
+        status=(
+            ExpenseReceipt.STATUS_APPROVED
+        )
     ).update(
-        status=ExpenseReceipt.STATUS_PAID
+        status=(
+            ExpenseReceipt.STATUS_PAID
+        )
     )
 
     # --------------------------------------------------
-    # 8. Approval history
+    # 9. Approval history
     # --------------------------------------------------
 
     ApprovalHistory.objects.create(
         report=report,
         action_by=profile,
-        action=ApprovalHistory.ACTION_PAID,
+        action=(
+            ApprovalHistory.ACTION_PAID
+        ),
         comments=notes,
     )
 
     # --------------------------------------------------
-    # 9. Audit log
+    # 10. Audit log
     # --------------------------------------------------
 
     create_audit_log(
@@ -1028,66 +1126,165 @@ def accounts_mark_paid(request, report_id):
             f"{report.id} as paid."
         ),
         metadata={
-            "report_id": str(report.id),
-            "employee_email": report.employee.user.email,
+            "report_id": str(
+                report.id
+            ),
+            "employee_email": (
+                report.employee.user.email
+            ),
             "department": (
                 report.department.name
                 if report.department
                 else None
             ),
-            "total_amount": str(report.total_amount),
-            "previous_status": previous_status,
-            "paid_by": profile.user.email,
-            "paid_by_role": actor_role,
-            "is_company_admin_override": is_company_admin,
+            "total_amount": str(
+                report.total_amount
+            ),
+            "previous_status": (
+                previous_status
+            ),
+            "paid_by": (
+                profile.user.email
+            ),
+            "paid_by_role": (
+                actor_role
+            ),
+            "is_company_admin_override": (
+                is_company_admin
+            ),
             "notes": notes,
-        }
+        },
     )
 
     # --------------------------------------------------
-    # 10. Payment notification
+    # 11. Payment notifications
     # --------------------------------------------------
 
-   # --------------------------------------------------
-# 10. Payment Notifications
-# --------------------------------------------------
-
-# In-app notification → Employee
     notify_report_paid(
-    recipient=report.employee,
-    report=report,
-)
+        recipient=report.employee,
+        report=report,
+    )
 
-# Existing email notification
     send_workflow_status_email(
-    report=report,
-    subject="Reimbursement Payment Completed",
-    message=(
-        "Your reimbursement report has been processed "
-        "by Accounts and marked as paid."
-    ),
-    action="PAID",
-    action_by=profile,
-    current_step=None,
-    notes=notes or "Payment completed successfully.",
-    notify_previous_approvers=True,
-)
+        report=report,
+        subject=(
+            "Reimbursement Payment Completed"
+        ),
+        message=(
+            "Your reimbursement report has been "
+            "processed by Accounts and marked as paid."
+        ),
+        action="PAID",
+        action_by=profile,
+        current_step=None,
+        notes=(
+            notes
+            or "Payment completed successfully."
+        ),
+        notify_previous_approvers=True,
+    )
+
     # --------------------------------------------------
-    # 11. Response
+    # 12. Check QuickBooks automatic export
+    # --------------------------------------------------
+    #
+    # Auto export only occurs when:
+    #
+    # - QuickBooks is connected
+    # - QuickBooks is active
+    # - quickbooks_auto_export = True
+    #
     # --------------------------------------------------
 
-    serializer = ExpenseReportSerializer(report)
+    quickbooks_integration = (
+        CompanyIntegration.objects
+        .filter(
+            company=profile.company,
+            provider=(
+                CompanyIntegration
+                .PROVIDER_QUICKBOOKS
+            ),
+            is_connected=True,
+            is_active=True,
+            quickbooks_auto_export=True,
+        )
+        .first()
+    )
+
+    quickbooks_export_queued = False
+
+    # --------------------------------------------------
+    # 13. Queue QuickBooks export AFTER transaction
+    # --------------------------------------------------
+    #
+    # Do not call QuickBooks directly here.
+    #
+    # Celery should only receive the task after the
+    # payment transaction successfully commits.
+    # --------------------------------------------------
+
+    if quickbooks_integration:
+
+        report_id_for_export = str(
+            report.id
+        )
+
+        company_id_for_export = str(
+            profile.company.id
+        )
+
+        transaction.on_commit(
+            lambda: (
+                export_report_to_quickbooks_task.delay(
+                    report_id_for_export,
+                    company_id_for_export,
+                )
+            )
+        )
+
+        quickbooks_export_queued = True
+
+    # --------------------------------------------------
+    # 14. Response
+    # --------------------------------------------------
+
+    serializer = ExpenseReportSerializer(
+        report
+    )
 
     return Response(
         {
-            "message": "Report marked as paid.",
-            "previous_status": previous_status,
-            "paid_by": actor_role,
-            "is_company_admin_override": is_company_admin,
-            "final_total_amount": str(report.total_amount),
+            "message": (
+                "Report marked as paid."
+            ),
+            "previous_status": (
+                previous_status
+            ),
+            "paid_by": (
+                actor_role
+            ),
+            "is_company_admin_override": (
+                is_company_admin
+            ),
+            "final_total_amount": str(
+                report.total_amount
+            ),
+
+            "quickbooks_auto_export_enabled": (
+                bool(
+                    quickbooks_integration
+                )
+            ),
+
+            "quickbooks_export": (
+                "QUEUED_AFTER_COMMIT"
+                if quickbooks_export_queued
+                else "NOT_QUEUED"
+            ),
+
             "report": serializer.data,
         },
-        status=status.HTTP_200_OK
+        status=status.HTTP_200_OK,
     )
 
 @api_view(["DELETE"])

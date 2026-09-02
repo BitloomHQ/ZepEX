@@ -1791,7 +1791,7 @@ def extract_receipt_with_gemini(receipt: ExpenseReceipt):
     # Gemini prompt
     # ========================================================
 
-    prompt = prompt = prompt = f"""
+    prompt = f"""
 You are ZepEx Receipt Intelligence, an expert multilingual receipt,
 invoice, expense, travel-document and financial-document extraction engine.
 
@@ -4183,6 +4183,13 @@ Return valid JSON only.
         "training",
         "relocation",
         "wfh",
+        "beverages",
+        "alcohol",
+        "taxes",
+        "fees",
+        "gratuity",
+        "discount",
+        "toll",
         "miscellaneous",
     }
 
@@ -4819,91 +4826,6 @@ Return valid JSON only.
         )
 
         # =================================================
-        # CREATE EXPENSE LINE ITEMS
-        # =================================================
-
-        for bill_index, bill in enumerate(
-            normalized_bills
-        ):
-
-            try:
-                amount = Decimal(
-                    str(
-                        bill.get(
-                            "amount",
-                            "0.00",
-                        )
-                    )
-                )
-            except (
-                InvalidOperation,
-                TypeError,
-                ValueError,
-            ):
-                amount = Decimal(
-                    "0.00"
-                )
-
-            approved_bill_total = (
-                Decimal("0.00")
-            )
-
-            # ------------------------------------------------
-            # Bill date
-            # ------------------------------------------------
-
-            bill_date = None
-
-            if bill.get(
-                "bill_date"
-            ):
-
-                try:
-                    bill_date = (
-                        datetime.strptime(
-                            bill["bill_date"],
-                            "%Y-%m-%d",
-                        ).date()
-                    )
-
-                except (
-                    TypeError,
-                    ValueError,
-                ):
-                    bill_date = None
-
-            # ------------------------------------------------
-            # Normalize line items
-            # ------------------------------------------------
-
-            line_items = (
-                normalize_bill_line_items(
-                    bill
-                )
-            )
-
-            print(
-                "\n=================================================="
-            )
-
-            print(
-                f"BILL {bill_index + 1} "
-                "LINE ITEMS BEFORE DB CREATION"
-            )
-
-            print(
-                json.dumps(
-                    line_items,
-                    indent=4,
-                    default=str,
-                )
-            )
-
-            print(
-                "==================================================\n"
-            )
-
-                    # =================================================
         # CREATE EXPENSE LINE ITEMS
         # =================================================
 
@@ -5657,3 +5579,57 @@ Return valid JSON only.
             recalculate_report_total(
                 receipt.report
             )
+
+        # =====================================================
+        # FINAL SUCCESS RESPONSE
+        # =====================================================
+
+        receipt.refresh_from_db()
+
+        return {
+            "success": True,
+            "retry_allowed": False,
+            "receipt_id": str(receipt.id),
+            "status": receipt.status,
+            "ai_status": receipt.ai_status,
+            "vendor": receipt.vendor_name,
+            "original_amount": str(
+                receipt.original_amount or Decimal("0.00")
+            ),
+            "original_currency": (
+                receipt.original_currency
+                or receipt.currency
+                or ""
+            ),
+            "company_amount": str(
+                receipt.company_amount or Decimal("0.00")
+            ),
+            "company_currency": (
+                receipt.company_currency or ""
+            ),
+            "exchange_rate": (
+                str(receipt.exchange_rate)
+                if receipt.exchange_rate is not None
+                else None
+            ),
+            "invoice_date": (
+                receipt.invoice_date.isoformat()
+                if receipt.invoice_date
+                else None
+            ),
+            "has_policy_violation": (
+                receipt.has_any_violation
+            ),
+            "policy_reason": (
+                receipt.policy_violation_reason or ""
+            ),
+            "line_item_count": (
+                receipt.line_items
+                .filter(is_removed=False)
+                .count()
+            ),
+            "created_line_item_ids": [
+                str(item_id)
+                for item_id in created_items
+            ],
+        }

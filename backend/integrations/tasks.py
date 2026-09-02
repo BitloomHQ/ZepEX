@@ -1,13 +1,19 @@
 import logging
 
+from datetime import timedelta
+
 from celery import shared_task
 from celery.exceptions import MaxRetriesExceededError
+
+from django.db.models import Q
+from django.utils import timezone
 
 from tenants.models import Company
 
 from integrations.models import (
     CompanyIntegration,
     IntegrationSyncLog,
+    QuickBooksExportRecord,
 )
 
 from integrations.services.integration_sync import (
@@ -17,6 +23,7 @@ from integrations.services.integration_sync import (
 
 from .services.quickbooks_export import (
     export_report_to_quickbooks,
+    reconcile_quickbooks_export,
     QuickBooksExportError,
 )
 
@@ -652,3 +659,387 @@ def export_report_to_quickbooks_task(
                     "after multiple attempts."
                 ),
             }
+
+# ==============================================================
+# QUICKBOOKS — RECONCILIATION TASKS
+# ==============================================================
+
+
+@shared_task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+)
+def reconcile_single_quickbooks_export_task(
+    self,
+    export_record_id,
+):
+    """
+    Reconcile one successful QuickBooks export against
+    the actual Purchase transaction in QuickBooks.
+
+    The reconciliation service determines whether the
+    transaction is:
+
+        VERIFIED
+        MISMATCH
+        MISSING
+        ERROR
+    """
+
+    # ==========================================================
+    # 1. FIND EXPORT RECORD
+    # ==========================================================
+
+    try:
+
+        export_record = (
+            QuickBooksExportRecord.objects
+            .select_related(
+                "integration",
+                "integration__company",
+                "report",
+            )
+            .get(
+                id=export_record_id,
+                status=(
+                    QuickBooksExportRecord
+                    .STATUS_SUCCESS
+                ),
+            )
+        )
+
+    except QuickBooksExportRecord.DoesNotExist:
+
+        logger.warning(
+            (
+                "QuickBooks reconciliation skipped. "
+                "Successful export record not found. "
+                "export_record=%s"
+            ),
+            export_record_id,
+        )
+
+        return {
+            "success": False,
+            "skipped": True,
+            "export_record_id": str(
+                export_record_id
+            ),
+            "error": (
+                "Successful QuickBooks export "
+                "record not found."
+            ),
+        }
+
+    integration = export_record.integration
+
+    # ==========================================================
+    # 2. INTEGRATION MUST STILL BE AVAILABLE
+    # ==========================================================
+
+    if not (
+        integration.is_connected
+        and integration.is_active
+    ):
+
+        logger.warning(
+            (
+                "QuickBooks reconciliation skipped. "
+                "Integration disconnected or inactive. "
+                "integration=%s export_record=%s"
+            ),
+            integration.id,
+            export_record.id,
+        )
+
+        return {
+            "success": False,
+            "skipped": True,
+            "export_record_id": str(
+                export_record.id
+            ),
+            "error": (
+                "QuickBooks integration is "
+                "disconnected or inactive."
+            ),
+        }
+
+    # ==========================================================
+    # 3. RUN RECONCILIATION
+    # ==========================================================
+
+    try:
+
+        result = reconcile_quickbooks_export(
+            report_id=export_record.report_id,
+            company=integration.company,
+        )
+
+        logger.info(
+            (
+                "QuickBooks automatic reconciliation "
+                "completed. company=%s report=%s "
+                "export_record=%s status=%s"
+            ),
+            integration.company_id,
+            export_record.report_id,
+            export_record.id,
+            result.get(
+                "reconciliation_status"
+            ),
+        )
+
+        return result
+
+    # ==========================================================
+    # 4. EXPECTED QUICKBOOKS / BUSINESS FAILURE
+    # ==========================================================
+
+    except QuickBooksExportError as exc:
+
+        logger.warning(
+            (
+                "QuickBooks automatic reconciliation "
+                "rejected. company=%s report=%s "
+                "export_record=%s error=%s"
+            ),
+            integration.company_id,
+            export_record.report_id,
+            export_record.id,
+            str(exc),
+        )
+
+        return {
+            "success": False,
+            "export_record_id": str(
+                export_record.id
+            ),
+            "error": str(exc),
+        }
+
+    # ==========================================================
+    # 5. UNEXPECTED FAILURE — RETRY
+    # ==========================================================
+
+    except Exception as exc:
+
+        logger.exception(
+            (
+                "Unexpected QuickBooks automatic "
+                "reconciliation error. "
+                "company=%s report=%s "
+                "export_record=%s"
+            ),
+            integration.company_id,
+            export_record.report_id,
+            export_record.id,
+        )
+
+        try:
+
+            raise self.retry(
+                exc=exc,
+            )
+
+        except MaxRetriesExceededError:
+
+            logger.error(
+                (
+                    "QuickBooks reconciliation reached "
+                    "maximum retry attempts. "
+                    "export_record=%s"
+                ),
+                export_record.id,
+            )
+
+            return {
+                "success": False,
+                "export_record_id": str(
+                    export_record.id
+                ),
+                "error": (
+                    "QuickBooks reconciliation failed "
+                    "after multiple attempts."
+                ),
+            }
+
+
+# ==============================================================
+# QUICKBOOKS — QUEUE RECONCILIATIONS
+# ==============================================================
+
+
+@shared_task
+def reconcile_all_quickbooks_exports():
+    """
+    Queue smart reconciliation for successful QuickBooks exports.
+
+    Selection policy:
+
+    - NOT_CHECKED:
+        Reconcile immediately.
+
+    - VERIFIED:
+        Recheck after 24 hours. This detects a transaction that
+        was later edited or deleted in QuickBooks without calling
+        QuickBooks every minute.
+
+    - MISMATCH:
+        Recheck after 6 hours. A finance user may correct the
+        transaction in QuickBooks.
+
+    - MISSING:
+        Recheck after 6 hours. A transaction may be restored or
+        replaced outside ZepEx.
+
+    - ERROR:
+        Recheck after 30 minutes.
+
+    Celery Beat can safely call this dispatcher frequently because
+    only records that are due are queued.
+    """
+
+    now = timezone.now()
+
+    verified_cutoff = now - timedelta(hours=24)
+    mismatch_cutoff = now - timedelta(hours=6)
+    missing_cutoff = now - timedelta(hours=6)
+    error_cutoff = now - timedelta(minutes=30)
+
+    # ==========================================================
+    # 1. BASE ELIGIBILITY
+    # ==========================================================
+
+    base_queryset = (
+        QuickBooksExportRecord.objects
+        .filter(
+            status=(
+                QuickBooksExportRecord
+                .STATUS_SUCCESS
+            ),
+            integration__provider=(
+                CompanyIntegration
+                .PROVIDER_QUICKBOOKS
+            ),
+            integration__is_connected=True,
+            integration__is_active=True,
+        )
+    )
+
+    # ==========================================================
+    # 2. FIND ONLY RECORDS THAT ARE DUE
+    # ==========================================================
+
+    due_filter = (
+        Q(
+            reconciliation_status=(
+                QuickBooksExportRecord
+                .RECONCILIATION_NOT_CHECKED
+            )
+        )
+        |
+        Q(
+            reconciliation_status=(
+                QuickBooksExportRecord
+                .RECONCILIATION_VERIFIED
+            ),
+            reconciled_at__lt=verified_cutoff,
+        )
+        |
+        Q(
+            reconciliation_status=(
+                QuickBooksExportRecord
+                .RECONCILIATION_MISMATCH
+            ),
+            reconciled_at__lt=mismatch_cutoff,
+        )
+        |
+        Q(
+            reconciliation_status=(
+                QuickBooksExportRecord
+                .RECONCILIATION_MISSING
+            ),
+            reconciled_at__lt=missing_cutoff,
+        )
+        |
+        Q(
+            reconciliation_status=(
+                QuickBooksExportRecord
+                .RECONCILIATION_ERROR
+            ),
+            reconciled_at__lt=error_cutoff,
+        )
+        |
+        Q(
+            reconciled_at__isnull=True,
+        )
+    )
+
+    export_ids = list(
+        base_queryset
+        .filter(due_filter)
+        .order_by(
+            "reconciled_at",
+            "id",
+        )
+        .values_list(
+            "id",
+            flat=True,
+        )
+    )
+
+    # ==========================================================
+    # 3. NOTHING IS DUE
+    # ==========================================================
+
+    if not export_ids:
+
+        logger.info(
+            "Automatic QuickBooks reconciliation "
+            "found no exports due for reconciliation."
+        )
+
+        return {
+            "success": True,
+            "found": 0,
+            "queued": 0,
+            "checked_at": now.isoformat(),
+        }
+
+    # ==========================================================
+    # 4. QUEUE EACH EXPORT INDEPENDENTLY
+    # ==========================================================
+
+    queued = 0
+
+    for export_id in export_ids:
+
+        reconcile_single_quickbooks_export_task.delay(
+            str(export_id)
+        )
+
+        queued += 1
+
+    logger.info(
+        (
+            "Queued %s QuickBooks export(s) "
+            "for smart reconciliation."
+        ),
+        queued,
+    )
+
+    return {
+        "success": True,
+        "found": len(export_ids),
+        "queued": queued,
+        "checked_at": now.isoformat(),
+        "policy": {
+            "not_checked": "immediate",
+            "verified_recheck_hours": 24,
+            "mismatch_recheck_hours": 6,
+            "missing_recheck_hours": 6,
+            "error_recheck_minutes": 30,
+        },
+    }
+

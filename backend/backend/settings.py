@@ -556,6 +556,16 @@ CELERY_BEAT_SCHEDULE = {
             minute=0,
         ),
     },
+
+    # QuickBooks automatic reconciliation - every 60 seconds
+    # Use this for immediate/local testing.
+    "quickbooks-reconcile-exports-every-minute": {
+        "task": (
+            "integrations.tasks."
+            "reconcile_all_quickbooks_exports"
+        ),
+        "schedule": crontab(minute="*/30"),
+    },
 }
 
 BAMBOOHR_CLIENT_ID = os.getenv("BAMBOOHR_CLIENT_ID")
