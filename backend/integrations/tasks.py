@@ -5,6 +5,7 @@ from datetime import timedelta
 from celery import shared_task
 from celery.exceptions import MaxRetriesExceededError
 
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -12,8 +13,29 @@ from tenants.models import Company
 
 from integrations.models import (
     CompanyIntegration,
+    IntegrationChangeLog,
+    IntegrationCredential,
+    IntegrationEmployeeMapping,
     IntegrationSyncLog,
     QuickBooksExportRecord,
+)
+
+from integrations.encryption_services import (
+    decrypt_integration_config,
+    encrypt_integration_config,
+)
+
+from integrations.services.bamboohr import (
+    BambooHRAuthenticationError,
+    BambooHRClient,
+    BambooHRConnectionError,
+    BambooHRIntegrationError,
+    BambooHROAuthService,
+    BambooHRPermissionError,
+)
+
+from integrations.services.bamboohr_sync import (
+    sync_bamboohr_all,
 )
 
 from integrations.services.integration_sync import (
@@ -39,6 +61,748 @@ BAMBOOHR_RETRYABLE_ERROR_TYPES = {
     "CONNECTION_ERROR",
     "INTERNAL_ERROR",
 }
+
+# Celery Beat may call the BambooHR dispatcher frequently, but each
+# integration should only run a full sync when this interval has elapsed.
+BAMBOOHR_SCHEDULED_SYNC_INTERVAL = timedelta(hours=1)
+
+BAMBOOHR_WEBHOOK_EVENT_TYPES = {
+    "employee.created",
+    "employee.updated",
+    "employee.deleted",
+}
+
+
+# ==============================================================
+# BAMBOOHR WEBHOOK HELPERS
+# ==============================================================
+
+
+def _complete_bamboohr_webhook_sync_log(
+    *,
+    sync_log,
+    success,
+    stats=None,
+    errors=None,
+    error_message=None,
+):
+    """
+    Complete one BambooHR webhook synchronization log.
+    """
+
+    stats = (
+        stats
+        if isinstance(stats, dict)
+        else {}
+    )
+
+    errors = (
+        errors
+        if isinstance(errors, list)
+        else []
+    )
+
+    record_created = bool(
+        stats.get("mappings_created")
+        or stats.get("record_created")
+    )
+
+    record_updated = bool(
+        stats.get("record_updated")
+        or stats.get("mappings_updated")
+        or stats.get("users_updated")
+        or stats.get("profiles_updated")
+        or stats.get("employees_activated")
+        or stats.get("employees_deactivated")
+        or stats.get("job_titles_updated")
+    )
+
+    sync_log.status = (
+        IntegrationSyncLog.STATUS_SUCCESS
+        if success
+        else IntegrationSyncLog.STATUS_FAILED
+    )
+
+    sync_log.records_received = int(
+        stats.get("received", 1)
+        or 0
+    )
+
+    sync_log.records_created = (
+        1
+        if record_created
+        else 0
+    )
+
+    sync_log.records_updated = (
+        1
+        if record_updated
+        else 0
+    )
+
+    sync_log.records_skipped = min(
+        int(
+            stats.get("skipped", 0)
+            or 0
+        ),
+        1,
+    )
+
+    sync_log.stats = stats
+    sync_log.errors = errors
+    sync_log.error_message = (
+        str(error_message)
+        if error_message
+        else None
+    )
+    sync_log.completed_at = timezone.now()
+
+    sync_log.save(
+        update_fields=[
+            "status",
+            "records_received",
+            "records_created",
+            "records_updated",
+            "records_skipped",
+            "stats",
+            "errors",
+            "error_message",
+            "completed_at",
+        ]
+    )
+
+
+def _get_bamboohr_webhook_employee(
+    *,
+    integration,
+    employee_id,
+):
+    """
+    Fetch one BambooHR employee for a webhook event.
+
+    If the access token has expired, refresh it, preserve the
+    encrypted webhook signing key, and retry once.
+    """
+
+    try:
+        credential = integration.credential
+
+    except IntegrationCredential.DoesNotExist as exc:
+        raise BambooHRAuthenticationError(
+            "BambooHR credentials are missing."
+        ) from exc
+
+    try:
+        config = decrypt_integration_config(
+            credential.encrypted_config
+        )
+
+    except Exception as exc:
+        raise BambooHRAuthenticationError(
+            "Unable to decrypt BambooHR credentials."
+        ) from exc
+
+    company_domain = str(
+        config.get("company_domain")
+        or ""
+    ).strip()
+
+    access_token = str(
+        config.get("access_token")
+        or ""
+    ).strip()
+
+    refresh_token = str(
+        config.get("refresh_token")
+        or ""
+    ).strip()
+
+    if not company_domain:
+        raise BambooHRIntegrationError(
+            "BambooHR company domain is missing."
+        )
+
+    if not access_token:
+        raise BambooHRAuthenticationError(
+            "BambooHR access token is missing."
+        )
+
+    client = BambooHRClient(
+        company_domain=company_domain,
+        access_token=access_token,
+    )
+
+    try:
+        return client.get_employee(
+            employee_id
+        )
+
+    except BambooHRAuthenticationError:
+
+        if not refresh_token:
+            raise BambooHRAuthenticationError(
+                (
+                    "BambooHR access token expired and "
+                    "no refresh token is available."
+                )
+            )
+
+    oauth_service = BambooHROAuthService(
+        company_domain=company_domain,
+    )
+
+    token_data = (
+        oauth_service.refresh_access_token(
+            refresh_token=refresh_token,
+        )
+    )
+
+    new_access_token = str(
+        token_data.get("access_token")
+        or ""
+    ).strip()
+
+    new_refresh_token = str(
+        token_data.get("refresh_token")
+        or refresh_token
+    ).strip()
+
+    if not new_access_token:
+        raise BambooHRAuthenticationError(
+            (
+                "BambooHR token refresh did not "
+                "return an access token."
+            )
+        )
+
+    config["access_token"] = (
+        new_access_token
+    )
+
+    config["refresh_token"] = (
+        new_refresh_token
+    )
+
+    expires_in = token_data.get(
+        "expires_in"
+    )
+
+    if expires_in:
+        config["access_token_expires_at"] = (
+            timezone.now()
+            + timedelta(
+                seconds=int(expires_in)
+            )
+        ).isoformat()
+
+    credential.encrypted_config = (
+        encrypt_integration_config(
+            config
+        )
+    )
+
+    credential.save(
+        update_fields=[
+            "encrypted_config",
+            "updated_at",
+        ]
+    )
+
+    refreshed_client = BambooHRClient(
+        company_domain=company_domain,
+        access_token=new_access_token,
+    )
+
+    return refreshed_client.get_employee(
+        employee_id
+    )
+
+
+def _deactivate_deleted_bamboohr_employee(
+    *,
+    integration,
+    employee_id,
+    sync_log,
+    event_timestamp=None,
+):
+    """
+    Deactivate the mapped ZepEx user after BambooHR sends
+    employee.deleted. The integration mapping is retained for
+    audit history and idempotent retry handling.
+    """
+
+    mapping = (
+        IntegrationEmployeeMapping.objects
+        .select_for_update()
+        .select_related(
+            "user_profile",
+            "user_profile__user",
+        )
+        .filter(
+            integration=integration,
+            external_employee_id=str(
+                employee_id
+            ),
+        )
+        .first()
+    )
+
+    if not mapping:
+        return {
+            "success": True,
+            "stats": {
+                "received": 1,
+                "skipped": 1,
+                "record_updated": 0,
+            },
+            "errors": [
+                {
+                    "external_employee_id": str(
+                        employee_id
+                    ),
+                    "warning": (
+                        "BambooHR employee mapping "
+                        "was not found."
+                    ),
+                }
+            ],
+        }
+
+    profile = mapping.user_profile
+    user = profile.user
+    was_active = bool(user.is_active)
+
+    if was_active:
+        user.is_active = False
+        user.save(
+            update_fields=[
+                "is_active",
+            ]
+        )
+
+        display_name = (
+            user.get_full_name().strip()
+            or user.email
+            or user.username
+        )
+
+        IntegrationChangeLog.objects.create(
+            integration=integration,
+            sync_log=sync_log,
+            resource_type=(
+                IntegrationChangeLog
+                .RESOURCE_EMPLOYEE
+            ),
+            external_resource_id=str(
+                employee_id
+            ),
+            resource_name=display_name,
+            change_type=(
+                IntegrationChangeLog
+                .CHANGE_DEACTIVATED
+            ),
+            field_name="is_active",
+            old_value="True",
+            new_value="False",
+            details={
+                "source": "BAMBOOHR_WEBHOOK",
+                "event": "employee.deleted",
+                "event_timestamp": event_timestamp,
+            },
+        )
+
+    mapping.last_synced_at = timezone.now()
+    mapping.save(
+        update_fields=[
+            "last_synced_at",
+            "updated_at",
+        ]
+    )
+
+    return {
+        "success": True,
+        "stats": {
+            "received": 1,
+            "skipped": 0,
+            "employees_deactivated": (
+                1
+                if was_active
+                else 0
+            ),
+            "record_updated": (
+                1
+                if was_active
+                else 0
+            ),
+        },
+        "errors": [],
+    }
+
+
+# ==============================================================
+# BAMBOOHR — PROCESS WEBHOOK EVENT
+# ==============================================================
+
+
+@shared_task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=30,
+)
+def process_bamboohr_webhook_event(
+    self,
+    integration_id,
+    event_type,
+    employee_id,
+    event_timestamp=None,
+):
+    """
+    Process one verified BambooHR employee webhook event.
+
+    Events for the same integration are serialized with a
+    database row lock to prevent concurrent employee creation,
+    token refresh, or mapping updates.
+    """
+
+    event_type = str(
+        event_type
+        or ""
+    ).strip().lower()
+
+    employee_id = str(
+        employee_id
+        or ""
+    ).strip()
+
+    if event_type not in BAMBOOHR_WEBHOOK_EVENT_TYPES:
+        return {
+            "success": False,
+            "error_type": "INVALID_EVENT",
+            "error": (
+                "Unsupported BambooHR webhook event."
+            ),
+        }
+
+    if not employee_id:
+        return {
+            "success": False,
+            "error_type": "INVALID_EVENT",
+            "error": (
+                "BambooHR employee ID is missing."
+            ),
+        }
+
+    try:
+        integration = (
+            CompanyIntegration.objects
+            .select_related(
+                "company",
+            )
+            .get(
+                id=integration_id,
+                provider=(
+                    CompanyIntegration
+                    .PROVIDER_BAMBOOHR
+                ),
+                is_connected=True,
+                is_active=True,
+                bamboohr_webhook_enabled=True,
+            )
+        )
+
+    except CompanyIntegration.DoesNotExist:
+        return {
+            "success": False,
+            "skipped": True,
+            "error_type": (
+                "INTEGRATION_NOT_AVAILABLE"
+            ),
+            "error": (
+                "BambooHR integration is unavailable."
+            ),
+        }
+
+    sync_log = IntegrationSyncLog.objects.create(
+        integration=integration,
+        status=(
+            IntegrationSyncLog.STATUS_RUNNING
+        ),
+        trigger=(
+            IntegrationSyncLog.TRIGGER_WEBHOOK
+        ),
+        stats={
+            "resource": "ALL",
+            "event_type": event_type,
+            "employee_id": employee_id,
+            "event_timestamp": event_timestamp,
+        },
+    )
+
+    try:
+
+        with transaction.atomic():
+
+            integration = (
+                CompanyIntegration.objects
+                .select_for_update()
+                .select_related(
+                    "company",
+                )
+                .get(
+                    id=integration.id,
+                    provider=(
+                        CompanyIntegration
+                        .PROVIDER_BAMBOOHR
+                    ),
+                    is_connected=True,
+                    is_active=True,
+                    bamboohr_webhook_enabled=True,
+                )
+            )
+
+            if event_type == "employee.deleted":
+
+                result = (
+                    _deactivate_deleted_bamboohr_employee(
+                        integration=integration,
+                        employee_id=employee_id,
+                        sync_log=sync_log,
+                        event_timestamp=(
+                            event_timestamp
+                        ),
+                    )
+                )
+
+            else:
+
+                employee = (
+                    _get_bamboohr_webhook_employee(
+                        integration=integration,
+                        employee_id=employee_id,
+                    )
+                )
+
+                result = sync_bamboohr_all(
+                    integration=integration,
+                    employees=[employee],
+                    sync_log=sync_log,
+                )
+
+            result_success = bool(
+                result.get("success")
+            )
+
+            integration.last_synced_at = (
+                timezone.now()
+            )
+            integration.last_sync_status = (
+                IntegrationSyncLog.STATUS_SUCCESS
+                if result_success
+                else IntegrationSyncLog.STATUS_FAILED
+            )
+            integration.last_sync_error = (
+                None
+                if result_success
+                else (
+                    "BambooHR webhook employee "
+                    "synchronization completed "
+                    "with errors."
+                )
+            )
+
+            integration.save(
+                update_fields=[
+                    "last_synced_at",
+                    "last_sync_status",
+                    "last_sync_error",
+                    "updated_at",
+                ]
+            )
+
+        result_stats = (
+            result.get("stats")
+            or {}
+        )
+
+        result_stats.update(
+            {
+                "resource": "ALL",
+                "event_type": event_type,
+                "employee_id": employee_id,
+                "event_timestamp": event_timestamp,
+            }
+        )
+
+        result_errors = (
+            result.get("errors")
+            or []
+        )
+
+        _complete_bamboohr_webhook_sync_log(
+            sync_log=sync_log,
+            success=result_success,
+            stats=result_stats,
+            errors=result_errors,
+            error_message=(
+                None
+                if result_success
+                else (
+                    "BambooHR webhook employee "
+                    "synchronization completed "
+                    "with errors."
+                )
+            ),
+        )
+
+        logger.info(
+            (
+                "BambooHR webhook event processed. "
+                "integration=%s event=%s employee=%s "
+                "success=%s"
+            ),
+            integration.id,
+            event_type,
+            employee_id,
+            result_success,
+        )
+
+        return {
+            "success": result_success,
+            "integration_id": str(
+                integration.id
+            ),
+            "event_type": event_type,
+            "employee_id": employee_id,
+            "sync_log_id": str(
+                sync_log.id
+            ),
+            "stats": result_stats,
+            "errors": result_errors,
+        }
+
+    except BambooHRConnectionError as exc:
+
+        _complete_bamboohr_webhook_sync_log(
+            sync_log=sync_log,
+            success=False,
+            stats={
+                "received": 1,
+                "resource": "ALL",
+                "event_type": event_type,
+                "employee_id": employee_id,
+                "event_timestamp": event_timestamp,
+            },
+            errors=[],
+            error_message=str(exc),
+        )
+
+        logger.warning(
+            (
+                "Transient BambooHR webhook sync failure. "
+                "integration=%s event=%s employee=%s"
+            ),
+            integration.id,
+            event_type,
+            employee_id,
+        )
+
+        raise self.retry(
+            exc=exc,
+        )
+
+    except (
+        BambooHRAuthenticationError,
+        BambooHRPermissionError,
+        BambooHRIntegrationError,
+        ValueError,
+    ) as exc:
+
+        _complete_bamboohr_webhook_sync_log(
+            sync_log=sync_log,
+            success=False,
+            stats={
+                "received": 1,
+                "resource": "ALL",
+                "event_type": event_type,
+                "employee_id": employee_id,
+                "event_timestamp": event_timestamp,
+            },
+            errors=[],
+            error_message=str(exc),
+        )
+
+        integration.last_sync_status = (
+            IntegrationSyncLog.STATUS_FAILED
+        )
+        integration.last_sync_error = str(exc)
+        integration.save(
+            update_fields=[
+                "last_sync_status",
+                "last_sync_error",
+                "updated_at",
+            ]
+        )
+
+        logger.warning(
+            (
+                "BambooHR webhook event could not be "
+                "processed. integration=%s event=%s "
+                "employee=%s error_type=%s"
+            ),
+            integration.id,
+            event_type,
+            employee_id,
+            exc.__class__.__name__,
+        )
+
+        return {
+            "success": False,
+            "integration_id": str(
+                integration.id
+            ),
+            "event_type": event_type,
+            "employee_id": employee_id,
+            "sync_log_id": str(
+                sync_log.id
+            ),
+            "error_type": (
+                exc.__class__.__name__
+            ),
+            "error": str(exc),
+        }
+
+    except Exception as exc:
+
+        _complete_bamboohr_webhook_sync_log(
+            sync_log=sync_log,
+            success=False,
+            stats={
+                "received": 1,
+                "resource": "ALL",
+                "event_type": event_type,
+                "employee_id": employee_id,
+                "event_timestamp": event_timestamp,
+            },
+            errors=[],
+            error_message=(
+                "Unexpected BambooHR webhook "
+                "processing failure."
+            ),
+        )
+
+        logger.exception(
+            (
+                "Unexpected BambooHR webhook failure. "
+                "integration=%s event=%s employee=%s"
+            ),
+            integration.id,
+            event_type,
+            employee_id,
+        )
+
+        raise self.retry(
+            exc=exc,
+        )
 
 
 # ==============================================================
@@ -402,30 +1166,26 @@ def sync_single_bamboohr_integration(
 @shared_task
 def sync_all_bamboohr_integrations():
     """
-    Queue a complete BambooHR synchronization for every
-    connected and active BambooHR integration.
+    Queue BambooHR synchronization only for integrations that are due.
 
-    Each company gets its own independent Celery task.
+    Celery Beat can safely call this dispatcher every 15 minutes.
+    A connected BambooHR integration is queued when:
 
-    This provides tenant isolation:
+    - it has never synchronized, or
+    - its last successful/attempted sync is at least one hour old.
 
-        Company A
-            ↓
-        Task A
-
-        Company B
-            ↓
-        Task B
-
-        Company C
-            ↓
-        Task C
-
-    Failure in one company's sync does not stop another
-    company's BambooHR synchronization.
+    Each company still receives its own independent Celery task so a
+    failure in one tenant does not block another tenant.
     """
 
-    integration_ids = list(
+    now = timezone.now()
+    due_before = now - BAMBOOHR_SCHEDULED_SYNC_INTERVAL
+
+    # ==========================================================
+    # 1. FIND ALL AVAILABLE BAMBOOHR INTEGRATIONS
+    # ==========================================================
+
+    base_queryset = (
         CompanyIntegration.objects
         .filter(
             provider=(
@@ -435,65 +1195,116 @@ def sync_all_bamboohr_integrations():
             is_connected=True,
             is_active=True,
         )
-        .values_list(
-            "id",
-            flat=True,
-        )
     )
 
-    # ==========================================================
-    # NO CONNECTED INTEGRATIONS
-    # ==========================================================
+    available_count = base_queryset.count()
 
-    if not integration_ids:
-
+    if available_count == 0:
         logger.info(
-            (
-                "Scheduled BambooHR sync found "
-                "no connected integrations."
-            )
+            "Scheduled BambooHR sync found no connected integrations."
         )
 
         return {
             "success": True,
             "resource": RESOURCE_ALL,
             "found": 0,
+            "due": 0,
             "queued": 0,
+            "skipped_recent": 0,
+            "checked_at": now.isoformat(),
+            "sync_interval_minutes": int(
+                BAMBOOHR_SCHEDULED_SYNC_INTERVAL.total_seconds() // 60
+            ),
         }
 
     # ==========================================================
-    # QUEUE EACH COMPANY INDEPENDENTLY
+    # 2. SELECT ONLY INTEGRATIONS THAT ARE DUE
+    # ==========================================================
+
+    due_queryset = (
+        base_queryset
+        .filter(
+            Q(last_synced_at__isnull=True)
+            | Q(last_synced_at__lte=due_before)
+        )
+        .order_by(
+            "last_synced_at",
+            "id",
+        )
+    )
+
+    integration_ids = list(
+        due_queryset.values_list(
+            "id",
+            flat=True,
+        )
+    )
+
+    due_count = len(integration_ids)
+    skipped_recent = max(available_count - due_count, 0)
+
+    # ==========================================================
+    # 3. NOTHING IS DUE
+    # ==========================================================
+
+    if not integration_ids:
+        logger.info(
+            (
+                "Scheduled BambooHR dispatcher found no integrations "
+                "due for synchronization. connected=%s skipped_recent=%s"
+            ),
+            available_count,
+            skipped_recent,
+        )
+
+        return {
+            "success": True,
+            "resource": RESOURCE_ALL,
+            "found": available_count,
+            "due": 0,
+            "queued": 0,
+            "skipped_recent": skipped_recent,
+            "checked_at": now.isoformat(),
+            "sync_interval_minutes": int(
+                BAMBOOHR_SCHEDULED_SYNC_INTERVAL.total_seconds() // 60
+            ),
+        }
+
+    # ==========================================================
+    # 4. QUEUE EACH DUE COMPANY INDEPENDENTLY
     # ==========================================================
 
     queued = 0
 
-    for integration_id in (
-        integration_ids
-    ):
-
+    for integration_id in integration_ids:
         sync_single_bamboohr_integration.delay(
-            str(
-                integration_id
-            )
+            str(integration_id)
         )
-
         queued += 1
 
     logger.info(
         (
-            "Queued %s BambooHR "
-            "integration sync(s)."
+            "Queued %s/%s BambooHR integration(s) for scheduled sync. "
+            "skipped_recent=%s interval_minutes=%s"
         ),
         queued,
+        available_count,
+        skipped_recent,
+        int(BAMBOOHR_SCHEDULED_SYNC_INTERVAL.total_seconds() // 60),
     )
 
     return {
         "success": True,
         "resource": RESOURCE_ALL,
-        "found": len(
-            integration_ids
-        ),
+        "found": available_count,
+        "due": due_count,
         "queued": queued,
+        "skipped_recent": skipped_recent,
+        "checked_at": now.isoformat(),
+        "due_before": due_before.isoformat(),
+        "sync_interval_minutes": int(
+            BAMBOOHR_SCHEDULED_SYNC_INTERVAL.total_seconds() // 60
+        ),
     }
 
 

@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+import json
 import logging
 import secrets
 
@@ -6,10 +9,12 @@ from functools import wraps
 from urllib.parse import urlencode
 
 from django.conf import settings
+from django.core.cache import cache
 from django.shortcuts import redirect
 from django.utils import timezone
 
 from rest_framework.decorators import (
+    authentication_classes,
     api_view,
     permission_classes,
 )
@@ -148,6 +153,7 @@ from .services.quickbooks_auth import (
 
 from .tasks import (
     export_report_to_quickbooks_task,
+    process_bamboohr_webhook_event,
 )
 from datetime import timedelta
 
@@ -932,7 +938,307 @@ def bamboohr_callback(request):
         )
 
     # ==========================================================
-    # 7. STORE TOKENS SECURELY
+    # 7. REGISTER BAMBOOHR WEBHOOK
+    # ==========================================================
+
+    webhook_base_url = (
+        getattr(
+            settings,
+            "BAMBOOHR_WEBHOOK_URL",
+            "",
+        )
+        or ""
+    ).strip()
+
+    if not webhook_base_url:
+
+        create_integration_audit_log(
+            company=(
+                matched_integration.company
+            ),
+            integration=(
+                matched_integration
+            ),
+            provider="BAMBOOHR",
+            action=(
+                "BAMBOOHR_CONNECTION_FAILED"
+            ),
+            action_by=None,
+            message=(
+                "BambooHR webhook URL is not configured."
+            ),
+            metadata={
+                "company_domain": company_domain,
+                "stage": (
+                    "WEBHOOK_CONFIGURATION"
+                ),
+            },
+        )
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BAMBOOHR_WEBHOOK_URL "
+                    "is not configured."
+                ),
+            },
+            status=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+        )
+
+    webhook_base_url = (
+        webhook_base_url.rstrip("/")
+    )
+
+    if not webhook_base_url.startswith(
+        "https://"
+    ):
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BAMBOOHR_WEBHOOK_URL must "
+                    "use HTTPS."
+                ),
+            },
+            status=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+        )
+
+    # Each integration gets its own receiver URL. This lets
+    # the receiver locate the correct encrypted private key
+    # before verifying the BambooHR HMAC signature.
+
+    webhook_url = (
+        f"{webhook_base_url}/"
+        f"{matched_integration.id}/"
+    )
+
+    webhook_name = (
+        "ZepEx Employee Sync - "
+        f"{matched_integration.id}"
+    )
+
+    desired_monitor_fields = {
+        "firstname",
+        "lastname",
+        "workemail",
+        "department",
+        "jobtitle",
+        "supervisor",
+        "supervisoreid",
+        "supervisorid",
+        "reportingto",
+        "reportingtoemployeeid",
+        "status",
+        "employmentstatus",
+    }
+
+    webhook_id = None
+    webhook_private_key = None
+    monitor_fields = []
+
+    try:
+
+        available_fields = (
+            client.list_webhook_monitor_fields()
+        )
+
+        seen_field_identifiers = set()
+
+        for field in available_fields:
+
+            if not isinstance(
+                field,
+                dict,
+            ):
+                continue
+
+            field_identifier = str(
+                field.get("alias")
+                or field.get("id")
+                or ""
+            ).strip()
+
+            if not field_identifier:
+                continue
+
+            searchable_values = [
+                field.get("alias"),
+                field.get("name"),
+                field.get("displayName"),
+            ]
+
+            matches_required_field = False
+
+            for value in searchable_values:
+
+                normalized_value = "".join(
+                    character.lower()
+                    for character in str(
+                        value
+                        or ""
+                    )
+                    if character.isalnum()
+                )
+
+                if (
+                    normalized_value
+                    in desired_monitor_fields
+                ):
+
+                    matches_required_field = True
+                    break
+
+            if (
+                matches_required_field
+                and field_identifier
+                not in seen_field_identifiers
+            ):
+
+                monitor_fields.append(
+                    field_identifier
+                )
+
+                seen_field_identifiers.add(
+                    field_identifier
+                )
+
+        if not monitor_fields:
+            raise BambooHRPermissionError(
+                (
+                    "BambooHR did not provide access "
+                    "to any employee fields required "
+                    "for webhook monitoring."
+                )
+            )
+
+        # Remove an earlier ZepEx webhook owned by the same
+        # BambooHR user. This prevents duplicate deliveries
+        # when a company reconnects the integration.
+
+        existing_webhooks = (
+            client.list_webhooks()
+        )
+
+        for existing_webhook in existing_webhooks:
+
+            if not isinstance(
+                existing_webhook,
+                dict,
+            ):
+                continue
+
+            existing_name = str(
+                existing_webhook.get("name")
+                or ""
+            ).strip()
+
+            existing_url = str(
+                existing_webhook.get("url")
+                or ""
+            ).strip()
+
+            if (
+                existing_name != webhook_name
+                and existing_url != webhook_url
+            ):
+                continue
+
+            existing_webhook_id = (
+                existing_webhook.get("id")
+            )
+
+            if existing_webhook_id:
+                client.delete_webhook(
+                    existing_webhook_id
+                )
+
+        webhook_result = (
+            client.create_webhook(
+                name=webhook_name,
+                url=webhook_url,
+                monitor_fields=(
+                    monitor_fields
+                ),
+            )
+        )
+
+        webhook_id = str(
+            webhook_result.get("id")
+        )
+
+        webhook_private_key = (
+            webhook_result.get(
+                "privateKey"
+            )
+        )
+
+    except (
+        BambooHRAuthenticationError,
+        BambooHRPermissionError,
+        BambooHRConnectionError,
+        BambooHRIntegrationError,
+        ValueError,
+    ) as exc:
+
+        matched_integration.bamboohr_webhook_id = None
+        matched_integration.bamboohr_webhook_enabled = False
+        matched_integration.last_sync_error = str(
+            exc
+        )
+
+        matched_integration.save(
+            update_fields=[
+                "bamboohr_webhook_id",
+                "bamboohr_webhook_enabled",
+                "last_sync_error",
+                "updated_at",
+            ]
+        )
+
+        create_integration_audit_log(
+            company=(
+                matched_integration.company
+            ),
+            integration=(
+                matched_integration
+            ),
+            provider="BAMBOOHR",
+            action=(
+                "BAMBOOHR_CONNECTION_FAILED"
+            ),
+            action_by=None,
+            message=(
+                "BambooHR webhook registration failed."
+            ),
+            metadata={
+                "company_domain": company_domain,
+                "stage": (
+                    "WEBHOOK_REGISTRATION"
+                ),
+                "error": str(
+                    exc
+                ),
+            },
+        )
+
+        return Response(
+            {
+                "success": False,
+                "error": str(
+                    exc
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ==========================================================
+    # 8. STORE TOKENS AND WEBHOOK KEY SECURELY
     # ==========================================================
 
     now = timezone.now()
@@ -977,6 +1283,22 @@ def bamboohr_callback(request):
             )
             or "Bearer"
         ),
+
+        # BambooHR returns this key only once. It is encrypted
+        # together with the OAuth tokens and is never included
+        # in an API response or application log.
+
+        "bamboohr_webhook_private_key": (
+            webhook_private_key
+        ),
+
+        "bamboohr_webhook_url": (
+            webhook_url
+        ),
+
+        "bamboohr_webhook_monitor_fields": (
+            monitor_fields
+        ),
     }
 
     try:
@@ -1001,8 +1323,30 @@ def bamboohr_callback(request):
     except Exception as exc:
 
         logger.exception(
-            "Unable to store BambooHR OAuth tokens."
+            (
+                "Unable to store BambooHR OAuth tokens "
+                "and webhook credentials."
+            )
         )
+
+        # Avoid leaving an unusable external webhook behind
+        # when its private key could not be stored by ZepEx.
+
+        if webhook_id:
+
+            try:
+                client.delete_webhook(
+                    webhook_id
+                )
+
+            except Exception:
+                logger.exception(
+                    (
+                        "Unable to clean up BambooHR "
+                        "webhook after credential "
+                        "storage failure."
+                    )
+                )
 
         return Response(
             {
@@ -1018,24 +1362,32 @@ def bamboohr_callback(request):
         )
 
     # ==========================================================
-    # 8. MARK CONNECTED
+    # 9. MARK CONNECTED AND WEBHOOK ENABLED
     # ==========================================================
 
     matched_integration.is_connected = True
     matched_integration.is_active = True
     matched_integration.last_sync_error = None
+    matched_integration.bamboohr_webhook_id = (
+        webhook_id
+    )
+    matched_integration.bamboohr_webhook_enabled = True
+    matched_integration.bamboohr_webhook_created_at = now
 
     matched_integration.save(
         update_fields=[
             "is_connected",
             "is_active",
             "last_sync_error",
+            "bamboohr_webhook_id",
+            "bamboohr_webhook_enabled",
+            "bamboohr_webhook_created_at",
             "updated_at",
         ]
     )
 
     # ==========================================================
-    # 9. AUDIT LOG
+    # 10. AUDIT LOG
     # ==========================================================
 
     create_integration_audit_log(
@@ -1060,11 +1412,18 @@ def bamboohr_callback(request):
                 matched_integration.id
             ),
             "auth_type": "OAUTH2",
+            "webhook_id": (
+                webhook_id
+            ),
+            "webhook_enabled": True,
+            "monitor_field_count": len(
+                monitor_fields
+            ),
         },
     )
 
     # ==========================================================
-    # 10. RESPONSE
+    # 11. RESPONSE
     # ==========================================================
 
     return Response(
@@ -1081,6 +1440,13 @@ def bamboohr_callback(request):
             "company_domain": (
                 company_domain
             ),
+            "webhook": {
+                "enabled": True,
+                "id": webhook_id,
+                "monitor_field_count": len(
+                    monitor_fields
+                ),
+            },
             "bamboohr_user": (
                 test_result.get(
                     "employee"
@@ -1089,6 +1455,495 @@ def bamboohr_callback(request):
         },
         status=status.HTTP_200_OK,
     )
+
+# ==========================================================
+# BAMBOOHR WEBHOOK RECEIVER
+# ==========================================================
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def bamboohr_webhook(
+    request,
+    integration_id,
+):
+    """
+    Receive an event-based BambooHR employee webhook.
+
+    Security flow:
+
+        integration-specific URL
+            ↓
+        encrypted private key
+            ↓
+        HMAC-SHA256 verification
+            ↓
+        payload validation
+            ↓
+        duplicate-delivery protection
+            ↓
+        Celery task
+
+    BambooHR signs:
+
+        raw_request_body + X-BambooHR-Timestamp
+    """
+
+    # ======================================================
+    # 1. FIND ACTIVE WEBHOOK INTEGRATION
+    # ======================================================
+
+    try:
+
+        integration = (
+            CompanyIntegration.objects
+            .select_related(
+                "credential",
+            )
+            .get(
+                id=integration_id,
+                provider=(
+                    CompanyIntegration
+                    .PROVIDER_BAMBOOHR
+                ),
+                is_connected=True,
+                is_active=True,
+                bamboohr_webhook_enabled=True,
+            )
+        )
+
+    except CompanyIntegration.DoesNotExist:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BambooHR webhook integration "
+                    "was not found."
+                ),
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    # ======================================================
+    # 2. READ ENCRYPTED WEBHOOK PRIVATE KEY
+    # ======================================================
+
+    try:
+
+        config = decrypt_integration_config(
+            integration
+            .credential
+            .encrypted_config
+        )
+
+    except Exception:
+
+        logger.exception(
+            (
+                "Unable to decrypt BambooHR webhook "
+                "credentials. integration=%s"
+            ),
+            integration.id,
+        )
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BambooHR webhook credentials "
+                    "are unavailable."
+                ),
+            },
+            status=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+        )
+
+    if not isinstance(
+        config,
+        dict,
+    ):
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BambooHR webhook credentials "
+                    "are invalid."
+                ),
+            },
+            status=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+        )
+
+    private_key = str(
+        config.get(
+            "bamboohr_webhook_private_key"
+        )
+        or ""
+    ).strip()
+
+    if not private_key:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BambooHR webhook private key "
+                    "is missing."
+                ),
+            },
+            status=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+        )
+
+    # ======================================================
+    # 3. READ SIGNATURE HEADERS AND RAW BODY
+    # ======================================================
+
+    webhook_timestamp = str(
+        request.headers.get(
+            "X-BambooHR-Timestamp"
+        )
+        or ""
+    ).strip()
+
+    received_signature = str(
+        request.headers.get(
+            "X-BambooHR-Signature"
+        )
+        or ""
+    ).strip()
+
+    if (
+        not webhook_timestamp
+        or not received_signature
+    ):
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BambooHR webhook signature "
+                    "headers are missing."
+                ),
+            },
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    raw_body = request.body
+
+    # Employee event payloads are small. Reject unexpectedly
+    # large bodies before parsing or queueing them.
+
+    if len(raw_body) > 1_000_000:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BambooHR webhook payload "
+                    "is too large."
+                ),
+            },
+            status=(
+                status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+            ),
+        )
+
+    if not raw_body:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BambooHR webhook payload "
+                    "is empty."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ======================================================
+    # 4. VERIFY BAMBOOHR HMAC-SHA256 SIGNATURE
+    # ======================================================
+
+    signed_content = (
+        raw_body
+        + webhook_timestamp.encode(
+            "utf-8"
+        )
+    )
+
+    expected_signature = hmac.new(
+        private_key.encode("utf-8"),
+        signed_content,
+        hashlib.sha256,
+    ).hexdigest()
+
+    # Accept both the documented hexadecimal signature and
+    # the common optional "sha256=" prefix.
+
+    normalized_signature = (
+        received_signature
+    )
+
+    if normalized_signature.lower().startswith(
+        "sha256="
+    ):
+
+        normalized_signature = (
+            normalized_signature.split(
+                "=",
+                1,
+            )[1]
+        )
+
+    signature_is_valid = hmac.compare_digest(
+        expected_signature.lower(),
+        normalized_signature.lower(),
+    )
+
+    if not signature_is_valid:
+
+        logger.warning(
+            (
+                "Rejected BambooHR webhook with "
+                "invalid signature. integration=%s"
+            ),
+            integration.id,
+        )
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Invalid BambooHR webhook "
+                    "signature."
+                ),
+            },
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    # ======================================================
+    # 5. PARSE AND VALIDATE EVENT PAYLOAD
+    # ======================================================
+
+    try:
+
+        payload = json.loads(
+            raw_body.decode("utf-8")
+        )
+
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ):
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BambooHR webhook payload "
+                    "must contain valid JSON."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not isinstance(
+        payload,
+        dict,
+    ):
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BambooHR webhook payload "
+                    "must be a JSON object."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    event_type = str(
+        payload.get("type")
+        or ""
+    ).strip().lower()
+
+    allowed_event_types = {
+        "employee.created",
+        "employee.updated",
+        "employee.deleted",
+    }
+
+    if event_type not in allowed_event_types:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Unsupported BambooHR webhook event."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    event_data = (
+        payload.get("data")
+        or {}
+    )
+
+    if not isinstance(
+        event_data,
+        dict,
+    ):
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BambooHR webhook event data "
+                    "is invalid."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    employee_id = str(
+        event_data.get("employeeId")
+        or ""
+    ).strip()
+
+    event_timestamp = str(
+        payload.get("timestamp")
+        or webhook_timestamp
+    ).strip()
+
+    if not employee_id:
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "BambooHR webhook employee ID "
+                    "is missing."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ======================================================
+    # 6. PREVENT DUPLICATE DELIVERY PROCESSING
+    # ======================================================
+
+    delivery_fingerprint = hashlib.sha256(
+        (
+            f"{integration.id}:"
+            f"{webhook_timestamp}:"
+            f"{normalized_signature.lower()}"
+        ).encode("utf-8")
+    ).hexdigest()
+
+    delivery_cache_key = (
+        "bamboohr:webhook:delivery:"
+        f"{delivery_fingerprint}"
+    )
+
+    is_new_delivery = cache.add(
+        delivery_cache_key,
+        True,
+        timeout=600,
+    )
+
+    if not is_new_delivery:
+
+        return Response(
+            {
+                "success": True,
+                "duplicate": True,
+                "message": (
+                    "BambooHR webhook was already accepted."
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    # ======================================================
+    # 7. QUEUE CELERY PROCESSING
+    # ======================================================
+
+    try:
+
+        task = (
+            process_bamboohr_webhook_event.delay(
+                str(integration.id),
+                event_type,
+                employee_id,
+                event_timestamp,
+            )
+        )
+
+    except Exception:
+
+        # Allow BambooHR's retry to queue the delivery again.
+        cache.delete(
+            delivery_cache_key
+        )
+
+        logger.exception(
+            (
+                "Unable to queue BambooHR webhook event. "
+                "integration=%s event=%s employee=%s"
+            ),
+            integration.id,
+            event_type,
+            employee_id,
+        )
+
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "Unable to queue BambooHR "
+                    "webhook processing."
+                ),
+            },
+            status=(
+                status.HTTP_503_SERVICE_UNAVAILABLE
+            ),
+        )
+
+    logger.info(
+        (
+            "Accepted BambooHR webhook event. "
+            "integration=%s event=%s employee=%s "
+            "task=%s"
+        ),
+        integration.id,
+        event_type,
+        employee_id,
+        task.id,
+    )
+
+    return Response(
+        {
+            "success": True,
+            "accepted": True,
+            "event_type": event_type,
+            "employee_id": employee_id,
+            "task_id": str(
+                task.id
+            ),
+        },
+        status=status.HTTP_202_ACCEPTED,
+    )
+
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -7959,6 +8814,727 @@ def quickbooks_health(request):
                 ),
                 "not_checked": (
                     reconciliation_not_checked
+                ),
+            },
+
+            "issues": issues,
+
+            "checked_at": (
+                timezone.now()
+            ),
+        },
+        status=status.HTTP_200_OK,
+    )
+
+# ==========================================================
+# BAMBOOHR — INTEGRATION HEALTH
+# ==========================================================
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def bamboohr_health(request):
+    """
+    Return operational health information for the
+    company's BambooHR integration.
+
+    Checks:
+        - integration configured
+        - integration connected / active
+        - OAuth credentials available
+        - BambooHR API reachable
+        - latest synchronization status
+        - recent sync failures
+    """
+
+    # ======================================================
+    # 1. USER PROFILE
+    # ======================================================
+
+    try:
+        profile = request.user.profile
+
+    except Exception:
+        return Response(
+            {
+                "success": False,
+                "error": "User profile not found.",
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # ======================================================
+    # 2. COMPANY
+    # ======================================================
+
+    if not profile.company:
+        return Response(
+            {
+                "success": False,
+                "error": "Company is not assigned.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ======================================================
+    # 3. PERMISSION
+    # ======================================================
+
+    can_view = (
+        profile.role == "COMPANY_ADMIN"
+        or has_company_permission(
+            profile,
+            "can_view_integrations",
+        )
+        or has_company_permission(
+            profile,
+            "can_manage_integrations",
+        )
+    )
+
+    if not can_view:
+        return Response(
+            {
+                "success": False,
+                "error": (
+                    "You are not allowed to "
+                    "view integrations."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # ======================================================
+    # 4. FIND BAMBOOHR INTEGRATION
+    # ======================================================
+
+    integration = (
+        CompanyIntegration.objects
+        .filter(
+            company=profile.company,
+            provider=(
+                CompanyIntegration
+                .PROVIDER_BAMBOOHR
+            ),
+        )
+        .select_related(
+            "credential",
+        )
+        .first()
+    )
+
+    # ======================================================
+    # 5. NOT CONFIGURED
+    # ======================================================
+
+    if not integration:
+        return Response(
+            {
+                "success": True,
+                "provider": "BAMBOOHR",
+
+                "overall_status": "NOT_CONFIGURED",
+
+                "connection": {
+                    "connected": False,
+                    "active": False,
+                    "company_reachable": False,
+                    "company_domain": None,
+                    "error": None,
+                },
+
+                "sync": {
+                    "last_synced_at": None,
+                    "last_sync_status": None,
+                    "last_sync_error": None,
+
+                    "departments": None,
+                    "employees": None,
+                    "managers": None,
+                    "all": None,
+                },
+
+                "sync_summary": {
+                    "total": 0,
+                    "successful": 0,
+                    "failed": 0,
+                    "running": 0,
+                },
+
+                "issues": [
+                    {
+                        "type": "NOT_CONFIGURED",
+                        "message": (
+                            "BambooHR integration "
+                            "is not configured."
+                        ),
+                    }
+                ],
+
+                "checked_at": timezone.now(),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    # ======================================================
+    # 6. CONNECTION HEALTH
+    # ======================================================
+
+    company_reachable = False
+    company_domain = None
+    connection_error = None
+
+    if (
+        integration.is_connected
+        and integration.is_active
+    ):
+
+        try:
+
+            # ----------------------------------------------
+            # Read encrypted OAuth configuration
+            # ----------------------------------------------
+
+            credential = integration.credential
+
+            config = decrypt_integration_config(
+                credential.encrypted_config
+            )
+
+            company_domain = (
+                config.get("company_domain")
+                or ""
+            ).strip()
+
+            access_token = (
+                config.get("access_token")
+                or ""
+            ).strip()
+
+            refresh_token = (
+                config.get("refresh_token")
+                or ""
+            ).strip()
+
+            if not company_domain:
+                connection_error = (
+                    "BambooHR company domain is missing."
+                )
+
+            elif not access_token:
+                connection_error = (
+                    "BambooHR access token is missing."
+                )
+
+            else:
+
+                # ------------------------------------------
+                # Test real BambooHR API connection
+                # ------------------------------------------
+
+                client = BambooHRClient(
+                    company_domain=company_domain,
+                    access_token=access_token,
+                )
+
+                try:
+
+                    client.test_connection()
+
+                    company_reachable = True
+
+                # ------------------------------------------
+                # Access token may have expired
+                # ------------------------------------------
+
+                except BambooHRAuthenticationError:
+
+                    if not refresh_token:
+                        raise BambooHRAuthenticationError(
+                            (
+                                "BambooHR access token "
+                                "expired and no refresh "
+                                "token is available."
+                            )
+                        )
+
+                    oauth_service = (
+                        BambooHROAuthService(
+                            company_domain=company_domain,
+                        )
+                    )
+
+                    token_data = (
+                        oauth_service
+                        .refresh_access_token(
+                            refresh_token=refresh_token,
+                        )
+                    )
+
+                    new_access_token = (
+                        token_data.get(
+                            "access_token"
+                        )
+                    )
+
+                    new_refresh_token = (
+                        token_data.get(
+                            "refresh_token"
+                        )
+                        or refresh_token
+                    )
+
+                    expires_in = (
+                        token_data.get(
+                            "expires_in"
+                        )
+                    )
+
+                    if not new_access_token:
+                        raise BambooHRAuthenticationError(
+                            (
+                                "BambooHR token refresh "
+                                "did not return an "
+                                "access token."
+                            )
+                        )
+
+                    # --------------------------------------
+                    # Save refreshed credentials
+                    # --------------------------------------
+
+                    config[
+                        "access_token"
+                    ] = new_access_token
+
+                    config[
+                        "refresh_token"
+                    ] = new_refresh_token
+
+                    if expires_in:
+                        config[
+                            "access_token_expires_at"
+                        ] = (
+                            timezone.now()
+                            + timedelta(
+                                seconds=int(
+                                    expires_in
+                                )
+                            )
+                        ).isoformat()
+
+                    encrypted_config = (
+                        encrypt_integration_config(
+                            config
+                        )
+                    )
+
+                    IntegrationCredential.objects.update_or_create(
+                        integration=integration,
+                        defaults={
+                            "encrypted_config": (
+                                encrypted_config
+                            ),
+                        },
+                    )
+
+                    # --------------------------------------
+                    # Retry connection using new token
+                    # --------------------------------------
+
+                    client = BambooHRClient(
+                        company_domain=company_domain,
+                        access_token=new_access_token,
+                    )
+
+                    client.test_connection()
+
+                    company_reachable = True
+
+        except (
+            BambooHRAuthenticationError,
+            BambooHRPermissionError,
+            BambooHRConnectionError,
+            BambooHRIntegrationError,
+            ValueError,
+        ) as exc:
+
+            connection_error = str(exc)
+
+        except Exception as exc:
+
+            logger.exception(
+                (
+                    "Unexpected BambooHR health "
+                    "connection check error."
+                )
+            )
+
+            connection_error = str(exc)
+
+    else:
+
+        if not integration.is_connected:
+            connection_error = (
+                "BambooHR is not connected."
+            )
+
+        elif not integration.is_active:
+            connection_error = (
+                "BambooHR integration is inactive."
+            )
+
+    # ======================================================
+    # 7. SYNC LOGS
+    # ======================================================
+
+    sync_logs = (
+        IntegrationSyncLog.objects
+        .filter(
+            integration=integration,
+        )
+    )
+
+    sync_total = sync_logs.count()
+
+    sync_success = sync_logs.filter(
+        status=(
+            IntegrationSyncLog
+            .STATUS_SUCCESS
+        ),
+    ).count()
+
+    sync_failed = sync_logs.filter(
+        status=(
+            IntegrationSyncLog
+            .STATUS_FAILED
+        ),
+    ).count()
+
+    sync_running = sync_logs.filter(
+        status=(
+            IntegrationSyncLog
+            .STATUS_RUNNING
+        ),
+    ).count()
+
+    # ======================================================
+    # 8. LATEST SYNC BY RESOURCE
+    # ======================================================
+
+    def latest_sync(resource):
+
+        sync_log = (
+            sync_logs
+            .filter(
+                stats__resource=resource,
+            )
+            .order_by(
+                "-started_at",
+            )
+            .first()
+        )
+
+        if not sync_log:
+            return None
+
+        return {
+            "id": str(
+                sync_log.id
+            ),
+
+            "status": (
+                sync_log.status
+            ),
+
+            "trigger": (
+                sync_log.trigger
+            ),
+
+            "records_received": (
+                sync_log.records_received
+            ),
+
+            "records_created": (
+                sync_log.records_created
+            ),
+
+            "records_updated": (
+                sync_log.records_updated
+            ),
+
+            "records_skipped": (
+                sync_log.records_skipped
+            ),
+
+            "error_message": (
+                sync_log.error_message
+            ),
+
+            "started_at": (
+                sync_log.started_at
+            ),
+
+            "completed_at": (
+                sync_log.completed_at
+            ),
+        }
+
+    departments_sync = latest_sync(
+        "DEPARTMENTS"
+    )
+
+    employees_sync = latest_sync(
+        "EMPLOYEES"
+    )
+
+    managers_sync = latest_sync(
+        "MANAGERS"
+    )
+
+    all_sync = latest_sync(
+        "ALL"
+    )
+
+    # ======================================================
+    # 9. BUILD ISSUES
+    # ======================================================
+
+    issues = []
+
+    if not integration.is_connected:
+
+        issues.append(
+            {
+                "type": "DISCONNECTED",
+                "message": (
+                    "BambooHR is not connected."
+                ),
+            }
+        )
+
+    elif not integration.is_active:
+
+        issues.append(
+            {
+                "type": "INACTIVE",
+                "message": (
+                    "BambooHR integration is inactive."
+                ),
+            }
+        )
+
+    elif not company_reachable:
+
+        issues.append(
+            {
+                "type": "CONNECTION_ERROR",
+                "message": (
+                    connection_error
+                    or (
+                        "Unable to reach BambooHR."
+                    )
+                ),
+            }
+        )
+
+    # ------------------------------------------------------
+    # Latest ALL sync failure
+    # ------------------------------------------------------
+
+    if (
+        all_sync
+        and all_sync.get("status")
+        == IntegrationSyncLog.STATUS_FAILED
+    ):
+
+        issues.append(
+            {
+                "type": "FULL_SYNC_FAILED",
+                "message": (
+                    all_sync.get(
+                        "error_message"
+                    )
+                    or (
+                        "The latest BambooHR full "
+                        "sync failed."
+                    )
+                ),
+            }
+        )
+
+    # ------------------------------------------------------
+    # Resource-specific sync failures
+    # ------------------------------------------------------
+
+    resource_syncs = {
+        "DEPARTMENTS": departments_sync,
+        "EMPLOYEES": employees_sync,
+        "MANAGERS": managers_sync,
+    }
+
+    for resource_name, resource_sync in (
+        resource_syncs.items()
+    ):
+
+        if (
+            resource_sync
+            and resource_sync.get(
+                "status"
+            )
+            == IntegrationSyncLog.STATUS_FAILED
+        ):
+
+            issues.append(
+                {
+                    "type": (
+                        f"{resource_name}_SYNC_FAILED"
+                    ),
+                    "message": (
+                        resource_sync.get(
+                            "error_message"
+                        )
+                        or (
+                            f"Latest {resource_name.lower()} "
+                            "sync failed."
+                        )
+                    ),
+                }
+            )
+
+    # ------------------------------------------------------
+    # Never synchronized
+    # ------------------------------------------------------
+
+    if sync_total == 0:
+
+        issues.append(
+            {
+                "type": "NEVER_SYNCED",
+                "message": (
+                    "BambooHR has not been "
+                    "synchronized yet."
+                ),
+            }
+        )
+
+    # ======================================================
+    # 10. OVERALL STATUS
+    # ======================================================
+
+    critical_issue = (
+        not integration.is_connected
+        or not integration.is_active
+        or not company_reachable
+    )
+
+    warning_issue = (
+        sync_total == 0
+        or bool(
+            [
+                issue
+                for issue in issues
+                if (
+                    "SYNC_FAILED"
+                    in issue.get(
+                        "type",
+                        ""
+                    )
+                )
+            ]
+        )
+    )
+
+    if critical_issue:
+        overall_status = "UNHEALTHY"
+
+    elif warning_issue:
+        overall_status = "WARNING"
+
+    else:
+        overall_status = "HEALTHY"
+
+    # ======================================================
+    # 11. RESPONSE
+    # ======================================================
+
+    return Response(
+        {
+            "success": True,
+
+            "provider": "BAMBOOHR",
+
+            "overall_status": (
+                overall_status
+            ),
+
+            "connection": {
+                "connected": (
+                    integration.is_connected
+                ),
+
+                "active": (
+                    integration.is_active
+                ),
+
+                "company_reachable": (
+                    company_reachable
+                ),
+
+                "company_domain": (
+                    company_domain
+                ),
+
+                "error": (
+                    connection_error
+                ),
+            },
+
+            "sync": {
+                "last_synced_at": (
+                    integration.last_synced_at
+                ),
+
+                "last_sync_status": (
+                    integration.last_sync_status
+                ),
+
+                "last_sync_error": (
+                    integration.last_sync_error
+                ),
+
+                "departments": (
+                    departments_sync
+                ),
+
+                "employees": (
+                    employees_sync
+                ),
+
+                "managers": (
+                    managers_sync
+                ),
+
+                "all": (
+                    all_sync
+                ),
+            },
+
+            "sync_summary": {
+                "total": (
+                    sync_total
+                ),
+
+                "successful": (
+                    sync_success
+                ),
+
+                "failed": (
+                    sync_failed
+                ),
+
+                "running": (
+                    sync_running
                 ),
             },
 

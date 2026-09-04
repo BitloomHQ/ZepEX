@@ -566,10 +566,36 @@ CELERY_BEAT_SCHEDULE = {
         ),
         "schedule": crontab(minute="*/30"),
     },
-}
 
-BAMBOOHR_CLIENT_ID = os.getenv("BAMBOOHR_CLIENT_ID")
-BAMBOOHR_CLIENT_SECRET = os.getenv("BAMBOOHR_CLIENT_SECRET")
+    # BambooHR smart sync dispatcher - every 15 minutes
+    "bamboohr-smart-sync-every-15-minutes": {
+        "task": (
+            "integrations.tasks."
+            "sync_all_bamboohr_integrations"
+        ),
+        "schedule": crontab(minute="*/15"),
+    },
+}
+# --------------------------------------------------
+# BAMBOOHR OAUTH
+# --------------------------------------------------
+
+BAMBOOHR_CLIENT_ID = os.getenv(
+    "BAMBOOHR_CLIENT_ID"
+)
+
+BAMBOOHR_CLIENT_SECRET = os.getenv(
+    "BAMBOOHR_CLIENT_SECRET"
+)
+
+BAMBOOHR_REDIRECT_URI = os.getenv(
+    "BAMBOOHR_REDIRECT_URI"
+)
+BAMBOOHR_WEBHOOK_URL = os.getenv(
+    "BAMBOOHR_WEBHOOK_URL",
+    "",
+).strip()
+
 
 RIPPLING_CLIENT_ID = os.getenv("RIPPLING_CLIENT_ID")
 RIPPLING_CLIENT_SECRET = os.getenv("RIPPLING_CLIENT_SECRET")

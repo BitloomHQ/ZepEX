@@ -1,0 +1,415 @@
+[
+{
+  "model": "integrations.quickbooksexportrecord",
+  "pk": 1,
+  "fields": {
+    "integration": 1,
+    "report": "104d3680-a981-4f6f-9420-0c642408844c",
+    "quickbooks_transaction_id": "145",
+    "external_reference": "ZEP-RPT-104d3680-a981-4f6f-9420-0c642408844c",
+    "status": "SUCCESS",
+    "exported_amount": "1459.65",
+    "error_message": null,
+    "response_data": {
+      "currency": "INR",
+      "line_count": 7,
+      "sync_token": "0",
+      "quickbooks_transaction_id": "145"
+    },
+    "reconciliation_status": "MISMATCH",
+    "reconciled_at": "2026-09-04T12:51:32.581Z",
+    "reconciliation_error": null,
+    "reconciliation_data": {
+      "expected": {
+        "amount": "1459.65",
+        "currency": "INR",
+        "transaction_id": "145",
+        "payment_account_id": ""
+      },
+      "mismatches": [
+        {
+          "field": "currency",
+          "actual": "USD",
+          "expected": "INR"
+        }
+      ],
+      "quickbooks": {
+        "id": "145",
+        "currency": "USD",
+        "txn_date": "2026-08-11",
+        "line_count": 7,
+        "sync_token": "0",
+        "account_ref": {
+          "name": "Checking",
+          "value": "35"
+        },
+        "currency_ref": {
+          "name": "United States Dollar",
+          "value": "USD"
+        },
+        "private_note": "ZepEx reimbursement | tohoto.chophy@bitloom.ai | August 2026 | ZEP-RPT-104d3680-a981-4f6f-9420-0c642408844c",
+        "total_amount": "1459.65",
+        "exchange_rate": 1,
+        "home_total_amount": null,
+        "payment_account_id": "35"
+      }
+    },
+    "created_at": "2026-08-24T06:23:31.487Z",
+    "exported_at": "2026-08-24T07:38:27.750Z",
+    "updated_at": "2026-09-04T12:51:32.582Z"
+  }
+},
+{
+  "model": "integrations.quickbooksexportrecord",
+  "pk": 10,
+  "fields": {
+    "integration": 1,
+    "report": "ea361853-d92f-4908-9946-482b37bc434d",
+    "quickbooks_transaction_id": "146",
+    "external_reference": "ZEP-RPT-ea361853-d92f-4908-9946-482b37bc434d",
+    "status": "SUCCESS",
+    "exported_amount": "4212.18",
+    "error_message": null,
+    "response_data": {
+      "currency": "INR",
+      "line_count": 12,
+      "sync_token": "0",
+      "payment_account": {
+        "id": "35",
+        "name": "Checking",
+        "account_type": "Bank",
+        "payment_type": "Cash"
+      },
+      "quickbooks_transaction_id": "146"
+    },
+    "reconciliation_status": "MISMATCH",
+    "reconciled_at": "2026-09-04T12:50:45.931Z",
+    "reconciliation_error": null,
+    "reconciliation_data": {
+      "expected": {
+        "amount": "4212.18",
+        "currency": "INR",
+        "transaction_id": "146",
+        "payment_account_id": "35"
+      },
+      "mismatches": [
+        {
+          "field": "currency",
+          "actual": "USD",
+          "expected": "INR"
+        }
+      ],
+      "quickbooks": {
+        "id": "146",
+        "currency": "USD",
+        "txn_date": "2026-09-01",
+        "line_count": 12,
+        "sync_token": "0",
+        "account_ref": {
+          "name": "Checking",
+          "value": "35"
+        },
+        "currency_ref": {
+          "name": "United States Dollar",
+          "value": "USD"
+        },
+        "private_note": "ZepEx reimbursement | srishti.singh@bitloom.ai | August 2026 | ZEP-RPT-ea361853-d92f-4908-9946-482b37bc434d",
+        "total_amount": "4212.18",
+        "exchange_rate": 1,
+        "home_total_amount": null,
+        "payment_account_id": "35"
+      }
+    },
+    "created_at": "2026-09-01T08:04:54.948Z",
+    "exported_at": "2026-09-01T08:04:57.584Z",
+    "updated_at": "2026-09-04T12:50:45.931Z"
+  }
+},
+{
+  "model": "integrations.quickbooksexportrecord",
+  "pk": 12,
+  "fields": {
+    "integration": 1,
+    "report": "63dc1aad-efc3-4e19-986b-41c84a3441b5",
+    "quickbooks_transaction_id": "147",
+    "external_reference": "ZEP-RPT-63dc1aad-efc3-4e19-986b-41c84a3441b5",
+    "status": "SUCCESS",
+    "exported_amount": "4181.58",
+    "error_message": null,
+    "response_data": {
+      "currency": "INR",
+      "line_count": 5,
+      "sync_token": "0",
+      "payment_account": {
+        "id": "35",
+        "name": "Checking",
+        "account_type": "Bank",
+        "payment_type": "Cash"
+      },
+      "quickbooks_transaction_id": "147"
+    },
+    "reconciliation_status": "MISMATCH",
+    "reconciled_at": "2026-09-04T12:49:46.662Z",
+    "reconciliation_error": null,
+    "reconciliation_data": {
+      "expected": {
+        "amount": "4181.58",
+        "currency": "INR",
+        "transaction_id": "147",
+        "payment_account_id": "35"
+      },
+      "mismatches": [
+        {
+          "field": "currency",
+          "actual": "USD",
+          "expected": "INR"
+        }
+      ],
+      "quickbooks": {
+        "id": "147",
+        "currency": "USD",
+        "txn_date": "2026-09-01",
+        "line_count": 5,
+        "sync_token": "0",
+        "account_ref": {
+          "name": "Checking",
+          "value": "35"
+        },
+        "currency_ref": {
+          "name": "United States Dollar",
+          "value": "USD"
+        },
+        "private_note": "ZepEx reimbursement | harsh.mishra@bitloom.ai | August 2026 | ZEP-RPT-63dc1aad-efc3-4e19-986b-41c84a3441b5",
+        "total_amount": "4181.58",
+        "exchange_rate": 1,
+        "home_total_amount": null,
+        "payment_account_id": "35"
+      }
+    },
+    "created_at": "2026-09-01T10:02:08.285Z",
+    "exported_at": "2026-09-01T10:02:12.412Z",
+    "updated_at": "2026-09-04T12:49:46.662Z"
+  }
+},
+{
+  "model": "integrations.quickbooksexportrecord",
+  "pk": 13,
+  "fields": {
+    "integration": 1,
+    "report": "f5e3dc24-294e-4dc5-ba1b-1d167ef52dd9",
+    "quickbooks_transaction_id": "148",
+    "external_reference": "ZEP-RPT-f5e3dc24-294e-4dc5-ba1b-1d167ef52dd9",
+    "status": "SUCCESS",
+    "exported_amount": "12358.77",
+    "error_message": null,
+    "response_data": {
+      "currency": "INR",
+      "txn_date": "2026-09-01",
+      "line_count": 6,
+      "sync_token": "0",
+      "currency_ref": {
+        "name": "United States Dollar",
+        "value": "USD"
+      },
+      "exchange_rate": null,
+      "payment_account": {
+        "id": "35",
+        "name": "Checking",
+        "account_type": "Bank",
+        "payment_type": "Cash"
+      },
+      "home_total_amount": null,
+      "requested_currency": "INR",
+      "quickbooks_currency": "USD",
+      "quickbooks_account_ref": {
+        "name": "Checking",
+        "value": "35"
+      },
+      "quickbooks_transaction_id": "148"
+    },
+    "reconciliation_status": "MISMATCH",
+    "reconciled_at": "2026-09-04T12:48:45.410Z",
+    "reconciliation_error": null,
+    "reconciliation_data": {
+      "expected": {
+        "amount": "12358.77",
+        "currency": "INR",
+        "transaction_id": "148",
+        "payment_account_id": "35"
+      },
+      "mismatches": [
+        {
+          "field": "currency",
+          "actual": "USD",
+          "expected": "INR"
+        }
+      ],
+      "quickbooks": {
+        "id": "148",
+        "currency": "USD",
+        "txn_date": "2026-09-01",
+        "line_count": 6,
+        "sync_token": "0",
+        "account_ref": {
+          "name": "Checking",
+          "value": "35"
+        },
+        "currency_ref": {
+          "name": "United States Dollar",
+          "value": "USD"
+        },
+        "private_note": "ZepEx reimbursement | anantkaushik1997@gmail.com | September 2026 | ZEP-RPT-f5e3dc24-294e-4dc5-ba1b-1d167ef52dd9",
+        "total_amount": "12358.77",
+        "exchange_rate": 1,
+        "home_total_amount": null,
+        "payment_account_id": "35"
+      }
+    },
+    "created_at": "2026-09-01T16:12:35.158Z",
+    "exported_at": "2026-09-01T16:12:37.462Z",
+    "updated_at": "2026-09-04T12:48:45.410Z"
+  }
+},
+{
+  "model": "integrations.quickbooksexportrecord",
+  "pk": 14,
+  "fields": {
+    "integration": 1,
+    "report": "df11c32f-7bad-45a4-adb9-11b605098073",
+    "quickbooks_transaction_id": "149",
+    "external_reference": "ZEP-RPT-df11c32f-7bad-45a4-adb9-11b605098073",
+    "status": "SUCCESS",
+    "exported_amount": "13478.70",
+    "error_message": null,
+    "response_data": {
+      "currency": "INR",
+      "txn_date": "2026-09-02",
+      "line_count": 9,
+      "sync_token": "0",
+      "currency_ref": {
+        "name": "Indian Rupee",
+        "value": "INR"
+      },
+      "exchange_rate": 1,
+      "payment_account": {
+        "id": "1150040000",
+        "name": "ZepEx INR Reimbursement",
+        "account_type": "Bank",
+        "payment_type": "Cash"
+      },
+      "home_total_amount": null,
+      "requested_currency": "INR",
+      "quickbooks_currency": "INR",
+      "quickbooks_account_ref": {
+        "name": "ZepEx INR Reimbursement",
+        "value": "1150040000"
+      },
+      "quickbooks_transaction_id": "149"
+    },
+    "reconciliation_status": "MISSING",
+    "reconciled_at": "2026-09-04T12:47:51.757Z",
+    "reconciliation_error": "QuickBooks transaction was not found.",
+    "reconciliation_data": {
+      "expected": {
+        "amount": "13478.70",
+        "currency": "INR",
+        "transaction_id": "149",
+        "payment_account_id": "1150040000"
+      },
+      "mismatches": [
+        {
+          "field": "transaction",
+          "actual": null,
+          "reason": "QuickBooks transaction was not found.",
+          "expected": "149"
+        }
+      ],
+      "quickbooks": null
+    },
+    "created_at": "2026-09-02T07:03:09.528Z",
+    "exported_at": "2026-09-02T07:03:11.616Z",
+    "updated_at": "2026-09-04T12:47:51.760Z"
+  }
+},
+{
+  "model": "integrations.quickbooksexportrecord",
+  "pk": 15,
+  "fields": {
+    "integration": 1,
+    "report": "b2643dda-ab70-48f8-8c0a-f5c30cc21078",
+    "quickbooks_transaction_id": "150",
+    "external_reference": "ZEP-RPT-b2643dda-ab70-48f8-8c0a-f5c30cc21078",
+    "status": "SUCCESS",
+    "exported_amount": "4976.44",
+    "error_message": null,
+    "response_data": {
+      "currency": "INR",
+      "txn_date": "2026-09-04",
+      "line_count": 9,
+      "sync_token": "0",
+      "currency_ref": {
+        "name": "Indian Rupee",
+        "value": "INR"
+      },
+      "exchange_rate": 1,
+      "payment_account": {
+        "id": "1150040000",
+        "name": "ZepEx INR Reimbursement",
+        "account_type": "Bank",
+        "payment_type": "Cash"
+      },
+      "home_total_amount": null,
+      "requested_currency": "INR",
+      "quickbooks_currency": "INR",
+      "currency_configuration": {
+        "home_currency": "USD",
+        "payment_account_id": "1150040000",
+        "payment_account_name": "ZepEx INR Reimbursement",
+        "payment_account_type": "Bank",
+        "multi_currency_enabled": true,
+        "payment_account_currency": "INR"
+      },
+      "quickbooks_account_ref": {
+        "name": "ZepEx INR Reimbursement",
+        "value": "1150040000"
+      },
+      "quickbooks_transaction_id": "150"
+    },
+    "reconciliation_status": "VERIFIED",
+    "reconciled_at": "2026-09-04T13:35:16.467Z",
+    "reconciliation_error": null,
+    "reconciliation_data": {
+      "expected": {
+        "amount": "4976.44",
+        "currency": "INR",
+        "transaction_id": "150",
+        "payment_account_id": "1150040000"
+      },
+      "mismatches": [],
+      "quickbooks": {
+        "id": "150",
+        "currency": "INR",
+        "txn_date": "2026-09-04",
+        "line_count": 9,
+        "sync_token": "0",
+        "account_ref": {
+          "name": "ZepEx INR Reimbursement",
+          "value": "1150040000"
+        },
+        "currency_ref": {
+          "name": "Indian Rupee",
+          "value": "INR"
+        },
+        "private_note": "ZepEx reimbursement | kaushikavni@gmail.com | September 2026 | ZEP-RPT-b2643dda-ab70-48f8-8c0a-f5c30cc21078",
+        "total_amount": "4976.44",
+        "exchange_rate": 1,
+        "home_total_amount": null,
+        "payment_account_id": "1150040000"
+      }
+    },
+    "created_at": "2026-09-04T13:30:22.843Z",
+    "exported_at": "2026-09-04T13:30:29.380Z",
+    "updated_at": "2026-09-04T13:35:16.475Z"
+  }
+}
+]

@@ -122,6 +122,20 @@ class CompanyIntegration(models.Model):
     updated_at = models.DateTimeField(
         auto_now=True,
     )
+    bamboohr_webhook_id = models.CharField(
+    max_length=255,
+    null=True,
+    blank=True,
+)
+
+    bamboohr_webhook_enabled = models.BooleanField(
+    default=False,
+)
+
+    bamboohr_webhook_created_at = models.DateTimeField(
+    null=True,
+    blank=True,
+)
 
     quickbooks_auto_export = models.BooleanField(
     default=False,
@@ -263,10 +277,12 @@ class IntegrationSyncLog(models.Model):
 
     TRIGGER_MANUAL = "MANUAL"
     TRIGGER_SCHEDULED = "SCHEDULED"
+    TRIGGER_WEBHOOK = "WEBHOOK"
 
     TRIGGER_CHOICES = (
         (TRIGGER_MANUAL, "Manual"),
         (TRIGGER_SCHEDULED, "Scheduled"),
+        (TRIGGER_WEBHOOK, "Webhook"),
     )
 
     integration = models.ForeignKey(

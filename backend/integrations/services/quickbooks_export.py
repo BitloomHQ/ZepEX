@@ -378,6 +378,170 @@ def get_report_company_currency(report):
     return None
 
 
+def _quickbooks_reference_value(reference):
+    """
+    Return the value from a QuickBooks reference object.
+
+    QuickBooks normally returns references as {"value": "USD"},
+    but accepting a scalar keeps the validation defensive.
+    """
+
+    if isinstance(reference, dict):
+        return reference.get("value")
+
+    return reference
+
+
+def _quickbooks_boolean(value):
+    """
+    Normalize boolean values returned by QuickBooks.
+    """
+
+    if isinstance(value, bool):
+        return value
+
+    return (
+        str(value or "")
+        .strip()
+        .lower()
+        in ("1", "true", "yes")
+    )
+
+
+def validate_quickbooks_currency_configuration(
+    *,
+    client,
+    realm_id,
+    access_token,
+    payment_account_id,
+    export_currency,
+):
+    """
+    Validate the live QuickBooks currency configuration.
+
+    A payment account name containing a currency code does not
+    prove that the account actually uses that currency. This
+    preflight reads the company preferences and the selected
+    account directly from QuickBooks before any Purchase is made.
+    """
+
+    currency_preferences = client.get_currency_preferences(
+        realm_id=realm_id,
+        access_token=access_token,
+    )
+
+    home_currency = (
+        str(
+            currency_preferences.get("home_currency")
+            or ""
+        )
+        .strip()
+        .upper()
+    )
+
+    multi_currency_enabled = _quickbooks_boolean(
+        currency_preferences.get("multi_currency_enabled")
+    )
+
+    account_response = client.get_account(
+        realm_id=realm_id,
+        access_token=access_token,
+        account_id=payment_account_id,
+    )
+
+    account = account_response.get("Account") or {}
+
+    if not account:
+        raise QuickBooksExportError(
+            "QuickBooks did not return the configured payment account."
+        )
+
+    actual_account_id = str(
+        account.get("Id") or ""
+    ).strip()
+
+    if actual_account_id != str(payment_account_id).strip():
+        raise QuickBooksExportError(
+            "QuickBooks returned a different payment account."
+        )
+
+    if account.get("Active") is False:
+        raise QuickBooksExportError(
+            "The configured QuickBooks payment account is inactive."
+        )
+
+    account_type = str(
+        account.get("AccountType") or ""
+    ).strip()
+
+    if account_type not in ("Bank", "Credit Card"):
+        raise QuickBooksExportError(
+            "The configured QuickBooks payment account must be "
+            "a Bank or Credit Card account."
+        )
+
+    account_currency = (
+        str(
+            _quickbooks_reference_value(
+                account.get("CurrencyRef")
+            )
+            or ""
+        )
+        .strip()
+        .upper()
+    )
+
+    if (
+        home_currency
+        and export_currency != home_currency
+        and not multi_currency_enabled
+    ):
+        raise QuickBooksExportError(
+            "QuickBooks company home currency is "
+            f"{home_currency}, but this report uses "
+            f"{export_currency} and multi-currency is disabled. "
+            "Enable multi-currency and select a payment account "
+            f"configured for {export_currency}, or connect a "
+            f"QuickBooks company whose home currency is {export_currency}."
+        )
+
+    resolved_account_currency = (
+        account_currency
+        or home_currency
+    )
+
+    if not resolved_account_currency:
+        raise QuickBooksExportError(
+            "Unable to verify the configured QuickBooks payment "
+            "account currency. Export was stopped before creating "
+            "a transaction."
+        )
+
+    if resolved_account_currency != export_currency:
+        account_name = str(
+            account.get("Name")
+            or payment_account_id
+        ).strip()
+
+        raise QuickBooksExportError(
+            f"QuickBooks payment account '{account_name}' uses "
+            f"{resolved_account_currency}, but this report uses "
+            f"{export_currency}. Select a {export_currency} Bank "
+            "or Credit Card account before exporting."
+        )
+
+    return {
+        "home_currency": home_currency or None,
+        "multi_currency_enabled": multi_currency_enabled,
+        "payment_account_id": actual_account_id,
+        "payment_account_name": (
+            str(account.get("Name") or "").strip()
+        ),
+        "payment_account_type": account_type,
+        "payment_account_currency": resolved_account_currency,
+    }
+
+
 # ==========================================================
 # BUILD QUICKBOOKS PURCHASE LINES
 # ==========================================================
@@ -1118,7 +1282,79 @@ def export_report_to_quickbooks(
     )
 
     # ======================================================
-    # 11C. BUILD QUICKBOOKS PURCHASE PAYLOAD
+    # 11C. LIVE CURRENCY PREFLIGHT
+    # ======================================================
+    #
+    # Do not trust the stored account name or type alone.
+    # Read the current QuickBooks preferences and payment
+    # account before creating any transaction.
+    # ======================================================
+
+    try:
+        client = QuickBooksClient()
+
+        currency_configuration = (
+            validate_quickbooks_currency_configuration(
+                client=client,
+                realm_id=realm_id,
+                access_token=access_token,
+                payment_account_id=payment_account_id,
+                export_currency=export_currency,
+            )
+        )
+
+        payment_account_name = (
+            currency_configuration.get(
+                "payment_account_name"
+            )
+            or payment_account_name
+        )
+
+        payment_account_type = (
+            currency_configuration.get(
+                "payment_account_type"
+            )
+            or payment_account_type
+        )
+
+        payment_type = (
+            "CreditCard"
+            if payment_account_type == "Credit Card"
+            else "Cash"
+        )
+
+    except Exception as exc:
+        mark_quickbooks_export_failed(
+            export_record=export_record,
+            error=exc,
+        )
+
+        create_integration_audit_log(
+            company=company,
+            integration=integration,
+            provider="QUICKBOOKS",
+            action="QUICKBOOKS_EXPORT_FAILED",
+            action_by=None,
+            message=(
+                "Expense report export to QuickBooks "
+                "failed currency validation."
+            ),
+            metadata={
+                "report_id": str(report.id),
+                "export_record_id": str(
+                    export_record.id
+                ),
+                "stage": "CURRENCY_PREFLIGHT",
+                "requested_currency": export_currency,
+                "payment_account_id": payment_account_id,
+                "error": str(exc),
+            },
+        )
+
+        raise
+
+    # ======================================================
+    # 11D. BUILD QUICKBOOKS PURCHASE PAYLOAD
     # ======================================================
     #
     # IMPORTANT:
@@ -1186,9 +1422,6 @@ def export_report_to_quickbooks(
     # ======================================================
 
     try:
-
-        client = QuickBooksClient()
-
         # ==================================================
         # DEBUG: LOG EXACT PAYLOAD SENT TO QUICKBOOKS
         # ==================================================
@@ -1456,6 +1689,10 @@ def export_report_to_quickbooks(
             ),
         },
 
+        "currency_configuration": (
+            currency_configuration
+        ),
+
         "quickbooks_account_ref": (
             quickbooks_account_ref
             if quickbooks_account_ref
@@ -1480,6 +1717,105 @@ def export_report_to_quickbooks(
             "updated_at",
         ]
     )
+
+    # ======================================================
+    # 14A. POST-CREATE CURRENCY VERIFICATION
+    # ======================================================
+    #
+    # The transaction already exists at this point. If
+    # QuickBooks substituted another currency, keep the
+    # transaction ID and SUCCESS export status so an automatic
+    # retry cannot create a duplicate. Record an immediate
+    # reconciliation mismatch and return an actionable error.
+    # ======================================================
+
+    if (
+        quickbooks_currency
+        and quickbooks_currency != export_currency
+    ):
+        mismatch = {
+            "field": "currency",
+            "expected": export_currency,
+            "actual": quickbooks_currency,
+        }
+
+        currency_error_message = (
+            "QuickBooks created transaction "
+            f"{transaction_id}, but stored currency "
+            f"{quickbooks_currency} instead of "
+            f"{export_currency}. The transaction ID was "
+            "retained to prevent a duplicate retry."
+        )
+
+        export_record.reconciliation_status = (
+            QuickBooksExportRecord
+            .RECONCILIATION_MISMATCH
+        )
+        export_record.reconciliation_error = (
+            currency_error_message
+        )
+        export_record.reconciliation_data = {
+            "expected": {
+                "transaction_id": str(transaction_id),
+                "amount": str(export_total),
+                "currency": export_currency,
+                "payment_account_id": payment_account_id,
+            },
+            "quickbooks": {
+                "transaction_id": str(transaction_id),
+                "amount": str(
+                    _money(purchase.get("TotalAmt"))
+                ),
+                "currency": quickbooks_currency,
+                "payment_account_id": str(
+                    quickbooks_account_ref.get("value")
+                    or ""
+                ),
+            },
+            "mismatches": [mismatch],
+        }
+        export_record.reconciled_at = timezone.now()
+
+        export_record.save(
+            update_fields=[
+                "reconciliation_status",
+                "reconciliation_error",
+                "reconciliation_data",
+                "reconciled_at",
+                "updated_at",
+            ]
+        )
+
+        create_integration_audit_log(
+            company=company,
+            integration=integration,
+            provider="QUICKBOOKS",
+            action="QUICKBOOKS_EXPORT_FAILED",
+            action_by=None,
+            message=(
+                "QuickBooks created the transaction with "
+                "a different currency."
+            ),
+            metadata={
+                "report_id": str(report.id),
+                "export_record_id": str(export_record.id),
+                "quickbooks_transaction_id": str(
+                    transaction_id
+                ),
+                "stage": "POST_CREATE_VALIDATION",
+                "requested_currency": export_currency,
+                "quickbooks_currency": quickbooks_currency,
+                "retry_blocked_to_prevent_duplicate": True,
+            },
+        )
+
+        logger.error(
+            currency_error_message
+        )
+
+        raise QuickBooksExportError(
+            currency_error_message
+        )
 
     # ======================================================
     # 15. SUCCESS AUDIT LOG

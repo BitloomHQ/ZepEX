@@ -7,6 +7,7 @@ from django.utils import timezone
 from tenants.models import (
     Department,
     UserProfile,
+    CompanyRole,
 )
 
 from integrations.models import (
@@ -62,6 +63,13 @@ def _get_first_name(employee):
 def _get_last_name(employee):
     return _clean(
         employee.get("lastName")
+    )
+
+
+def _get_job_title(employee):
+    """Return the BambooHR employee job title / position."""
+    return _clean(
+        employee.get("jobTitle")
     )
 
 
@@ -388,6 +396,19 @@ def sync_bamboohr_employees_only(
 
     company = integration.company
 
+    # CompanyRole controls ZepEx permissions/workflow.
+    # BambooHR jobTitle is stored separately and must never be used
+    # as a CompanyRole. Existing assigned roles are preserved.
+    default_employee_role = (
+        CompanyRole.objects
+        .filter(
+            company=company,
+            name__iexact="Employee",
+            is_active=True,
+        )
+        .first()
+    )
+
     stats = {
         "received": len(employees),
 
@@ -404,6 +425,10 @@ def sync_bamboohr_employees_only(
         "employees_deactivated": 0,
 
         "departments_missing": 0,
+
+        "job_titles_updated": 0,
+        "company_roles_assigned": 0,
+        "company_role_missing": 0,
 
         "skipped": 0,
     }
@@ -433,6 +458,10 @@ def sync_bamboohr_employees_only(
         )
 
         department_name = _get_department(
+            employee_data
+        )
+
+        job_title = _get_job_title(
             employee_data
         )
 
@@ -576,6 +605,8 @@ def sync_bamboohr_employees_only(
             old_last_name = user.last_name or ""
             old_is_active = user.is_active
             old_department = profile.department
+            old_job_title = profile.job_title or ""
+            old_company_role = profile.company_role
 
             # --------------------------------------------------
             # Tenant safety
@@ -685,6 +716,10 @@ def sync_bamboohr_employees_only(
                     )
                 )
 
+                stats[
+                    "users_updated"
+                ] += 1
+
             # ==================================================
             # UPDATE USER PROFILE
             # ==================================================
@@ -711,6 +746,22 @@ def sync_bamboohr_employees_only(
                         "department"
                     )
 
+            if (profile.job_title or "") != job_title:
+                profile.job_title = job_title or None
+                changed_profile_fields.append("job_title")
+                stats["job_titles_updated"] += 1
+
+            # Assign the default Employee CompanyRole only when no
+            # CompanyRole is currently assigned. Never overwrite an
+            # existing Manager/Finance/Admin/custom role.
+            if profile.company_role_id is None:
+                if default_employee_role:
+                    profile.company_role = default_employee_role
+                    changed_profile_fields.append("company_role")
+                    stats["company_roles_assigned"] += 1
+                else:
+                    stats["company_role_missing"] += 1
+
             if changed_profile_fields:
 
                 profile.save(
@@ -718,6 +769,10 @@ def sync_bamboohr_employees_only(
                         changed_profile_fields
                     )
                 )
+
+                stats[
+                    "profiles_updated"
+                ] += 1
 
             resource_name = _display_employee_name(
                 first_name=first_name,
@@ -764,6 +819,33 @@ def sync_bamboohr_employees_only(
                     new_value=last_name,
                 )
 
+            if old_job_title != job_title:
+                _create_change_log(
+                    integration=integration,
+                    sync_log=sync_log,
+                    resource_type=IntegrationChangeLog.RESOURCE_EMPLOYEE,
+                    external_resource_id=external_id,
+                    resource_name=resource_name,
+                    change_type=IntegrationChangeLog.CHANGE_UPDATED,
+                    field_name="job_title",
+                    old_value=old_job_title or None,
+                    new_value=job_title or None,
+                )
+
+            if old_company_role is None and profile.company_role_id:
+                _create_change_log(
+                    integration=integration,
+                    sync_log=sync_log,
+                    resource_type=IntegrationChangeLog.RESOURCE_EMPLOYEE,
+                    external_resource_id=external_id,
+                    resource_name=resource_name,
+                    change_type=IntegrationChangeLog.CHANGE_UPDATED,
+                    field_name="company_role",
+                    old_value=None,
+                    new_value=profile.company_role.name,
+                    details={"source": "ZEPEX_DEFAULT_ROLE"},
+                )
+
             if old_is_active != should_be_active:
                 _create_change_log(
                     integration=integration,
@@ -808,31 +890,34 @@ def sync_bamboohr_employees_only(
             # UPDATE MAPPING
             # ==================================================
 
-            mapping.external_email = email
+            mapping_fields_to_update = [
+                "last_synced_at",
+                "updated_at",
+            ]
+
+            if (
+                (mapping.external_email or "").lower()
+                != email.lower()
+            ):
+                mapping.external_email = email
+                mapping_fields_to_update.insert(
+                    0,
+                    "external_email",
+                )
+
+                stats[
+                    "mappings_updated"
+                ] += 1
 
             mapping.last_synced_at = (
                 timezone.now()
             )
 
             mapping.save(
-                update_fields=[
-                    "external_email",
-                    "last_synced_at",
-                    "updated_at",
-                ]
+                update_fields=(
+                    mapping_fields_to_update
+                )
             )
-
-            stats[
-                "users_updated"
-            ] += 1
-
-            stats[
-                "profiles_updated"
-            ] += 1
-
-            stats[
-                "mappings_updated"
-            ] += 1
 
             logger.info(
                 (
@@ -883,13 +968,20 @@ def sync_bamboohr_employees_only(
                         user=existing_user,
                         company=company,
                         department=department,
+                        job_title=job_title or None,
                         role="EMPLOYEE",
+                        company_role=default_employee_role,
                     )
                 )
 
                 stats[
                     "profiles_created"
                 ] += 1
+
+                if default_employee_role:
+                    stats["company_roles_assigned"] += 1
+                else:
+                    stats["company_role_missing"] += 1
 
             else:
 
@@ -953,6 +1045,19 @@ def sync_bamboohr_employees_only(
                         changed_profile_fields.append(
                             "department"
                         )
+
+                if (profile.job_title or "") != job_title:
+                    profile.job_title = job_title or None
+                    changed_profile_fields.append("job_title")
+                    stats["job_titles_updated"] += 1
+
+                if profile.company_role_id is None:
+                    if default_employee_role:
+                        profile.company_role = default_employee_role
+                        changed_profile_fields.append("company_role")
+                        stats["company_roles_assigned"] += 1
+                    else:
+                        stats["company_role_missing"] += 1
 
                 if changed_profile_fields:
 
@@ -1029,9 +1134,9 @@ def sync_bamboohr_employees_only(
                     )
                 )
 
-            stats[
-                "users_updated"
-            ] += 1
+                stats[
+                    "users_updated"
+                ] += 1
 
         # ======================================================
         # 8. NEW DJANGO USER
@@ -1087,7 +1192,9 @@ def sync_bamboohr_employees_only(
                     user=user,
                     company=company,
                     department=department,
+                    job_title=job_title or None,
                     role="EMPLOYEE",
+                    company_role=default_employee_role,
                     force_password_change=True,
                 )
             )
@@ -1095,6 +1202,11 @@ def sync_bamboohr_employees_only(
             stats[
                 "profiles_created"
             ] += 1
+
+            if default_employee_role:
+                stats["company_roles_assigned"] += 1
+            else:
+                stats["company_role_missing"] += 1
 
         # ======================================================
         # 9. CREATE BAMBOOHR ↔ ZEPEX MAPPING

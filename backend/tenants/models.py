@@ -268,6 +268,12 @@ class UserProfile(models.Model):
         choices=ROLE_CHOICES
     )
 
+    job_title = models.CharField(
+    max_length=255,
+    null=True,
+    blank=True,
+)
+
     # NEW dynamic company role
     company_role = models.ForeignKey(
         "CompanyRole",

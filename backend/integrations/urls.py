@@ -1,46 +1,44 @@
 from django.urls import path
 
 from .views import (
-    bamboohr_callback,
-    bamboohr_change_history,
+    # Common integrations
     integration_list,
     integration_provider_catalog,
-
-    # BambooHR
-    
-    connect_bamboohr,
-    preview_bamboohr_employees,
-    
-    bamboohr_status,
-    bamboohr_sync_history,
-    
-
-    # QuickBooks
-    connect_quickbooks,
-    quickbooks_callback,
-    quickbooks_health,
-    quickbooks_payment_accounts,
-    quickbooks_settings,
-    quickbooks_status,
-    quickbooks_accounts,
-    quickbooks_category_mappings,
-    reconcile_quickbooks_report,
-    save_quickbooks_category_mapping,
-    delete_quickbooks_category_mapping,
-    export_report_quickbooks,
-    quickbooks_report_export_status,
-    quickbooks_export_history,
-    retry_quickbooks_export,
-    disconnect_quickbooks,
-
-    # Integration dashboard/activity
     integration_activity,
     integration_dashboard_summary,
-    save_quickbooks_payment_account,
+
+    # BambooHR
+    bamboohr_callback,
+    bamboohr_change_history,
+    bamboohr_health,
+    bamboohr_status,
+    bamboohr_sync_history,
+    bamboohr_webhook,
+    connect_bamboohr,
+    preview_bamboohr_employees,
     sync_bamboohr_all_view,
     sync_bamboohr_departments_view,
     sync_bamboohr_employees_view,
     sync_bamboohr_managers_view,
+
+    # QuickBooks
+    connect_quickbooks,
+    delete_quickbooks_category_mapping,
+    disconnect_quickbooks,
+    export_report_quickbooks,
+    quickbooks_accounts,
+    quickbooks_callback,
+    quickbooks_category_mappings,
+    quickbooks_export_history,
+    quickbooks_health,
+    quickbooks_payment_accounts,
+    quickbooks_report_export_status,
+    quickbooks_settings,
+    quickbooks_status,
+    reconcile_quickbooks_report,
+    retry_quickbooks_export,
+    save_quickbooks_category_mapping,
+    save_quickbooks_payment_account,
 )
 
 
@@ -75,32 +73,8 @@ urlpatterns = [
     ),
 
     # ==========================================================
-    # BAMBOOHR
+    # BAMBOOHR CONNECTION AND WEBHOOK
     # ==========================================================
-
-    path(
-    "bamboohr/sync/departments/",
-    sync_bamboohr_departments_view,
-    name="sync-bamboohr-departments",
-),
-
-    path(
-    "bamboohr/sync/employees/",
-    sync_bamboohr_employees_view,
-    name="sync-bamboohr-employees",
-),
-
-    path(
-    "bamboohr/sync/managers/",
-    sync_bamboohr_managers_view,
-    name="sync-bamboohr-managers",
-),
-
-    path(
-    "bamboohr/sync/all/",
-    sync_bamboohr_all_view,
-    name="sync-bamboohr-all",
-),
 
     path(
         "bamboohr/connect/",
@@ -109,12 +83,55 @@ urlpatterns = [
     ),
 
     path(
+        "bamboohr/callback/",
+        bamboohr_callback,
+        name="bamboohr-callback",
+    ),
+
+    path(
+        "bamboohr/webhook/<int:integration_id>/",
+        bamboohr_webhook,
+        name="bamboohr-webhook",
+    ),
+
+    # ==========================================================
+    # BAMBOOHR SYNC
+    # ==========================================================
+
+    path(
+        "bamboohr/sync/departments/",
+        sync_bamboohr_departments_view,
+        name="sync-bamboohr-departments",
+    ),
+
+    path(
+        "bamboohr/sync/employees/",
+        sync_bamboohr_employees_view,
+        name="sync-bamboohr-employees",
+    ),
+
+    path(
+        "bamboohr/sync/managers/",
+        sync_bamboohr_managers_view,
+        name="sync-bamboohr-managers",
+    ),
+
+    path(
+        "bamboohr/sync/all/",
+        sync_bamboohr_all_view,
+        name="sync-bamboohr-all",
+    ),
+
+    # ==========================================================
+    # BAMBOOHR STATUS, HISTORY, AND HEALTH
+    # ==========================================================
+
+    path(
         "bamboohr/employees/preview/",
         preview_bamboohr_employees,
         name="preview-bamboohr-employees",
     ),
 
-   
     path(
         "bamboohr/status/",
         bamboohr_status,
@@ -127,6 +144,17 @@ urlpatterns = [
         name="bamboohr-sync-history",
     ),
 
+    path(
+        "bamboohr/changes/",
+        bamboohr_change_history,
+        name="bamboohr-change-history",
+    ),
+
+    path(
+        "bamboohr/health/",
+        bamboohr_health,
+        name="bamboohr-health",
+    ),
 
     # ==========================================================
     # QUICKBOOKS CONNECTION
@@ -150,8 +178,20 @@ urlpatterns = [
         name="quickbooks-status",
     ),
 
+    path(
+        "quickbooks/health/",
+        quickbooks_health,
+        name="quickbooks-health",
+    ),
+
+    path(
+        "quickbooks/disconnect/",
+        disconnect_quickbooks,
+        name="disconnect-quickbooks",
+    ),
+
     # ==========================================================
-    # QUICKBOOKS ACCOUNTS / CATEGORY MAPPING
+    # QUICKBOOKS ACCOUNTS AND SETTINGS
     # ==========================================================
 
     path(
@@ -159,6 +199,28 @@ urlpatterns = [
         quickbooks_accounts,
         name="quickbooks-accounts",
     ),
+
+    path(
+        "quickbooks/payment-accounts/",
+        quickbooks_payment_accounts,
+        name="quickbooks-payment-accounts",
+    ),
+
+    path(
+        "quickbooks/payment-account/",
+        save_quickbooks_payment_account,
+        name="save-quickbooks-payment-account",
+    ),
+
+    path(
+        "quickbooks/settings/",
+        quickbooks_settings,
+        name="quickbooks-settings",
+    ),
+
+    # ==========================================================
+    # QUICKBOOKS CATEGORY MAPPINGS
+    # ==========================================================
 
     path(
         "quickbooks/category-mappings/",
@@ -179,7 +241,7 @@ urlpatterns = [
     ),
 
     # ==========================================================
-    # QUICKBOOKS EXPORTS
+    # QUICKBOOKS EXPORTS AND RECONCILIATION
     # ==========================================================
 
     path(
@@ -207,44 +269,8 @@ urlpatterns = [
     ),
 
     path(
-        "quickbooks/disconnect/",
-        disconnect_quickbooks,
-        name="disconnect-quickbooks",
+        "quickbooks/reconcile/<uuid:report_id>/",
+        reconcile_quickbooks_report,
+        name="quickbooks-reconcile-report",
     ),
-    path(
-    "bamboohr/callback/",
-    bamboohr_callback,
-    name="bamboohr-callback",
-),
- path(
-    "quickbooks/payment-accounts/",
-    quickbooks_payment_accounts,
-    name="quickbooks-payment-accounts",
-),
-
-path(
-    "quickbooks/payment-account/",
-    save_quickbooks_payment_account,
-    name="save-quickbooks-payment-account",
-),
-path(
-    "bamboohr/changes/",
-    bamboohr_change_history,
-    name="bamboohr-change-history",
-),
-path(
-    "quickbooks/settings/",
-    quickbooks_settings,
-    name="quickbooks-settings",
-),
-path(
-    "quickbooks/reconcile/<uuid:report_id>/",
-    reconcile_quickbooks_report,
-    name="quickbooks-reconcile-report",
-),
-path(
-    "quickbooks/health/",
-    quickbooks_health,
-    name="quickbooks-health",
-),
 ]

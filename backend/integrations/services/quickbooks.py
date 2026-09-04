@@ -614,6 +614,131 @@ class QuickBooksClient:
             access_token=access_token,
         )
 
+    def get_preferences(
+        self,
+        *,
+        realm_id,
+        access_token,
+    ):
+        """
+        Fetch QuickBooks company preferences.
+
+        CurrencyPrefs contains the home currency and whether
+        the company has enabled the multi-currency feature.
+        ZepEx uses this information before creating a Purchase
+        so QuickBooks cannot silently replace the requested
+        report currency with its home currency.
+        """
+
+        if not realm_id:
+            raise ValueError(
+                "QuickBooks realm ID is required."
+            )
+
+        return self.request(
+            "GET",
+            f"v3/company/{realm_id}/preferences",
+            access_token=access_token,
+            params={
+                "minorversion": "75",
+            },
+        )
+
+    def get_currency_preferences(
+        self,
+        *,
+        realm_id,
+        access_token,
+    ):
+        """
+        Return normalized QuickBooks currency preferences.
+        """
+
+        response = self.get_preferences(
+            realm_id=realm_id,
+            access_token=access_token,
+        )
+
+        preferences = response.get("Preferences") or {}
+        currency_preferences = (
+            preferences.get("CurrencyPrefs")
+            or {}
+        )
+
+        home_reference = currency_preferences.get(
+            "HomeCurrency"
+        )
+
+        if isinstance(home_reference, dict):
+            home_currency = home_reference.get("value")
+        else:
+            home_currency = home_reference
+
+        multi_currency_value = (
+            currency_preferences.get(
+                "MultiCurrencyEnabled"
+            )
+        )
+
+        if isinstance(multi_currency_value, bool):
+            multi_currency_enabled = multi_currency_value
+        else:
+            multi_currency_enabled = (
+                str(multi_currency_value or "")
+                .strip()
+                .lower()
+                in ("1", "true", "yes")
+            )
+
+        return {
+            "home_currency": (
+                str(home_currency or "")
+                .strip()
+                .upper()
+                or None
+            ),
+            "multi_currency_enabled": (
+                multi_currency_enabled
+            ),
+        }
+
+    def get_account(
+        self,
+        *,
+        realm_id,
+        access_token,
+        account_id,
+    ):
+        """
+        Fetch one QuickBooks Account by ID.
+
+        This is used to validate that the configured payment
+        account is active, has a supported type, and uses the
+        same currency as the ZepEx report.
+        """
+
+        if not realm_id:
+            raise ValueError(
+                "QuickBooks realm ID is required."
+            )
+
+        if not account_id:
+            raise ValueError(
+                "QuickBooks account ID is required."
+            )
+
+        return self.request(
+            "GET",
+            (
+                f"v3/company/{realm_id}/"
+                f"account/{account_id}"
+            ),
+            access_token=access_token,
+            params={
+                "minorversion": "75",
+            },
+        )
+
     def get_accounts(
         self,
         *,
@@ -697,6 +822,11 @@ class QuickBooksClient:
         results = []
 
         for account in accounts:
+            currency_ref = (
+                account.get("CurrencyRef")
+                or {}
+            )
+
             results.append(
                 {
                     "id": account.get("Id"),
@@ -719,6 +849,18 @@ class QuickBooksClient:
                     "active": account.get(
                         "Active",
                         True,
+                    ),
+                    "currency": (
+                        str(
+                            currency_ref.get("value")
+                            or ""
+                        )
+                        .strip()
+                        .upper()
+                        or None
+                    ),
+                    "currency_name": (
+                        currency_ref.get("name")
                     ),
                 }
             )
@@ -751,6 +893,9 @@ class QuickBooksClient:
             "POST",
             f"v3/company/{realm_id}/purchase",
             access_token=access_token,
+            params={
+                "minorversion": "75",
+            },
             json=purchase_data,
         )
 
@@ -834,9 +979,36 @@ class QuickBooksClient:
             .get("Account", [])
         )
 
+        currency_preferences = (
+            self.get_currency_preferences(
+                realm_id=realm_id,
+                access_token=access_token,
+            )
+        )
+
+        home_currency = (
+            currency_preferences.get("home_currency")
+        )
+
         results = []
 
         for account in accounts:
+
+            currency_ref = (
+                account.get("CurrencyRef")
+                or {}
+            )
+
+            account_currency = (
+                str(
+                    currency_ref.get("value")
+                    or home_currency
+                    or ""
+                )
+                .strip()
+                .upper()
+                or None
+            )
 
             results.append(
                 {
@@ -860,6 +1032,17 @@ class QuickBooksClient:
                     "active": account.get(
                         "Active",
                         True,
+                    ),
+                    "currency": (
+                        account_currency
+                    ),
+                    "currency_name": (
+                        currency_ref.get("name")
+                    ),
+                    "currency_source": (
+                        "account"
+                        if currency_ref.get("value")
+                        else "company_home"
                     ),
                 }
             )

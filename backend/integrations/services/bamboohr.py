@@ -154,6 +154,7 @@ class BambooHROAuthService:
         "employee:management",
         "employee:name",
         "field",
+        "webhooks",
         "offline_access",
     ]
 
@@ -894,6 +895,255 @@ class BambooHRClient:
             ) from exc
 
     # ==========================================================
+    # LIST WEBHOOK MONITOR FIELDS
+    # ==========================================================
+
+    def list_webhook_monitor_fields(self):
+        """
+        Return employee fields that the authenticated
+        BambooHR user can monitor through webhooks.
+        """
+
+        result = self._request(
+            "GET",
+            "v1/webhooks/monitor_fields",
+        )
+
+        if isinstance(
+            result,
+            dict,
+        ):
+
+            fields = (
+                result.get("fields")
+                or []
+            )
+
+            if isinstance(
+                fields,
+                list,
+            ):
+
+                return fields
+
+        return []
+
+    # ==========================================================
+    # LIST WEBHOOKS
+    # ==========================================================
+
+    def list_webhooks(self):
+        """
+        Return all webhooks owned by the authenticated
+        BambooHR user.
+        """
+
+        result = self._request(
+            "GET",
+            "v1/webhooks",
+        )
+
+        if isinstance(
+            result,
+            list,
+        ):
+
+            return result
+
+        if isinstance(
+            result,
+            dict,
+        ):
+
+            webhooks = (
+                result.get("webhooks")
+                or []
+            )
+
+            if isinstance(
+                webhooks,
+                list,
+            ):
+
+                return webhooks
+
+        return []
+
+    # ==========================================================
+    # CREATE WEBHOOK
+    # ==========================================================
+
+    def create_webhook(
+        self,
+        *,
+        name,
+        url,
+        monitor_fields,
+    ):
+        """
+        Register an event-based BambooHR employee webhook.
+
+        BambooHR returns the privateKey only when the webhook
+        is created. The caller must store it securely.
+        """
+
+        name = str(
+            name
+            or ""
+        ).strip()
+
+        url = str(
+            url
+            or ""
+        ).strip()
+
+        if not name:
+            raise ValueError(
+                "BambooHR webhook name is required."
+            )
+
+        if not url:
+            raise ValueError(
+                "BambooHR webhook URL is required."
+            )
+
+        if not url.startswith(
+            "https://"
+        ):
+            raise ValueError(
+                "BambooHR webhook URL must use HTTPS."
+            )
+
+        if not isinstance(
+            monitor_fields,
+            list,
+        ):
+            raise ValueError(
+                "BambooHR monitor fields must be a list."
+            )
+
+        monitor_fields = [
+            str(field).strip()
+            for field in monitor_fields
+            if str(field).strip()
+        ]
+
+        if not monitor_fields:
+            raise ValueError(
+                (
+                    "At least one BambooHR monitor "
+                    "field is required."
+                )
+            )
+
+        payload = {
+            "name": name,
+            "url": url,
+            "format": "json",
+            "monitorFields": (
+                monitor_fields
+            ),
+            "events": [
+                "employee.created",
+                "employee.updated",
+                "employee.deleted",
+            ],
+        }
+
+        result = self._request(
+            "POST",
+            "v1/webhooks",
+            json=payload,
+        )
+
+        if not isinstance(
+            result,
+            dict,
+        ):
+            raise BambooHRIntegrationError(
+                (
+                    "BambooHR returned an invalid "
+                    "webhook response."
+                )
+            )
+
+        webhook_id = (
+            result.get("id")
+        )
+
+        private_key = (
+            result.get("privateKey")
+        )
+
+        if not webhook_id:
+            raise BambooHRIntegrationError(
+                (
+                    "BambooHR did not return "
+                    "a webhook ID."
+                )
+            )
+
+        if not private_key:
+            raise BambooHRIntegrationError(
+                (
+                    "BambooHR did not return a "
+                    "webhook private key."
+                )
+            )
+
+        return result
+
+    # ==========================================================
+    # GET WEBHOOK
+    # ==========================================================
+
+    def get_webhook(
+        self,
+        webhook_id,
+    ):
+        """
+        Return one BambooHR webhook configuration.
+        """
+
+        if not webhook_id:
+            raise ValueError(
+                "BambooHR webhook ID is required."
+            )
+
+        return self._request(
+            "GET",
+            (
+                f"v1/webhooks/"
+                f"{webhook_id}"
+            ),
+        )
+
+    # ==========================================================
+    # DELETE WEBHOOK
+    # ==========================================================
+
+    def delete_webhook(
+        self,
+        webhook_id,
+    ):
+        """
+        Delete a BambooHR webhook.
+        """
+
+        if not webhook_id:
+            raise ValueError(
+                "BambooHR webhook ID is required."
+            )
+
+        return self._request(
+            "DELETE",
+            (
+                f"v1/webhooks/"
+                f"{webhook_id}"
+            ),
+        )
+
+    # ==========================================================
     # TEST CONNECTION
     # ==========================================================
 
@@ -1017,15 +1267,16 @@ class BambooHRClient:
 
         if fields is None:
 
-            fields = [
-                "firstName",
-                "lastName",
-                "workEmail",
-                "department",
-                "supervisor",
-                "supervisorEId",
-                "status",
-            ]
+           fields = [
+        "firstName",
+        "lastName",
+        "workEmail",
+        "department",
+        "jobTitle",
+        "supervisor",
+        "supervisorEId",
+        "status",
+    ]
 
         params = {
             "fields": ",".join(
