@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import models
 
 from tenants.models import Company
@@ -917,3 +919,198 @@ class QuickBooksExportRecord(models.Model):
             f"{self.status} | "
             f"{self.reconciliation_status}"
         )
+
+
+class BambooHRPayrollBatch(models.Model):
+    """Finance-controlled staging batch for BambooHR Payroll reimbursements."""
+
+    STATUS_DRAFT = "DRAFT"
+    STATUS_READY = "READY"
+    STATUS_EXPORTED = "EXPORTED"
+    STATUS_CONFIRMED = "CONFIRMED"
+    STATUS_CANCELLED = "CANCELLED"
+
+    STATUS_CHOICES = (
+        (STATUS_DRAFT, "Draft"),
+        (STATUS_READY, "Ready"),
+        (STATUS_EXPORTED, "Exported"),
+        (STATUS_CONFIRMED, "Confirmed"),
+        (STATUS_CANCELLED, "Cancelled"),
+    )
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+
+    integration = models.ForeignKey(
+        CompanyIntegration,
+        on_delete=models.PROTECT,
+        related_name="bamboohr_payroll_batches",
+        limit_choices_to={"provider": CompanyIntegration.PROVIDER_BAMBOOHR},
+    )
+
+    payroll_period_start = models.DateField()
+    payroll_period_end = models.DateField()
+    pay_date = models.DateField()
+
+    earning_code = models.CharField(
+        max_length=100,
+        default="EXPENSE_REIMBURSEMENT",
+    )
+
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_DRAFT,
+    )
+
+    notes = models.TextField(blank=True, default="")
+    payroll_run_reference = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+    )
+
+    created_by = models.ForeignKey(
+        "tenants.UserProfile",
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="created_bamboohr_payroll_batches",
+    )
+
+    confirmed_by = models.ForeignKey(
+        "tenants.UserProfile",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="confirmed_bamboohr_payroll_batches",
+    )
+
+    exported_at = models.DateTimeField(null=True, blank=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["integration", "status", "pay_date"],
+                name="bamboo_payroll_batch_idx",
+            ),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(
+                    payroll_period_start__lte=models.F("payroll_period_end")
+                ),
+                name="bamboo_payroll_valid_period",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.integration.company.name} | {self.pay_date} | "
+            f"{self.status}"
+        )
+
+
+class BambooHRPayrollBatchItem(models.Model):
+    """One approved ZepEx report staged in a BambooHR payroll batch."""
+
+    STATUS_PENDING = "PENDING"
+    STATUS_EXPORTED = "EXPORTED"
+    STATUS_CONFIRMED = "CONFIRMED"
+    STATUS_REMOVED = "REMOVED"
+    STATUS_FAILED = "FAILED"
+
+    STATUS_CHOICES = (
+        (STATUS_PENDING, "Pending"),
+        (STATUS_EXPORTED, "Exported"),
+        (STATUS_CONFIRMED, "Confirmed"),
+        (STATUS_REMOVED, "Removed"),
+        (STATUS_FAILED, "Failed"),
+    )
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+
+    batch = models.ForeignKey(
+        BambooHRPayrollBatch,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+
+    report = models.ForeignKey(
+        "expenses.ExpenseReport",
+        on_delete=models.PROTECT,
+        related_name="bamboohr_payroll_items",
+    )
+
+    employee_mapping = models.ForeignKey(
+        IntegrationEmployeeMapping,
+        on_delete=models.PROTECT,
+        related_name="bamboohr_payroll_items",
+    )
+
+    external_employee_id = models.CharField(max_length=255)
+    employee_number = models.CharField(max_length=255, blank=True, default="")
+    external_email = models.EmailField(blank=True, default="")
+    employee_name = models.CharField(max_length=255)
+    bamboohr_employee_status = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+    )
+    include_in_payroll = models.BooleanField(null=True, blank=True)
+
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    currency = models.CharField(max_length=3)
+    earning_code = models.CharField(max_length=100)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+    )
+
+    error_message = models.TextField(null=True, blank=True)
+    exported_at = models.DateTimeField(null=True, blank=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    removed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(
+                fields=["batch", "status"],
+                name="bamboo_payroll_item_idx",
+            ),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["report"],
+                condition=models.Q(
+                    status__in=[
+                        "PENDING",
+                        "EXPORTED",
+                        "CONFIRMED",
+                    ]
+                ),
+                name="unique_active_bamboo_payroll_report",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0),
+                name="bamboo_payroll_positive_amount",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.batch_id} | {self.report_id} | {self.status}"

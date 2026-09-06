@@ -1084,7 +1084,6 @@ class EmployeeUpdateSerializer(serializers.ModelSerializer):
             "last_name",
             "department",
             "company_role",
-            "manager",
         ]
 
         read_only_fields = [
@@ -1112,17 +1111,6 @@ class EmployeeUpdateSerializer(serializers.ModelSerializer):
             )
 
         return company_role
-
-    def validate_manager(self, manager):
-
-        profile = self.context["request"].user.profile
-
-        if manager.company_id != profile.company_id:
-            raise serializers.ValidationError(
-                "Manager does not belong to your company."
-            )
-
-        return manager
 
     def update(self, instance, validated_data):
 

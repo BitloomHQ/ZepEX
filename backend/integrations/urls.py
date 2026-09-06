@@ -41,6 +41,17 @@ from .views import (
     save_quickbooks_payment_account,
 )
 
+from .payroll_views import (
+    bamboohr_payroll_add_report,
+    bamboohr_payroll_batch_detail,
+    bamboohr_payroll_batches,
+    bamboohr_payroll_confirm,
+    bamboohr_payroll_csv,
+    bamboohr_payroll_eligible_reports,
+    bamboohr_payroll_mark_ready,
+    bamboohr_payroll_remove_report,
+)
+
 
 urlpatterns = [
 
@@ -154,6 +165,58 @@ urlpatterns = [
         "bamboohr/health/",
         bamboohr_health,
         name="bamboohr-health",
+    ),
+
+    # ==========================================================
+    # BAMBOOHR PAYROLL REIMBURSEMENT BATCHES
+    # ==========================================================
+
+    path(
+        "bamboohr/payroll/eligible-reports/",
+        bamboohr_payroll_eligible_reports,
+        name="bamboohr-payroll-eligible-reports",
+    ),
+
+    path(
+        "bamboohr/payroll/batches/",
+        bamboohr_payroll_batches,
+        name="bamboohr-payroll-batches",
+    ),
+
+    path(
+        "bamboohr/payroll/batches/<uuid:batch_id>/",
+        bamboohr_payroll_batch_detail,
+        name="bamboohr-payroll-batch-detail",
+    ),
+
+    path(
+        "bamboohr/payroll/batches/<uuid:batch_id>/reports/",
+        bamboohr_payroll_add_report,
+        name="bamboohr-payroll-add-report",
+    ),
+
+    path(
+        "bamboohr/payroll/batches/<uuid:batch_id>/reports/<uuid:report_id>/",
+        bamboohr_payroll_remove_report,
+        name="bamboohr-payroll-remove-report",
+    ),
+
+    path(
+        "bamboohr/payroll/batches/<uuid:batch_id>/ready/",
+        bamboohr_payroll_mark_ready,
+        name="bamboohr-payroll-mark-ready",
+    ),
+
+    path(
+        "bamboohr/payroll/batches/<uuid:batch_id>/csv/",
+        bamboohr_payroll_csv,
+        name="bamboohr-payroll-csv",
+    ),
+
+    path(
+        "bamboohr/payroll/batches/<uuid:batch_id>/confirm/",
+        bamboohr_payroll_confirm,
+        name="bamboohr-payroll-confirm",
     ),
 
     # ==========================================================
