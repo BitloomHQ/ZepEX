@@ -19,6 +19,8 @@ import { DepartmentsPage } from '@/pages/tenant/admin/DepartmentsPage'
 import { EmployeesPage } from '@/pages/tenant/admin/EmployeesPage'
 import { PolicyPage } from '@/pages/tenant/admin/PolicyPage'
 import { IntegrationsPage } from '@/pages/tenant/admin/IntegrationsPage'
+import { BambooHRPayrollPage } from '@/pages/tenant/admin/BambooHRPayrollPage'
+import { BambooHRPayrollBatchDetailPage } from '@/pages/tenant/admin/BambooHRPayrollBatchDetailPage'
 import { SettingsPage } from '@/pages/tenant/admin/SettingsPage'
 import { AuditLogsPage } from '@/pages/tenant/admin/AuditLogsPage'
 import { EmployeeDashboard } from '@/pages/tenant/employee/EmployeeDashboard'
@@ -189,6 +191,21 @@ export default function App() {
             <Route
               path="/admin/integrations/third-party"
               element={<Navigate to="/admin/integrations" replace />}
+            />
+          </Route>
+
+          <Route
+            element={
+              <ProtectedRoute
+                allowedRoles={['COMPANY_ADMIN']}
+                anyPermissions={['can_mark_paid']}
+              />
+            }
+          >
+            <Route path="/admin/payroll" element={<BambooHRPayrollPage />} />
+            <Route
+              path="/admin/payroll/:batchId"
+              element={<BambooHRPayrollBatchDetailPage />}
             />
           </Route>
 

@@ -4,6 +4,7 @@ import {
   ClipboardList,
   GitBranch,
   LayoutDashboard,
+  Landmark,
   PieChart,
   ScrollText,
   Settings,
@@ -23,6 +24,7 @@ export const adminNavBase: NavItem[] = [
   { label: 'Policy', to: '/admin/policy', icon: Shield },
   { label: 'Reports', to: '/admin/reports', icon: ClipboardList },
   { label: 'Expense reports', to: '/expense-reports', icon: PieChart },
+  { label: 'Payroll', to: '/admin/payroll', icon: Landmark },
   { label: 'Settings', to: '/admin/settings', icon: Settings },
   { label: 'Integrations', to: '/admin/integrations', icon: Plug },
   { label: 'Audit Logs', to: '/admin/audit-logs', icon: ScrollText },
@@ -57,6 +59,8 @@ function canSeeAdminNavItem(user: User | null, to: string) {
         hasFlag(user, 'can_view_all_reports') ||
         hasFlag(user, 'can_mark_paid')
       )
+    case '/admin/payroll':
+      return hasFlag(user, 'can_mark_paid')
     case '/admin/settings':
       return hasFlag(user, 'can_manage_company') || hasFlag(user, 'can_manage_policy')
     case '/admin/integrations':

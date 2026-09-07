@@ -1299,3 +1299,411 @@ export interface QuickBooksExportHistoryItem {
     department?: string | null
   }
 }
+
+// ==========================================================
+// Common integration APIs (activity + dashboard)
+// ==========================================================
+
+export interface IntegrationActivityItem {
+  id: string
+  provider: string
+  action: string
+  action_label?: string
+  message: string
+  action_by?: { id: number; name: string; email: string } | null
+  metadata?: Record<string, unknown>
+  created_at: string
+}
+
+export interface IntegrationDashboardSummary {
+  success: boolean
+  summary: {
+    supported_integrations: number
+    configured_integrations: number
+    connected_integrations: number
+  }
+  integrations: {
+    bamboohr?: {
+      provider: 'BAMBOOHR'
+      connected: boolean
+      active: boolean
+      last_sync_status: string | null
+      syncs: { total: number; success: number; failed: number }
+    }
+    quickbooks?: {
+      provider: 'QUICKBOOKS'
+      connected: boolean
+      active: boolean
+      exports: { total: number; pending: number; success: number; failed: number }
+    }
+  }
+  recent_activity: IntegrationActivityItem[]
+}
+
+// ==========================================================
+// BambooHR
+// ==========================================================
+
+export interface BambooHRConnectResponse {
+  success: boolean
+  provider: 'BAMBOOHR'
+  connected: boolean
+  company_domain: string
+  authorization_url: string
+  message?: string
+}
+
+export interface BambooHRResourceSyncStatus {
+  sync_log_id: string
+  resource: 'DEPARTMENTS' | 'EMPLOYEES' | 'MANAGERS' | 'ALL'
+  status: 'RUNNING' | 'SUCCESS' | 'FAILED'
+  trigger: 'MANUAL' | 'SCHEDULED' | 'WEBHOOK'
+  records_received: number
+  records_created: number
+  records_updated: number
+  records_skipped: number
+  error_message: string | null
+  started_at: string
+  completed_at: string | null
+}
+
+export interface BambooHRStatusResponse {
+  success: boolean
+  provider: 'BAMBOOHR'
+  connected: boolean
+  configured: boolean
+  integration: {
+    id: number
+    provider: string
+    provider_name?: string
+    is_connected: boolean
+    is_active: boolean
+    configured: boolean
+    company_domain?: string | null
+    last_synced_at: string | null
+    last_sync_status: string | null
+    last_sync_error: string | null
+  } | null
+  sync_status: {
+    departments: BambooHRResourceSyncStatus | null
+    employees: BambooHRResourceSyncStatus | null
+    managers: BambooHRResourceSyncStatus | null
+    all: BambooHRResourceSyncStatus | null
+  }
+}
+
+export interface IntegrationHealthIssue {
+  type: string
+  message: string
+}
+
+export interface BambooHRHealthResponse {
+  success: boolean
+  provider: 'BAMBOOHR'
+  overall_status: 'HEALTHY' | 'WARNING' | string
+  connection: {
+    connected: boolean
+    active: boolean
+    company_reachable: boolean
+    company_domain: string | null
+    error: string | null
+  }
+  sync: {
+    last_sync_status: string | null
+    last_sync_error: string | null
+    all: BambooHRResourceSyncStatus | Record<string, never> | null
+  }
+  sync_summary: {
+    total: number
+    successful: number
+    failed: number
+    running: number
+  }
+  issues: IntegrationHealthIssue[]
+  checked_at: string
+}
+
+export interface BambooHREmployeePreview {
+  employeeId: string
+  id: string
+  firstName: string | null
+  lastName: string | null
+  preferredName: string | null
+  photoUrl: string | null
+  jobTitleName: string | null
+  jobTitle: string | null
+  status: string | null
+  workEmail: string | null
+  department: string | null
+  supervisor: string | null
+  supervisorEId: string | null
+  _restrictedFields?: string[]
+}
+
+export interface BambooHREmployeePreviewResponse {
+  success: boolean
+  provider: 'BAMBOOHR'
+  count: number
+  employees: BambooHREmployeePreview[]
+}
+
+export interface BambooHRSyncError {
+  external_employee_id?: string
+  error: string
+}
+
+export interface BambooHRSyncResponse {
+  success: boolean
+  integration_id: string
+  provider: 'BAMBOOHR'
+  resource: 'DEPARTMENTS' | 'EMPLOYEES' | 'MANAGERS' | 'ALL'
+  trigger: string
+  last_synced_at: string
+  records: {
+    received: number
+    created: number
+    updated: number
+    skipped: number
+  }
+  errors: BambooHRSyncError[]
+  sync_log_id: string
+}
+
+export interface BambooHRSyncHistoryItem {
+  id: string
+  // Documented as a top-level field, but the deployed serializer nests it
+  // under `stats.resource` instead — read defensively for both shapes.
+  resource?: 'DEPARTMENTS' | 'EMPLOYEES' | 'MANAGERS' | 'ALL'
+  stats?: { resource?: 'DEPARTMENTS' | 'EMPLOYEES' | 'MANAGERS' | 'ALL' }
+  status: 'RUNNING' | 'SUCCESS' | 'FAILED'
+  trigger: 'MANUAL' | 'SCHEDULED' | 'WEBHOOK'
+  records_received: number
+  records_created: number
+  records_updated: number
+  records_skipped: number
+  error_message: string | null
+  started_at: string
+  completed_at: string | null
+}
+
+export interface BambooHRChangeHistoryItem {
+  id: string
+  resource_type: 'EMPLOYEE' | 'DEPARTMENT'
+  external_resource_id: string
+  resource_name: string
+  change_type: string
+  field_name: string | null
+  old_value: string | null
+  new_value: string | null
+  details?: Record<string, unknown>
+  sync_log_id: string | null
+  created_at: string
+}
+
+// ==========================================================
+// BambooHR Payroll (Finance-controlled reimbursement batches)
+// ==========================================================
+
+export type PayrollBatchStatus = 'DRAFT' | 'READY' | 'EXPORTED' | 'CONFIRMED' | 'CANCELLED'
+
+export interface PayrollEligibleReport {
+  report_id: string
+  month: string
+  employee: {
+    id: string
+    name: string
+    email: string
+  }
+  department: string | null
+  total_amount: string
+  status: string
+  workflow_completed: boolean
+  bamboohr_mapping: {
+    mapped: boolean
+    external_employee_id: string | null
+  }
+  already_in_payroll: boolean
+  can_add: boolean
+}
+
+export interface PayrollBatchItem {
+  id: string
+  report_id: string
+  external_employee_id: string | null
+  employee_number: string | null
+  employee_name: string
+  external_email: string | null
+  bamboohr_employee_status: string | null
+  include_in_payroll: boolean | null
+  amount: string
+  currency: string
+  earning_code: string
+  status: string
+  error_message: string | null
+  exported_at: string | null
+  confirmed_at: string | null
+  created_at?: string | null
+}
+
+export interface PayrollBatch {
+  id: string
+  integration_id: string
+  provider: 'BAMBOOHR'
+  status: PayrollBatchStatus
+  payroll_period_start: string
+  payroll_period_end: string
+  pay_date: string
+  earning_code: string
+  notes: string | null
+  payroll_run_reference: string | null
+  report_count: number
+  total_amount: string
+  exported_at?: string | null
+  confirmed_at?: string | null
+  created_at?: string
+  updated_at?: string
+  items?: PayrollBatchItem[]
+}
+
+export interface PayrollEligibleReportsResponse {
+  success: boolean
+  provider: 'BAMBOOHR'
+  count: number
+  results: PayrollEligibleReport[]
+}
+
+export interface PayrollBatchListResponse {
+  success: boolean
+  provider: 'BAMBOOHR'
+  count: number
+  results: PayrollBatch[]
+}
+
+export interface PayrollBatchResponse {
+  success: boolean
+  message?: string
+  batch: PayrollBatch
+}
+
+export interface PayrollBatchItemResponse {
+  success: boolean
+  message?: string
+  item: PayrollBatchItem
+}
+
+export interface PayrollPaymentResult {
+  report_id: string
+  amount: string
+  currency: string
+  quickbooks_export: string
+}
+
+export interface PayrollConfirmResponse {
+  success: boolean
+  message?: string
+  batch: PayrollBatch
+  payments: PayrollPaymentResult[]
+}
+
+export interface IntegrationApiError {
+  success: false
+  error: string
+  code?: string
+  quickbooks_transaction_id?: string
+}
+
+// ==========================================================
+// QuickBooks (additional endpoints)
+// ==========================================================
+
+export interface QuickBooksHealthResponse {
+  success: boolean
+  provider: 'QUICKBOOKS'
+  overall_status: 'HEALTHY' | 'WARNING' | string
+  connection: {
+    connected: boolean
+    active: boolean
+    company_reachable: boolean
+    realm_id: string | null
+    quickbooks_company_name: string | null
+    error: string | null
+  }
+  configuration: {
+    auto_export_enabled: boolean
+    payment_account_configured: boolean
+    payment_account: {
+      id: string | null
+      name: string | null
+      type: string | null
+    } | null
+    category_mapping_count: number
+  }
+  exports: {
+    total: number
+    successful: number
+    failed: number
+    pending: number
+    processing: number
+  }
+  reconciliation: {
+    verified: number
+    mismatch: number
+    missing: number
+    error: number
+    not_checked: number
+  }
+  issues: IntegrationHealthIssue[]
+  checked_at: string
+}
+
+export interface QuickBooksSettingsResponse {
+  success: boolean
+  quickbooks: {
+    is_connected: boolean
+    is_active: boolean
+    auto_export: boolean
+    payment_account: {
+      id: string | null
+      name: string | null
+      type: string | null
+    }
+  }
+}
+
+export interface QuickBooksExportReportResponse {
+  success: boolean
+  message?: string
+  report_id: string
+  export_status: string
+  export_record_id: string | null
+  task_id?: string
+}
+
+export interface QuickBooksExportStatusResponse {
+  success: boolean
+  report_id: string
+  report_status: string
+  quickbooks_connected: boolean
+  export_status: 'PENDING' | 'PROCESSING' | 'SUCCESS' | 'FAILED' | string
+  export: {
+    id: string
+    external_reference: string
+    quickbooks_transaction_id: string | null
+    amount: string
+    error_message: string | null
+    exported_at: string | null
+    created_at: string
+  } | null
+}
+
+export interface QuickBooksReconcileResponse {
+  success: boolean
+  report_id: string
+  export_record_id: string
+  quickbooks_transaction_id: string | null
+  reconciliation_status: 'VERIFIED' | 'MISMATCH' | 'MISSING' | 'ERROR' | string
+  mismatches: Array<{ field: string; expected: unknown; actual: unknown } | string>
+  quickbooks_purchase?: Record<string, unknown> | null
+  reconciled_at: string | null
+  error?: string
+}

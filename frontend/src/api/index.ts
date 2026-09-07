@@ -1019,8 +1019,172 @@ export const getQuickBooksExportHistory = (params?: { status?: string }) =>
   }>('/integrations/quickbooks/export-history/', { params })
 
 export const retryQuickBooksExport = (reportId: string) =>
-  api.post<{ success: boolean; message: string }>(
+  api.post<import('@/types').QuickBooksExportReportResponse>(
     `/integrations/quickbooks/export-report/${reportId}/retry/`,
+  )
+
+export const getQuickBooksHealth = () =>
+  api.get<import('@/types').QuickBooksHealthResponse>('/integrations/quickbooks/health/')
+
+export const getQuickBooksSettings = () =>
+  api.get<import('@/types').QuickBooksSettingsResponse>('/integrations/quickbooks/settings/')
+
+export const updateQuickBooksAutoExport = (auto_export: boolean) =>
+  api.patch<{
+    success: boolean
+    message: string
+    previous_auto_export: boolean
+    auto_export: boolean
+    quickbooks_connected: boolean
+  }>('/integrations/quickbooks/settings/', { auto_export })
+
+export const exportReportToQuickBooks = (reportId: string) =>
+  api.post<import('@/types').QuickBooksExportReportResponse>(
+    `/integrations/quickbooks/export-report/${reportId}/`,
+  )
+
+export const getQuickBooksExportStatus = (reportId: string) =>
+  api.get<import('@/types').QuickBooksExportStatusResponse>(
+    `/integrations/quickbooks/export-status/${reportId}/`,
+  )
+
+export const reconcileQuickBooksReport = (reportId: string) =>
+  api.post<import('@/types').QuickBooksReconcileResponse>(
+    `/integrations/quickbooks/reconcile/${reportId}/`,
+  )
+
+// Common integrations
+export const getIntegrationActivity = (params?: {
+  provider?: 'BAMBOOHR' | 'QUICKBOOKS'
+  action?: string
+  limit?: number
+}) =>
+  api.get<{ success: boolean; count: number; results: import('@/types').IntegrationActivityItem[] }>(
+    '/integrations/activity/',
+    { params },
+  )
+
+export const getIntegrationDashboard = () =>
+  api.get<import('@/types').IntegrationDashboardSummary>('/integrations/dashboard/')
+
+// BambooHR
+export const connectBambooHR = (company_domain: string) =>
+  api.post<import('@/types').BambooHRConnectResponse>('/integrations/bamboohr/connect/', {
+    company_domain,
+  })
+
+export const getBambooHRStatus = () =>
+  api.get<import('@/types').BambooHRStatusResponse>('/integrations/bamboohr/status/')
+
+export const getBambooHRHealth = () =>
+  api.get<import('@/types').BambooHRHealthResponse>('/integrations/bamboohr/health/')
+
+export const previewBambooHREmployees = () =>
+  api.get<import('@/types').BambooHREmployeePreviewResponse>(
+    '/integrations/bamboohr/employees/preview/',
+  )
+
+export const syncBambooHRDepartments = () =>
+  api.post<import('@/types').BambooHRSyncResponse>('/integrations/bamboohr/sync/departments/', {})
+
+export const syncBambooHREmployees = () =>
+  api.post<import('@/types').BambooHRSyncResponse>('/integrations/bamboohr/sync/employees/', {})
+
+export const syncBambooHRManagers = () =>
+  api.post<import('@/types').BambooHRSyncResponse>('/integrations/bamboohr/sync/managers/', {})
+
+export const syncBambooHRAll = () =>
+  api.post<import('@/types').BambooHRSyncResponse>('/integrations/bamboohr/sync/all/', {})
+
+export const getBambooHRSyncHistory = (params?: {
+  resource?: 'DEPARTMENTS' | 'EMPLOYEES' | 'MANAGERS' | 'ALL'
+  status?: 'RUNNING' | 'SUCCESS' | 'FAILED'
+  trigger?: 'MANUAL' | 'SCHEDULED'
+  limit?: number
+}) =>
+  api.get<{
+    success: boolean
+    provider: 'BAMBOOHR'
+    count: number
+    results: import('@/types').BambooHRSyncHistoryItem[]
+  }>('/integrations/bamboohr/sync-history/', { params })
+
+export const getBambooHRChangeHistory = (params?: {
+  resource_type?: 'EMPLOYEE' | 'DEPARTMENT'
+  change_type?: string
+  sync_log_id?: string
+  limit?: number
+}) =>
+  api.get<{
+    success: boolean
+    provider: 'BAMBOOHR'
+    total: number
+    count: number
+    results: import('@/types').BambooHRChangeHistoryItem[]
+  }>('/integrations/bamboohr/changes/', { params })
+
+// BambooHR Payroll (Finance-controlled reimbursement batches)
+export const getPayrollEligibleReports = () =>
+  api.get<import('@/types').PayrollEligibleReportsResponse>(
+    '/integrations/bamboohr/payroll/eligible-reports/',
+  )
+
+export const listPayrollBatches = (params?: { status?: import('@/types').PayrollBatchStatus }) =>
+  api.get<import('@/types').PayrollBatchListResponse>('/integrations/bamboohr/payroll/batches/', {
+    params,
+  })
+
+export const createPayrollBatch = (data: {
+  payroll_period_start: string
+  payroll_period_end: string
+  pay_date: string
+  earning_code?: string
+  notes?: string
+}) =>
+  api.post<import('@/types').PayrollBatchResponse>('/integrations/bamboohr/payroll/batches/', data)
+
+export const getPayrollBatch = (batchId: string) =>
+  api.get<import('@/types').PayrollBatchResponse>(
+    `/integrations/bamboohr/payroll/batches/${batchId}/`,
+  )
+
+export const addPayrollBatchReport = (batchId: string, reportId: string) =>
+  api.post<import('@/types').PayrollBatchItemResponse>(
+    `/integrations/bamboohr/payroll/batches/${batchId}/reports/`,
+    { report_id: reportId },
+  )
+
+export const removePayrollBatchReport = (batchId: string, reportId: string) =>
+  api.delete<{ success: boolean; message: string }>(
+    `/integrations/bamboohr/payroll/batches/${batchId}/reports/${reportId}/`,
+  )
+
+export const markPayrollBatchReady = (batchId: string) =>
+  api.post<import('@/types').PayrollBatchResponse>(
+    `/integrations/bamboohr/payroll/batches/${batchId}/ready/`,
+    {},
+  )
+
+export const downloadPayrollBatchCsv = async (batchId: string) => {
+  const response = await api.get<Blob>(
+    `/integrations/bamboohr/payroll/batches/${batchId}/csv/`,
+    { responseType: 'blob', headers: { Accept: '*/*' } },
+  )
+  const { downloadBlob, filenameFromContentDisposition } = await import('@/lib/csvDownload')
+  const filename = filenameFromContentDisposition(
+    response.headers['content-disposition'],
+    `bamboohr-payroll-${batchId}.csv`,
+  )
+  downloadBlob(response.data, filename)
+}
+
+export const confirmPayrollBatch = (
+  batchId: string,
+  data: { payroll_run_reference: string; notes?: string },
+) =>
+  api.post<import('@/types').PayrollConfirmResponse>(
+    `/integrations/bamboohr/payroll/batches/${batchId}/confirm/`,
+    data,
   )
 
 // Dashboards

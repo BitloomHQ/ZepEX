@@ -3,6 +3,7 @@ import { getCompanyAdminDashboard } from '@/api'
 import type { NavItem } from '@/components/layout/DashboardLayout'
 import { useAuth } from '@/context/AuthContext'
 import { buildAdminNav } from '@/lib/adminNav'
+import { fetchBambooHRConnected } from '@/lib/bambooHRConnection'
 import { getNavForUser } from '@/lib/dashboardNav'
 import { isSetupComplete } from '@/lib/adminSetup'
 
@@ -37,22 +38,33 @@ function navForUser(user: Parameters<typeof getNavForUser>[0]) {
   return getNavForUser(user)
 }
 
+// The Payroll screen only makes sense once BambooHR is connected — hide the
+// nav entry until we know the connection state to avoid dead-ending users.
+function withPayrollGate(items: NavItem[], bambooConnected: boolean): NavItem[] {
+  if (bambooConnected) return items
+  return items.filter((item) => item.to !== '/admin/payroll')
+}
+
 export function useAdminNav() {
   const { user } = useAuth()
-  const [navItems, setNavItems] = useState<NavItem[]>(() => navForUser(user))
+  const [navItems, setNavItems] = useState<NavItem[]>(() => withPayrollGate(navForUser(user), false))
   const [setupComplete, setSetupComplete] = useState(false)
   const [setupStatus, setSetupStatus] = useState<Record<string, boolean>>({})
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
-    setNavItems(navForUser(user))
-    fetchAdminSetupStatus().then((status) => {
-      const complete = isSetupComplete(status)
-      setSetupStatus(status)
-      setSetupComplete(complete)
-      setNavItems(navForUser(user))
-      setReady(true)
-    })
+    let bambooConnected = false
+    setNavItems(withPayrollGate(navForUser(user), bambooConnected))
+    Promise.all([fetchAdminSetupStatus(), fetchBambooHRConnected()]).then(
+      ([status, connected]) => {
+        bambooConnected = connected
+        const complete = isSetupComplete(status)
+        setSetupStatus(status)
+        setSetupComplete(complete)
+        setNavItems(withPayrollGate(navForUser(user), bambooConnected))
+        setReady(true)
+      },
+    )
   }, [user])
 
   return { navItems, setupComplete, setupStatus, ready }
